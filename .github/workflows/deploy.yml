@@ -1,0 +1,153 @@
+# Build, test, publish — then hand over to ArgoCD.
+#
+# The workflow never touches the cluster. It commits a new image tag to the
+# production overlay and Argo reconciles, so the repository always states what
+# is running and a rollback is `git revert`.
+
+name: build and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: ${{ github.repository_owner }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create the env files CI needs
+        run: |
+          cp .env.example .env
+          cp backend.env.example backend.env
+
+      - name: Bring the stack up
+        run: docker compose up -d --build
+
+      - name: Wait for the API
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf localhost:8080/api/health >/dev/null; then exit 0; fi
+            sleep 3
+          done
+          docker compose logs
+          exit 1
+
+      # Migrations run on adapter startup. Asserting the recorded count catches
+      # a migration that failed to apply, which would otherwise only surface as
+      # a confusing 500 much later.
+      - name: Assert migrations applied
+        run: |
+          COUNT=$(docker compose exec -T postgres \
+            psql -U eesoc -d eesoc -tAc "SELECT COUNT(*) FROM migrations;")
+          echo "migrations applied: $COUNT"
+          test "$COUNT" -ge 16
+
+      - name: Wait for resource seeding
+        run: |
+          for i in $(seq 1 40); do
+            COUNT=$(curl -sf localhost:8080/api/resources \
+              | python3 -c 'import sys,json; print(len(json.load(sys.stdin)["pages"]))' 2>/dev/null || echo 0)
+            if [ "$COUNT" -ge 10 ]; then echo "seeded $COUNT pages"; exit 0; fi
+            sleep 3
+          done
+          echo "::error::Resource seeding did not complete"
+          docker compose logs api
+          exit 1
+
+      - name: Smoke check the public surface
+        run: |
+          set -euo pipefail
+          curl -sf localhost:8080/              > /dev/null
+          curl -sf localhost:8080/api/events    > /dev/null
+          curl -sf localhost:8080/api/resources > /dev/null
+          curl -sf localhost:8080/sitemap.xml   | grep -q "<urlset"
+          curl -sf localhost:8080/robots.txt    | grep -q "Sitemap:"
+
+      # The bypass must never reach a built image's default configuration.
+      - name: Assert dev login is off by default
+        run: |
+          ! grep -qE '^\s*dev_login_enabled:\s*bool\s*=\s*True' backend/api/config.py
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --tail 200
+
+  build:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - { name: api, context: backend/api }
+          - { name: database, context: backend/database }
+          - { name: union, context: backend/union }
+          - { name: frontend, context: frontend }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          # Tagged by commit SHA as well as latest. Deployments pin the SHA:
+          # a moving tag makes it impossible to say what is running, and breaks
+          # rollback.
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/eesoc-${{ matrix.name }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/eesoc-${{ matrix.name }}:latest
+          build-args: |
+            VITE_API_BASE=/api
+            VITE_SITE_ORIGIN=https://eesoc.com
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kustomize
+        run: |
+          curl -sfLo kustomize.tar.gz \
+            https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz
+          tar xzf kustomize.tar.gz
+          sudo mv kustomize /usr/local/bin/
+          rm kustomize.tar.gz
+
+      - name: Pin the new image tags
+        working-directory: deploy/k8s/base
+        run: |
+          for svc in api database union frontend; do
+            kustomize edit set image \
+              "ghcr.io/OWNER/eesoc-${svc}=${{ env.REGISTRY }}/${{ env.OWNER }}/eesoc-${svc}:${{ github.sha }}"
+          done
+
+      - name: Commit for ArgoCD to pick up
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add deploy/k8s/base/kustomization.yaml
+          # [skip ci] stops this commit from triggering the workflow again.
+          git diff --staged --quiet || \
+            git commit -m "deploy: ${{ github.sha }} [skip ci]"
+          git push

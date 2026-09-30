@@ -1,0 +1,119 @@
+# Backend services. Pulled into the root project by `include:` in
+# ../docker-compose.yml, so everything shares one network and one `up`.
+# Relative paths below resolve against this file's directory (backend/).
+#
+# Only the frontend publishes a web port. api -> database -> postgres are
+# reachable on the compose network only, never from the host. The api is the
+# only service the browser touches, and only through the frontend's /api/ proxy.
+#
+# No `restart:` policies on purpose: locally you want a crash to stop the
+# container, not crash-loop quietly. Add `restart: unless-stopped` to deploy.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${PG_USER:-eesoc}
+      POSTGRES_PASSWORD: ${PG_PASS:-eesoc}
+      POSTGRES_DB: ${PG_DB:-eesoc}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # No initdb mount: the database service runs migrations itself on
+      # startup (backend/database/migrate.py), which is the only approach that
+      # works once the volume outlives the deploy — as it does in k8s.
+    ports:
+      # Dev convenience only, so you can reach it from the host:
+      #   psql -h localhost -p 5433 -U eesoc eesoc
+      # 5433 avoids clashing with a postgres already running on 5432.
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-eesoc} -d ${PG_DB:-eesoc}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # SQL adapter — the only service that talks to postgres.
+  database:
+    build: ./database
+    image: eesoc-website-database
+    environment:
+      # Wiring, not configuration: these describe the compose network, so they
+      # live here next to the service names they point at. Credentials come from
+      # the root .env via interpolation. See ../.env.example.
+      PG_HOST: postgres
+      PG_PORT: 5432         # in-network port, not the 5433 published above
+      PG_USER: ${PG_USER:-eesoc}
+      PG_PASS: ${PG_PASS:-eesoc}
+      PG_DB: ${PG_DB:-eesoc}
+    volumes:
+      # Live reload: your source is mounted over the image's copy. Remove this
+      # volume and the `command:` to run the image exactly as built.
+      - ./database:/code
+    command: ["fastapi", "dev", "main.py", "--host", "0.0.0.0", "--port", "8080"]
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Public API. The browser reaches this only via the frontend's /api/ proxy.
+  api:
+    build: ./api
+    image: eesoc-website-api
+    # Secrets the code reads (SMTP_* for login codes). Template: ../backend.env.example
+    env_file: ../backend.env
+    environment:
+      # Wiring — compose network topology, not deployment config.
+      DATABASE_ADAPTER_URL: http://database:8080
+      UNION_API_URL: http://union:8080
+      # Uploads live on a volume, not in the image: a container filesystem is
+      # discarded on every deploy, and under k8s the pod is replaced outright.
+      MEDIA_ROOT: /data/media
+      # Blank by default, which makes login codes appear in `docker compose logs
+      # api`. Defaulting to a mail catcher would be worse: if it is not running,
+      # sending fails AND the code is never logged, so there is no way in.
+      #
+      # To use one:  docker run -d --name mailpit \
+      #   --network eesoc-website_default -p 8025:8025 axllent/mailpit
+      # then SMTP_HOST=mailpit docker compose up -d api   (inbox: :8025)
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: "1025"
+      SMTP_USER: ""
+      SMTP_STARTTLS: "false"
+      SITE_ORIGIN: http://localhost:8080
+      # Force features off by hand. Anything whose dependencies are missing is
+      # detected automatically — this is for breakage the process cannot see.
+      MAINTENANCE_FEATURES: ${MAINTENANCE_FEATURES:-}
+      MAINTENANCE_MESSAGE: ${MAINTENANCE_MESSAGE:-}
+      # Local development conveniences. Both are refused at startup unless
+      # ENVIRONMENT is development — see _guard_dev_login in api/main.py.
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DEV_LOGIN_ENABLED: ${DEV_LOGIN_ENABLED:-true}
+    volumes:
+      - ./api:/code
+      - media:/data/media
+    command: ["fastapi", "dev", "main.py", "--host", "0.0.0.0", "--port", "8080"]
+    expose:
+      - "8080"
+    depends_on:
+      database:
+        condition: service_started
+
+  # ICU bridge — the only service that talks to eActivities. Throttled and
+  # cached, because excessive requests earn an IP ban from the Union.
+  union:
+    build: ./union
+    image: eesoc-website-union
+    env_file: ../backend.env      # ICU_API_KEY, ICU_CENTRE_CODE
+    volumes:
+      - ./union:/code
+    command: ["fastapi", "dev", "main.py", "--host", "0.0.0.0", "--port", "8080"]
+    expose:
+      - "8080"
+
+volumes:
+  pgdata:
+  # Shared read-write by api (writes uploads) and frontend (serves them).
+  # Becomes a ReadWriteMany PVC in the cluster — see deploy/k8s.
+  media:

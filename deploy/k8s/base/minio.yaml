@@ -1,0 +1,134 @@
+# Self-hosted object storage (MinIO).
+#
+# Uploads need an S3-compatible store. This runs one in-cluster rather than
+# depending on a provider, and is the same thing the S3 backend was tested
+# against.
+#
+# Single replica with a ReadWriteOnce volume, which is fine here: MinIO is the
+# only writer, so no RWX StorageClass is needed — that was the whole reason for
+# moving off a shared PersistentVolume. It does mean uploads are briefly
+# unavailable during a restart; a distributed MinIO (4+ replicas) is the answer
+# if that matters, but it is a lot of machinery for society logos.
+#
+# Browsers read objects through the site's own domain (/media/...), so there is
+# no second hostname and no second certificate. See the Ingress.
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: eesoc
+spec:
+  selector: { app: minio }
+  ports:
+    - { name: s3, port: 9000, targetPort: 9000 }
+    - { name: console, port: 9001, targetPort: 9001 }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+  namespace: eesoc
+spec:
+  # ReadWriteOnce is correct: only the MinIO pod mounts this.
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: eesoc
+  annotations:
+    # Before the api, which checks the bucket in its readiness probe.
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  replicas: 1
+  strategy:
+    # Never two pods holding the same RWO volume — a rolling update would
+    # deadlock waiting for a mount the old pod still has.
+    type: Recreate
+  selector:
+    matchLabels: { app: minio }
+  template:
+    metadata:
+      labels: { app: minio }
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+          args: ["server", "/data", "--console-address", ":9001"]
+          ports:
+            - { containerPort: 9000, name: s3 }
+            - { containerPort: 9001, name: console }
+          env:
+            # Reuses the same credentials the api authenticates with, so there is
+            # one pair to manage rather than two that can drift.
+            - name: MINIO_ROOT_USER
+              valueFrom: { secretKeyRef: { name: eesoc-secrets, key: S3_ACCESS_KEY_ID } }
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: eesoc-secrets, key: S3_SECRET_ACCESS_KEY } }
+            # Objects are served under the site's own domain via the Ingress.
+            - name: MINIO_BROWSER_REDIRECT_URL
+              value: "https://eesoc.com/minio-console"
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            httpGet: { path: /minio/health/ready, port: 9000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /minio/health/live, port: 9000 }
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 50m, memory: 256Mi }
+            limits: { memory: 1Gi }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: minio-data }
+---
+# Creates the bucket and opens read access to it.
+#
+# A Job rather than manual setup so a rebuilt cluster comes up working. Every
+# step is idempotent, because ArgoCD re-runs this whenever the manifest changes.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init
+  namespace: eesoc
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    # Re-run on every sync; without this the Job is immutable and a changed
+    # manifest fails to apply.
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: minio/mc:RELEASE.2024-10-08T09-37-26Z
+          env:
+            - name: KEY
+              valueFrom: { secretKeyRef: { name: eesoc-secrets, key: S3_ACCESS_KEY_ID } }
+            - name: SECRET
+              valueFrom: { secretKeyRef: { name: eesoc-secrets, key: S3_SECRET_ACCESS_KEY } }
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              # The Job may start before MinIO is serving.
+              until mc alias set local http://minio:9000 "$KEY" "$SECRET" 2>/dev/null; do
+                echo "waiting for minio..."; sleep 3
+              done
+              mc mb --ignore-existing local/eesoc-media
+              # Public read on the bucket. These are event posters, committee
+              # photos and sponsor logos — meant to be fetched by any browser.
+              # Nothing private is ever written here.
+              mc anonymous set download local/eesoc-media
+              echo "bucket ready"

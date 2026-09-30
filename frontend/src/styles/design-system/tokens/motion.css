@@ -1,0 +1,14 @@
+:root{
+/* Motion is switch-like: short, linear-ish, no bounce, no spring. Things toggle, they don't float. */
+--duration-instant:80ms;/* @kind other */
+--duration-fast:120ms;/* @kind other */
+--duration-normal:180ms;/* @kind other */
+--duration-slow:280ms;/* @kind other */
+--duration-slower:600ms;/* @kind other */
+--ease-standard:cubic-bezier(.2,0,.2,1);/* @kind other */
+--ease-out:cubic-bezier(0,0,.2,1);/* @kind other */
+--ease-in:cubic-bezier(.4,0,1,1);/* @kind other */
+--ease-step:steps(6,end);/* @kind other */ /* terminal/CRT feel: type-on, blink, scan */
+--transition-control:background-color var(--duration-fast) var(--ease-standard),color var(--duration-fast) var(--ease-standard),border-color var(--duration-fast) var(--ease-standard),box-shadow var(--duration-fast) var(--ease-standard),transform var(--duration-fast) var(--ease-standard);
+--press-translate:1px; /* buttons move down-right into their offset shadow */
+}

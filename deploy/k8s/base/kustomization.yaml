@@ -1,0 +1,31 @@
+# Base manifests. Environment-specific values live in the overlays; ArgoCD
+# points at an overlay, never at this directory directly.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - postgres.yaml
+  - minio.yaml
+  - database.yaml
+  - union.yaml
+  - api.yaml
+  - frontend.yaml
+  - ingress.yaml
+  - networkpolicy.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: eesoc-website
+
+# Image tags are patched by CI (kustomize edit set image), which is what makes
+# the GitOps loop work: the workflow commits a new tag and ArgoCD syncs it.
+images:
+  - name: ghcr.io/OWNER/eesoc-api
+    newTag: latest
+  - name: ghcr.io/OWNER/eesoc-database
+    newTag: latest
+  - name: ghcr.io/OWNER/eesoc-union
+    newTag: latest
+  - name: ghcr.io/OWNER/eesoc-frontend
+    newTag: latest

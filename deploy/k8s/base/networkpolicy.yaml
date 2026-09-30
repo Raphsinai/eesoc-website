@@ -1,0 +1,59 @@
+# Only the api may reach the adapter and the bridge, and only the adapter may
+# reach Postgres. Without this, any compromised pod in the namespace could talk
+# straight to the unauthenticated SQL adapter.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: database-ingress, namespace: eesoc }
+spec:
+  podSelector: { matchLabels: { app: database } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: api } } }]
+      ports: [{ port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: union-ingress, namespace: eesoc }
+spec:
+  podSelector: { matchLabels: { app: union } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: api } } }]
+      ports: [{ port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: postgres-ingress, namespace: eesoc }
+spec:
+  # CNPG labels its pods with the cluster name, not `app: postgres`.
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: eesoc-db
+  policyTypes: [Ingress]
+  ingress:
+    # The adapter is the only client...
+    - from: [{ podSelector: { matchLabels: { app: database } } }]
+      ports: [{ port: 5432 }]
+    # ...plus the operator and the instances themselves, for replication and
+    # failover. Omitting this breaks streaming replication.
+    - from:
+        - podSelector: { matchLabels: { cnpg.io/cluster: eesoc-db } }
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: cnpg-system }
+      ports: [{ port: 5432 }, { port: 8000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: minio-ingress, namespace: eesoc }
+spec:
+  podSelector: { matchLabels: { app: minio } }
+  policyTypes: [Ingress]
+  ingress:
+    # The api writes objects; the ingress controller serves them to browsers.
+    # Naming the controller's namespace explicitly rather than allowing all
+    # traffic keeps the bucket off-limits to anything else in the cluster.
+    - from:
+        - podSelector: { matchLabels: { app: api } }
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+      ports: [{ port: 9000 }]

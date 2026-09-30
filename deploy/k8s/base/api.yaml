@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: eesoc
+  annotations:
+    # After the adapter has migrated the schema (wave 1).
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  selector: { app: api }
+  ports: [{ port: 8080, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: eesoc
+  annotations:
+    # After the adapter has migrated the schema (wave 1).
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  # Uploads no longer pin this to a node — they go to object storage — but the
+  # daily ICU sync still runs inside the process and its lock does not span pods.
+  # Move the sync to a CronJob calling POST /admin/sync before scaling up.
+  replicas: 1
+  selector: { matchLabels: { app: api } }
+  template:
+    metadata: { labels: { app: api } }
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/OWNER/eesoc-api
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: eesoc-config }
+            # S3 credentials live alongside the other secrets.
+            - secretRef:    { name: eesoc-secrets }
+          livenessProbe:
+            # /health does not touch the database on purpose — see api/main.py.
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            # /ready does check dependencies, so a pod that cannot reach the
+            # adapter leaves the load balancer instead of serving errors.
+            httpGet: { path: /ready, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits:   { memory: 512Mi }

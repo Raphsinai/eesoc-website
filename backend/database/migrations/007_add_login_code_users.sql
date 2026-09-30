@@ -1,0 +1,2 @@
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS login_code VARCHAR(6);
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS login_expiry TIMESTAMP;

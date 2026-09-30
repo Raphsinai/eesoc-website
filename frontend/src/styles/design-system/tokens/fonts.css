@@ -1,0 +1,7 @@
+/* EESoc webfonts.
+   SUBSTITUTION NOTE: no font binaries were supplied with the brand assets.
+   All three families are Google Fonts, loaded from the Google CDN.
+   Swap these @import lines for local @font-face rules if EESoc licenses its own faces. */
+@import url("https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap");

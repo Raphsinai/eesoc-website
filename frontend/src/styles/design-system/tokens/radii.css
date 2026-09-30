@@ -1,0 +1,9 @@
+:root{
+/* Chip-package geometry: generous, even radii on containers; square on data. */
+--radius-none:0;--radius-xs:2px;--radius-sm:4px;--radius-md:8px;--radius-lg:14px;--radius-xl:20px;
+--radius-chip:22px; /* the logo's DIP-package corner */
+--radius-pill:999px;
+--border-width-hairline:1px;--border-width:2px;--border-width-thick:3px;
+--trace-width:3px; /* circuit-trace rules and underlines */
+--pad-width:8px;   /* solder-pad dot diameter */
+}

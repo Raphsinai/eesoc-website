@@ -1,0 +1,12 @@
+:root{
+/* 4px base grid. Layout gutters climb in 8s. */
+--space-0:0;--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:20px;--space-6:24px;
+--space-8:32px;--space-10:40px;--space-12:48px;--space-16:64px;--space-20:80px;--space-24:96px;--space-32:128px;
+/* The pin pitch: the logo's DIP-package lead spacing, reused as a rhythm unit for
+   dashed rules, pin strips and merch repeats. */
+--pin-pitch:20px;--pin-width:8px;--pin-length:18px;
+--gutter-tight:var(--space-4);--gutter:var(--space-6);--gutter-wide:var(--space-10);
+--section-y:var(--space-24);--section-y-compact:var(--space-16);
+--container-sm:640px;--container-md:880px;--container-lg:1120px;--container-xl:1320px;
+--field-height:44px;--control-height-sm:32px;--control-height:40px;--control-height-lg:52px;
+}

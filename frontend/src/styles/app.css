@@ -1,0 +1,56 @@
+/* App-level globals. Mirrors the page <style> block from the original mockup,
+   plus a light reset and the responsive rules that make the fixed grids reflow. */
+@import url("./design-system/styles.css");
+
+/* The design system's type scale stops at h3 and has no 2xs shorthand, but the
+   admin and event pages need smaller headings and captions. Defined here rather
+   than inlined at each call site, so there is still one scale. */
+:root{
+  --type-h4:700 var(--text-lg)/var(--leading-tight) var(--font-display);
+  --type-h5:700 var(--text-base)/var(--leading-tight) var(--font-display);
+  --type-2xs:400 var(--text-2xs)/var(--leading-normal) var(--font-mono);
+  /* Alias: several views reached for a fainter rule than --border-hairline. */
+  --border-faint:var(--border-hairline);
+}
+
+*,*::before,*::after{box-sizing:border-box}
+/* Reserve the scrollbar gutter permanently. Without this, any change in page
+   height toggles the scrollbar, which changes the viewport width and shifts
+   every fixed-width column on the page — the resources sidebar visibly jumping
+   between categories, and the whole page flickering when a list grows. */
+html{scroll-behavior:smooth;scrollbar-gutter:stable}
+body{margin:0;background:var(--surface-page);color:var(--text-body)}
+#app{min-height:100vh;display:flex;flex-direction:column}
+
+a{color:var(--text-brand);text-decoration:none}
+a:hover{color:var(--blue-700);text-decoration:underline}
+
+::-webkit-scrollbar{height:8px;width:8px}
+::-webkit-scrollbar-thumb{background:var(--border-default);border-radius:999px}
+
+/* ---- Responsive: the mockup uses fixed multi-column grids; collapse them on
+   narrow viewports so the built site is usable on tablet/phone. ---- */
+@media (max-width:1080px){
+  .grid-3,.grid-4{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  .resources-layout,.lockers-layout,.portal-layout{grid-template-columns:1fr!important}
+  .resources-layout aside,.lockers-layout > div:first-child{position:static!important}
+  .hero-grid{grid-template-columns:1fr!important}
+  .footer-grid{grid-template-columns:1fr 1fr!important}
+  .portal-cols,.sponsor-detail{grid-template-columns:1fr!important}
+}
+@media (max-width:720px){
+  .grid-2,.grid-3,.grid-4{grid-template-columns:1fr!important}
+  .footer-grid{grid-template-columns:1fr!important}
+  .header-search{display:none!important}
+  /* Let the nav take the middle space and scroll horizontally so every item
+     stays reachable, while the logo and Log in button stay pinned. */
+  .site-nav{flex:1 1 auto!important;min-width:0!important;overflow-x:auto;gap:var(--space-4)!important;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .site-nav::-webkit-scrollbar{display:none}
+  .table-row,.table-head{grid-template-columns:88px minmax(0,1fr)!important}
+  .table-row .table-papers,.table-head .table-papers{display:none!important}
+  .locker-grid{grid-template-columns:repeat(3,minmax(0,1fr))!important}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.001ms!important;transition-duration:.001ms!important}
+  html{scroll-behavior:auto}
+}

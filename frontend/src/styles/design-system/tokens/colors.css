@@ -1,0 +1,65 @@
+:root{
+/* ---- Brand primitives (sampled from the EESoc logo) ---- */
+--blue-50:#EDF2FC;--blue-100:#D6E1F6;--blue-200:#A8C0EA;--blue-300:#6E93DA;--blue-400:#3A6BC9;
+--blue-500:#1E57BB;--blue-600:#1049B1;--blue-700:#0D3B8E;--blue-800:#0A2C6B;--blue-900:#071D47;
+--gold-100:#FAEEDD;--gold-200:#F5DDBC;--gold-300:#EFC994;--gold-400:#E7B570;--gold-500:#D89A46;
+--gold-600:#B87B2C;--gold-700:#8C5B1F;
+/* ---- Cool neutrals: silkscreen white through board black ---- */
+--white:#FFFFFF;--grey-50:#F7F8FA;--grey-100:#EEF0F4;--grey-200:#DDE1E8;--grey-300:#B9C0CE;
+--grey-400:#8A93A6;--grey-500:#5A6274;--ink-600:#2C3242;--ink-700:#1E2230;--ink-800:#14171F;--ink-900:#0B0D12;
+/* ---- Status ---- */
+--green-500:#2E9E5B;--green-100:#E1F3E8;--red-500:#D4453B;--red-100:#FBE6E4;--amber-500:#D89A46;--amber-100:#FAEEDD;
+
+/* ---- Semantic: surfaces ---- */
+--surface-page:var(--grey-50);
+--surface-card:var(--white);
+--surface-sunken:var(--grey-100);
+--surface-inverse:var(--ink-900);
+--surface-inverse-raised:var(--ink-800);
+--surface-brand:var(--blue-600);
+--surface-brand-subtle:var(--blue-50);
+--surface-accent-subtle:var(--gold-100);
+--surface-overlay:rgba(11,13,18,.72);
+
+/* ---- Semantic: text ---- */
+--text-strong:var(--ink-900);
+--text-body:var(--ink-700);
+--text-muted:var(--grey-500);
+--text-faint:var(--grey-400);
+--text-brand:var(--blue-600);
+--text-accent:var(--gold-700);
+--text-on-brand:var(--white);
+--text-on-inverse:var(--grey-100);
+--text-on-inverse-muted:var(--grey-400);
+
+/* ---- Semantic: lines ---- */
+--border-hairline:var(--grey-200);
+--border-default:var(--grey-300);
+--border-strong:var(--ink-900);
+--border-brand:var(--blue-600);
+--border-accent:var(--gold-400);
+--border-inverse:rgba(255,255,255,.16);
+
+/* ---- Semantic: interaction ---- */
+--action-primary:var(--blue-600);
+--action-primary-hover:var(--blue-700);
+--action-primary-press:var(--blue-800);
+--action-accent:var(--gold-400);
+--action-accent-hover:var(--gold-500);
+--focus-ring:var(--gold-400);
+
+/* ---- Semantic: status ---- */
+--status-success:var(--green-500);--status-success-bg:var(--green-100);
+--status-danger:var(--red-500);--status-danger-bg:var(--red-100);
+--status-warning:var(--amber-500);--status-warning-bg:var(--amber-100);
+--status-info:var(--blue-600);--status-info-bg:var(--blue-50);
+}
+/* Dark board scope: put class="eesoc-dark" on any container */
+.eesoc-dark{
+--surface-page:var(--ink-900);--surface-card:var(--ink-800);--surface-sunken:var(--ink-900);
+--surface-brand-subtle:rgba(16,73,177,.22);--surface-accent-subtle:rgba(231,181,112,.14);
+--text-strong:var(--white);--text-body:var(--grey-200);--text-muted:var(--grey-400);--text-faint:var(--grey-500);
+--text-brand:var(--blue-300);--text-accent:var(--gold-400);
+--border-hairline:rgba(255,255,255,.10);--border-default:rgba(255,255,255,.18);--border-strong:var(--gold-400);
+--action-primary:var(--blue-500);--action-primary-hover:var(--blue-400);--action-primary-press:var(--blue-600);
+}

@@ -1,0 +1,65 @@
+# Non-secret configuration. Secrets (ICU_API_KEY, SMTP_USER, SMTP_PASS) come from
+# a Secret named `eesoc-secrets`, which is NOT in git. Database credentials are
+# not here at all — CloudNativePG owns those — create it with sealed-secrets,
+# External Secrets or `kubectl create secret`. See deploy/README.md.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: eesoc-config
+  namespace: eesoc
+data:
+  ENVIRONMENT: "production"
+  # Hard off in production. The api refuses to start if this is true here.
+  DEV_LOGIN_ENABLED: "false"
+
+  DATABASE_ADAPTER_URL: "http://database:8080"
+  UNION_API_URL: "http://union:8080"
+  # Uploads go to object storage rather than a ReadWriteMany volume: RWX is not
+  # available on every cluster, and serving from a bucket or CDN means an image
+  # request never reaches a pod. Credentials are in eesoc-secrets.
+  MEDIA_BACKEND: "s3"
+  S3_BUCKET: "eesoc-media"
+  S3_REGION: "us-east-1" # MinIO ignores this but boto3 requires a value
+  # Where we WRITE: the in-cluster MinIO service.
+  S3_ENDPOINT_URL: "http://minio:9000"
+  # Where browsers READ. Served through our own domain by the Ingress, so there
+  # is no second hostname and no second certificate. The /media path is rewritten
+  # to the bucket, which is why the prefix below is empty — otherwise keys would
+  # come out as /media/media/...
+  S3_PREFIX: ""
+  S3_PUBLIC_BASE_URL: "https://eesoc.com/media"
+  SITE_ORIGIN: "https://eesoc.com"
+
+  # PG_* are deliberately absent: CloudNativePG generates the credentials and
+  # the database service reads them from the `eesoc-db-app` secret it creates.
+
+  ICU_CENTRE_CODE: "603"
+  ICU_CACHE_TTL: "3600"
+  ICU_MIN_INTERVAL: "2"
+
+  # The Union's sales feed refreshes overnight; pull it first thing.
+  SYNC_HOUR: "6"
+  SYNC_MINUTE: "5"
+
+  # Served over HTTPS in the cluster, so Secure cookies are required.
+  COOKIE_SECURE: "true"
+  # Imperial's shared webmaster mailbox. SMTP_PASS is in eesoc-secrets and must
+  # be updated when the account's password is reset — which Imperial forces
+  # yearly, and which silently breaks all outbound email if missed.
+  SMTP_HOST: "smtp.office365.com"
+  SMTP_PORT: "587"
+  SMTP_STARTTLS: "true"
+  SMTP_USER: "eesocweb@ic.ac.uk"
+  SMTP_FROM: "EESoc Webmaster <eesocweb@ic.ac.uk>"
+  SMTP_REPLY_TO: "eesoc@imperial.ac.uk"
+  # Codes must never be written to logs in production.
+  LOG_CODES_WHEN_UNCONFIGURED: "false"
+
+  # Features to force under maintenance, comma separated. Anything whose
+  # dependencies are missing is detected automatically — with no SMTP_PASS, for
+  # instance, sign-in and event booking take themselves offline and say so,
+  # rather than accepting bookings that can never be confirmed. This is only for
+  # breakage the process cannot detect itself.
+  # Keys: login, bookings, lockers, sponsor_portal, admin
+  MAINTENANCE_FEATURES: ""
+  MAINTENANCE_MESSAGE: ""

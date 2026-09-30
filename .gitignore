@@ -1,0 +1,36 @@
+# Secrets and local config. `*.env` covers .env, backend.env and frontend.env;
+# the committed templates end in .example so they are unaffected.
+*.env
+!*.env.example
+
+# Local Python venv
+env/
+.venv/
+.ocrvenv/
+
+# Python bytecode — 46 of these would otherwise be committed.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node / Vite
+node_modules
+dist
+dist-ssr
+.vite
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor / OS
+.DS_Store
+.idea/
+*.swp
+
+# Scratch: the scraped copy of eesoc.com used to build the resource seed.
+# The seed itself (backend/api/seed/resources_seed.json) IS committed.
+/eesoc/

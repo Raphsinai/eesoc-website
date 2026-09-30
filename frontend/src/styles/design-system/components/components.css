@@ -1,0 +1,141 @@
+/* EESoc component styles. Every rule is driven by tokens; no hard-coded colour. */
+
+/* ---------- Button ---------- */
+.ees-btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);font-family:var(--font-mono);font-weight:var(--weight-semibold);letter-spacing:var(--tracking-wide);text-transform:uppercase;border:var(--border-width) solid transparent;border-radius:var(--radius-md);cursor:pointer;text-decoration:none;white-space:nowrap;transition:var(--transition-control)}
+.ees-btn:disabled,.ees-btn[aria-disabled="true"]{opacity:.4;cursor:not-allowed;box-shadow:none;transform:none}
+.ees-btn--sm{height:var(--control-height-sm);padding:0 var(--space-3);font-size:var(--text-2xs)}
+.ees-btn--md{height:var(--control-height);padding:0 var(--space-5);font-size:var(--text-xs)}
+.ees-btn--lg{height:var(--control-height-lg);padding:0 var(--space-8);font-size:var(--text-sm)}
+.ees-btn--block{width:100%}
+.ees-btn--primary{background:var(--action-primary);color:var(--text-on-brand);border-color:var(--action-primary)}
+.ees-btn--primary:hover:not(:disabled){background:var(--action-primary-hover);border-color:var(--action-primary-hover)}
+.ees-btn--primary:active:not(:disabled){background:var(--action-primary-press);border-color:var(--action-primary-press)}
+.ees-btn--secondary{background:transparent;color:var(--text-brand);border-color:var(--border-brand)}
+.ees-btn--secondary:hover:not(:disabled){background:var(--surface-brand-subtle)}
+.ees-btn--secondary:active:not(:disabled){background:var(--blue-100)}
+.ees-btn--accent{background:var(--action-accent);color:var(--ink-900);border-color:var(--ink-900);box-shadow:var(--shadow-offset-sm)}
+.ees-btn--accent:hover:not(:disabled){background:var(--action-accent-hover)}
+.ees-btn--accent:active:not(:disabled){transform:translate(var(--press-translate),var(--press-translate));box-shadow:none}
+.ees-btn--ghost{background:transparent;color:var(--text-body);border-color:transparent}
+.ees-btn--ghost:hover:not(:disabled){background:var(--surface-sunken);color:var(--text-strong)}
+.ees-btn--danger{background:var(--status-danger);color:var(--white);border-color:var(--status-danger)}
+.ees-btn--danger:hover:not(:disabled){filter:brightness(.92)}
+
+/* ---------- IconButton ---------- */
+.ees-iconbtn{display:inline-flex;align-items:center;justify-content:center;border-radius:var(--radius-md);border:var(--border-width) solid transparent;background:transparent;color:var(--text-body);cursor:pointer;transition:var(--transition-control)}
+.ees-iconbtn--sm{width:var(--control-height-sm);height:var(--control-height-sm)}
+.ees-iconbtn--md{width:var(--control-height);height:var(--control-height)}
+.ees-iconbtn--lg{width:var(--control-height-lg);height:var(--control-height-lg)}
+.ees-iconbtn--ghost:hover{background:var(--surface-sunken);color:var(--text-strong)}
+.ees-iconbtn--outline{border-color:var(--border-default)}
+.ees-iconbtn--outline:hover{border-color:var(--border-brand);color:var(--text-brand)}
+.ees-iconbtn--solid{background:var(--action-primary);color:var(--text-on-brand)}
+.ees-iconbtn--solid:hover{background:var(--action-primary-hover)}
+.ees-iconbtn:disabled{opacity:.4;cursor:not-allowed}
+
+/* ---------- Icon ---------- */
+.ees-icon{display:inline-block;background-color:transparent;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-position:center;mask-position:center;-webkit-mask-size:contain;mask-size:contain;flex:none}
+/* Only tint once masking is known to work — otherwise the glyph would fall back to a solid block. */
+@supports ((mask-image:url("#a")) or (-webkit-mask-image:url("#a"))){.ees-icon{background-color:currentColor}}
+
+/* ---------- Card ---------- */
+.ees-card{background:var(--surface-card);border:var(--border-width-hairline) solid var(--border-hairline);border-radius:var(--radius-lg);transition:var(--transition-control)}
+.ees-card--outline{border-width:var(--border-width);border-color:var(--border-strong);border-radius:var(--radius-md)}
+.ees-card--offset{border:var(--border-width) solid var(--ink-900);border-radius:var(--radius-md);box-shadow:var(--shadow-offset)}
+.ees-card--raised{box-shadow:var(--shadow-md);border-color:transparent}
+.ees-card--interactive{cursor:pointer}
+.ees-card--interactive:hover{border-color:var(--border-brand)}
+.ees-card--offset.ees-card--interactive:hover{transform:translate(-2px,-2px);box-shadow:6px 6px 0 var(--ink-900)}
+.ees-card--offset.ees-card--interactive:active{transform:translate(2px,2px);box-shadow:var(--shadow-offset-sm)}
+.ees-card__pad{padding:var(--space-6)}
+
+/* ---------- Badge / Tag ---------- */
+.ees-badge{display:inline-flex;align-items:center;gap:var(--space-1);font-family:var(--font-mono);font-size:var(--text-2xs);font-weight:var(--weight-bold);letter-spacing:var(--tracking-label);text-transform:uppercase;padding:3px var(--space-2);border-radius:var(--radius-xs);border:var(--border-width-hairline) solid transparent}
+.ees-badge--neutral{background:var(--surface-sunken);color:var(--text-muted);border-color:var(--border-hairline)}
+.ees-badge--brand{background:var(--surface-brand-subtle);color:var(--text-brand);border-color:var(--blue-200)}
+.ees-badge--accent{background:var(--surface-accent-subtle);color:var(--text-accent);border-color:var(--gold-300)}
+.ees-badge--success{background:var(--status-success-bg);color:var(--status-success);border-color:var(--status-success)}
+.ees-badge--danger{background:var(--status-danger-bg);color:var(--status-danger);border-color:var(--status-danger)}
+.ees-badge--solid{background:var(--ink-900);color:var(--gold-400);border-color:var(--ink-900)}
+.ees-tag{display:inline-flex;align-items:center;gap:var(--space-2);font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-body);background:var(--surface-card);border:var(--border-width-hairline) solid var(--border-default);border-radius:var(--radius-pill);padding:4px var(--space-3);transition:var(--transition-control)}
+.ees-tag--selected{background:var(--surface-brand);color:var(--text-on-brand);border-color:var(--surface-brand)}
+.ees-tag--clickable{cursor:pointer}
+.ees-tag--clickable:hover{border-color:var(--border-brand);color:var(--text-brand)}
+.ees-tag--selected.ees-tag--clickable:hover{color:var(--text-on-brand);background:var(--action-primary-hover)}
+.ees-tag__x{opacity:.6;cursor:pointer;font-size:var(--text-sm);line-height:1}
+.ees-tag__x:hover{opacity:1}
+
+/* ---------- Tabs ---------- */
+.ees-tabs{display:flex;gap:var(--space-6);border-bottom:var(--border-width-hairline) solid var(--border-hairline)}
+.ees-tab{appearance:none;background:none;border:none;padding:0 0 var(--space-3);margin-bottom:-1px;font-family:var(--font-mono);font-size:var(--text-xs);font-weight:var(--weight-semibold);letter-spacing:var(--tracking-label);text-transform:uppercase;color:var(--text-muted);cursor:pointer;border-bottom:var(--trace-width) solid transparent;transition:var(--transition-control)}
+.ees-tab:hover{color:var(--text-strong)}
+.ees-tab[aria-selected="true"]{color:var(--text-strong);border-bottom-color:var(--gold-400)}
+
+/* ---------- Form fields ---------- */
+.ees-field{display:flex;flex-direction:column;gap:var(--space-2)}
+.ees-label{font-family:var(--font-mono);font-size:var(--text-2xs);font-weight:var(--weight-bold);letter-spacing:var(--tracking-label);text-transform:uppercase;color:var(--text-muted)}
+.ees-help{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-faint)}
+.ees-help--error{color:var(--status-danger)}
+.ees-input,.ees-select,.ees-textarea{width:100%;font-family:var(--font-mono);font-size:var(--text-sm);color:var(--text-strong);background:var(--surface-card);border:var(--border-width-hairline) solid var(--border-default);border-radius:var(--radius-sm);padding:0 var(--space-3);height:var(--field-height);transition:var(--transition-control)}
+.ees-textarea{height:auto;padding:var(--space-3);line-height:var(--leading-normal);resize:vertical}
+.ees-input::placeholder,.ees-textarea::placeholder{color:var(--text-faint)}
+.ees-input:hover,.ees-select:hover,.ees-textarea:hover{border-color:var(--grey-400)}
+.ees-input:focus,.ees-select:focus,.ees-textarea:focus{outline:none;border-color:var(--border-brand);box-shadow:var(--ring-brand)}
+.ees-input[aria-invalid="true"],.ees-textarea[aria-invalid="true"]{border-color:var(--status-danger)}
+.ees-input:disabled,.ees-select:disabled,.ees-textarea:disabled{background:var(--surface-sunken);color:var(--text-faint);cursor:not-allowed}
+.ees-select{appearance:none;padding-right:var(--space-8);cursor:pointer;background-image:linear-gradient(45deg,transparent 50%,var(--text-muted) 50%),linear-gradient(135deg,var(--text-muted) 50%,transparent 50%);background-position:calc(100% - 18px) 50%,calc(100% - 12px) 50%;background-size:6px 6px,6px 6px;background-repeat:no-repeat}
+.ees-check{display:inline-flex;align-items:flex-start;gap:var(--space-3);font-family:var(--font-mono);font-size:var(--text-sm);color:var(--text-body);cursor:pointer}
+.ees-check input{appearance:none;margin:0;flex:none;width:20px;height:20px;border:var(--border-width) solid var(--border-default);background:var(--surface-card);cursor:pointer;transition:var(--transition-control);display:grid;place-content:center}
+.ees-check--box input{border-radius:var(--radius-xs)}
+.ees-check--radio input{border-radius:var(--radius-pill)}
+.ees-check input:hover{border-color:var(--border-brand)}
+.ees-check input:checked{background:var(--action-primary);border-color:var(--action-primary)}
+.ees-check--box input:checked::after{content:"";width:10px;height:6px;border-left:2px solid var(--white);border-bottom:2px solid var(--white);transform:rotate(-45deg) translate(1px,-1px)}
+.ees-check--radio input:checked::after{content:"";width:8px;height:8px;border-radius:var(--radius-pill);background:var(--white)}
+.ees-check input:disabled{opacity:.4;cursor:not-allowed}
+.ees-switch{display:inline-flex;align-items:center;gap:var(--space-3);font-family:var(--font-mono);font-size:var(--text-sm);color:var(--text-body);cursor:pointer}
+.ees-switch__track{position:relative;width:44px;height:24px;border-radius:var(--radius-pill);background:var(--grey-300);border:var(--border-width) solid transparent;transition:var(--transition-control);flex:none}
+.ees-switch__knob{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:var(--radius-pill);background:var(--white);transition:transform var(--duration-fast) var(--ease-standard)}
+.ees-switch input{position:absolute;opacity:0;width:0;height:0}
+.ees-switch input:checked+.ees-switch__track{background:var(--action-primary)}
+.ees-switch input:checked+.ees-switch__track .ees-switch__knob{transform:translateX(20px)}
+.ees-switch input:focus-visible+.ees-switch__track{box-shadow:var(--ring-focus)}
+
+/* ---------- Dialog ---------- */
+.ees-dialog__scrim{position:fixed;inset:0;background:var(--surface-overlay);backdrop-filter:var(--blur-overlay);display:grid;place-items:center;padding:var(--space-6);z-index:50}
+.ees-dialog{width:100%;max-width:520px;background:var(--surface-card);border:var(--border-width) solid var(--ink-900);border-radius:var(--radius-md);box-shadow:var(--shadow-modal)}
+.ees-dialog__head{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);padding:var(--space-5) var(--space-6);border-bottom:var(--border-width-hairline) solid var(--border-hairline)}
+.ees-dialog__title{font:var(--type-h3);letter-spacing:var(--tracking-heading);color:var(--text-strong);margin:0}
+.ees-dialog__body{padding:var(--space-6);font:var(--type-small);color:var(--text-body)}
+.ees-dialog__foot{display:flex;justify-content:flex-end;gap:var(--space-3);padding:var(--space-4) var(--space-6) var(--space-6)}
+
+/* ---------- Tooltip ---------- */
+.ees-tooltip{position:relative;display:inline-flex}
+.ees-tooltip__bubble{position:absolute;z-index:40;background:var(--ink-900);color:var(--gold-400);font-family:var(--font-mono);font-size:var(--text-2xs);letter-spacing:var(--tracking-wide);padding:var(--space-2) var(--space-3);border-radius:var(--radius-xs);white-space:nowrap;pointer-events:none;opacity:0;transition:opacity var(--duration-fast) var(--ease-standard)}
+.ees-tooltip:hover .ees-tooltip__bubble,.ees-tooltip:focus-within .ees-tooltip__bubble{opacity:1}
+
+/* ---------- Brand furniture ---------- */
+.ees-pinstrip{display:block;height:var(--pin-length);background:var(--bg-pins);background-size:var(--pin-pitch) 100%}
+.ees-trace{display:flex;align-items:center;gap:0;color:var(--blue-600)}
+.ees-trace__line{flex:1;height:var(--trace-width);background:currentColor}
+.ees-trace__pad{width:14px;height:14px;border-radius:var(--radius-pill);border:var(--trace-width) solid currentColor;background:var(--surface-page);flex:none}
+.ees-chip{position:relative;border:var(--border-width-thick) solid var(--blue-600);border-radius:var(--radius-chip);background:var(--surface-card);color:var(--text-brand)}
+.ees-chip__pins{position:absolute;left:8%;right:8%;height:var(--pin-length);background:var(--bg-pins);background-size:var(--pin-pitch) 100%}
+.ees-chip__pins--top{bottom:100%}
+.ees-chip__pins--bottom{top:100%}
+.ees-eventcard__meta{display:flex;flex-wrap:wrap;gap:var(--space-2) var(--space-4);font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-muted)}
+.ees-tier{display:flex;flex-direction:column;gap:var(--space-4);padding:var(--space-6);border:var(--border-width) solid var(--border-hairline);border-radius:var(--radius-md);background:var(--surface-card)}
+.ees-tier--featured{border-color:var(--ink-900);box-shadow:var(--shadow-offset-accent)}
+.ees-stat__value{font:var(--type-h1);font-size:var(--text-3xl);letter-spacing:var(--tracking-display);color:var(--text-strong)}
+.ees-stat__label{font-family:var(--font-mono);font-size:var(--text-2xs);font-weight:var(--weight-bold);letter-spacing:var(--tracking-label);text-transform:uppercase;color:var(--text-muted)}
+
+/* ---------- Maintenance notice ---------- */
+/* Replaces a control that cannot work. Warning rather than danger: nothing has
+   gone wrong for the member, and red would read as their mistake. */
+.ees-maint{display:flex;gap:var(--space-3);align-items:flex-start;padding:var(--space-4);background:var(--status-warning-bg);border:var(--border-width-hairline) solid var(--status-warning);border-radius:var(--radius-md);color:var(--text-body)}
+.ees-maint--inline{padding:var(--space-2) var(--space-3);font-size:var(--text-xs)}
+.ees-maint__icon{display:flex;flex-shrink:0;margin-top:1px;color:var(--status-warning)}
+.ees-maint__body{min-width:0}
+.ees-maint__title{margin:0 0 var(--space-1);font-weight:var(--weight-bold);font-size:var(--text-sm)}
+/* Long reasons wrap instead of stretching a card on a phone. */
+.ees-maint__text{margin:0;color:var(--text-muted);overflow-wrap:anywhere}

@@ -1,0 +1,52 @@
+# ArgoCD watches the production overlay.
+#
+# CI never runs kubectl — it commits an image tag and Argo reconciles, so the
+# repository is the only statement of what is deployed and a rollback is
+# `git revert`.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: eesoc-website
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/OWNER/eesoc-website.git
+    targetRevision: main
+    path: deploy/k8s/overlays/production
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: eesoc
+  syncPolicy:
+    automated:
+      prune: true # a resource deleted from git is deleted from the cluster
+      selfHeal: true # manual kubectl edits get reverted
+    syncOptions:
+      - CreateNamespace=true
+      # PVCs are pruned last, so a manifest change cannot delete the media
+      # volume before its replacement exists.
+      - PruneLast=true
+      # Honour the ignoreDifferences below during sync, not just in the diff
+      # view — otherwise selfHeal reverts the operator's own writes to the
+      # Cluster resource.
+      - RespectIgnoreDifferences=true
+      # Ordering comes from argocd.argoproj.io/sync-wave annotations on the
+      # resources themselves: CNPG Cluster (-1), adapter migrations (1), api (2).
+    retry:
+      limit: 3
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 3m
+  ignoreDifferences:
+    # CloudNativePG writes extensively to its own Cluster resource — status,
+    # instance names, the current primary. All of it would read as permanent
+    # drift and, with selfHeal on, Argo would fight the operator over it.
+    - group: postgresql.cnpg.io
+      kind: Cluster
+      name: eesoc-db
+      jsonPointers:
+        - /status
+        - /spec/instances # the operator adjusts this during failover

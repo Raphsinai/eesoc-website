@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!-- Title and description carried over from eesoc.com. The site pattern
+         there is "<Page> | EESoc - Imperial College London"; per-route titles
+         are set by src/seo.js on navigation. -->
+    <title>EESoc - Imperial College London</title>
+    <meta
+      name="description"
+      content="Welcome to Imperial's Electrical Engineering society! Here you can find upcoming events, our latest sponsors, and resources to assist with your studies."
+    />
+
+    <link rel="canonical" href="https://eesoc.com/" />
+    <link rel="icon" type="image/svg+xml" href="/assets/logo-wordmark-pins.svg" />
+    <link rel="apple-touch-icon" href="/assets/logo-wordmark-pins.svg" />
+
+    <!-- eesoc.com carries VuePress' default #3eaf7c, which is not an EESoc
+         colour. Using the design system's brand value instead. -->
+    <meta name="theme-color" content="#0b3d91" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+
+    <!-- Absent from eesoc.com entirely, so a shared link renders as a bare URL
+         with no title, description or image. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="EESoc" />
+    <meta property="og:locale" content="en_GB" />
+    <meta property="og:title" content="EESoc - Imperial College London" />
+    <meta
+      property="og:description"
+      content="Welcome to Imperial's Electrical Engineering society! Here you can find upcoming events, our latest sponsors, and resources to assist with your studies."
+    />
+    <meta property="og:url" content="https://eesoc.com/" />
+    <meta property="og:image" content="https://eesoc.com/assets/og-card.png" />
+    <meta property="og:image:alt" content="EESoc — Imperial College Electrical Engineering Society" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="EESoc - Imperial College London" />
+    <meta
+      name="twitter:description"
+      content="Welcome to Imperial's Electrical Engineering society! Here you can find upcoming events, our latest sponsors, and resources to assist with your studies."
+    />
+    <meta name="twitter:image" content="https://eesoc.com/assets/og-card.png" />
+
+    <!-- Tells Google this is a student society at Imperial rather than a
+         company, which is what drives the knowledge-panel style result. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Organization",
+        "name": "EESoc",
+        "alternateName": "Imperial College Electrical Engineering Society",
+        "url": "https://eesoc.com/",
+        "logo": "https://eesoc.com/assets/logo-wordmark-pins.svg",
+        "description": "The Electrical & Electronic and Electronic & Information Engineering society at Imperial College London.",
+        "parentOrganization": {
+          "@type": "CollegeOrUniversity",
+          "name": "Imperial College London",
+          "url": "https://www.imperial.ac.uk/"
+        },
+        "address": {
+          "@type": "PostalAddress",
+          "streetAddress": "Department of Electrical and Electronic Engineering, South Kensington Campus",
+          "addressLocality": "London",
+          "postalCode": "SW7 2AZ",
+          "addressCountry": "GB"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

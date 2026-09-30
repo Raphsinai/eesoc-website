@@ -1,0 +1,7 @@
+/* Minimal element defaults. Consumers may override freely. */
+body{background:var(--surface-page);color:var(--text-body);font:var(--type-body);-webkit-font-smoothing:antialiased}
+a{color:var(--text-brand);text-decoration-color:var(--gold-400);text-underline-offset:3px;transition:color var(--duration-fast) var(--ease-standard)}
+a:hover{color:var(--blue-800);text-decoration-color:var(--blue-800)}
+.eesoc-dark a{color:var(--blue-300)}.eesoc-dark a:hover{color:var(--gold-400)}
+::selection{background:var(--gold-300);color:var(--ink-900)}
+:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}

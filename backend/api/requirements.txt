@@ -1,0 +1,10 @@
+# `standard` brings fastapi-cli (for `fastapi run`), uvicorn, and
+# email-validator (required by pydantic's EmailStr).
+fastapi[standard]==0.141.1
+httpx==0.28.1
+# S3-compatible object storage for uploads (MinIO, R2, S3, Spaces).
+# Imported lazily, so the local dev backend never loads it.
+boto3==1.35.36
+# Resize and re-encode uploaded images. The old site served originals and
+# the handover reports it was 'extremely slow, especially on mobile'.
+Pillow==11.0.0

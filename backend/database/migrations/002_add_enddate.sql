@@ -1,0 +1,1 @@
+ALTER TABLE public.committee_members ADD COLUMN IF NOT EXISTS EndDate TIMESTAMP;

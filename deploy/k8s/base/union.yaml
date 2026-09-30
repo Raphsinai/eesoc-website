@@ -1,0 +1,36 @@
+# ICU bridge.
+#
+# Deliberately ONE replica. The upstream rate limit is per source IP and bans
+# the whole society on breach; the in-process cache and minimum-interval
+# throttle only bound request rate if there is a single instance holding them.
+apiVersion: v1
+kind: Service
+metadata: { name: union, namespace: eesoc }
+spec:
+  selector: { app: union }
+  ports: [{ port: 8080, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: union, namespace: eesoc }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }   # never two at once, even mid-rollout
+  selector: { matchLabels: { app: union } }
+  template:
+    metadata: { labels: { app: union } }
+    spec:
+      containers:
+        - name: union
+          image: ghcr.io/OWNER/eesoc-union
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: eesoc-config }
+            - secretRef:    { name: eesoc-secrets }
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests: { cpu: 25m, memory: 96Mi }
+            limits:   { memory: 256Mi }

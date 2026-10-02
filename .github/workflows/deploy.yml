@@ -47,10 +47,26 @@ jobs:
       # a confusing 500 much later.
       - name: Assert migrations applied
         run: |
-          COUNT=$(docker compose exec -T postgres \
-            psql -U eesoc -d eesoc -tAc "SELECT COUNT(*) FROM migrations;")
-          echo "migrations applied: $COUNT"
-          test "$COUNT" -ge 16
+          # Every migration in the directory must be recorded — not a hardcoded
+          # minimum, which silently stops testing anything the moment a
+          # migration is added.
+          #
+          # Polled, because /health answering says the *api* is up while the
+          # database service may still be applying. A single check here caught
+          # 14 of 26 and failed a run for no reason.
+          EXPECTED=$(ls backend/database/migrations/*.sql | wc -l | tr -d ' ')
+          for i in $(seq 1 40); do
+            COUNT=$(docker compose exec -T postgres \
+              psql -U eesoc -d eesoc -tAc "SELECT COUNT(*) FROM migrations;" \
+              2>/dev/null | tr -d ' \r' || echo 0)
+            [ -z "$COUNT" ] && COUNT=0
+            echo "migrations applied: $COUNT / $EXPECTED"
+            [ "$COUNT" -ge "$EXPECTED" ] && exit 0
+            sleep 3
+          done
+          echo "::error::only $COUNT of $EXPECTED migrations applied"
+          docker compose logs database --tail 60
+          exit 1
 
       - name: Wait for resource seeding
         run: |

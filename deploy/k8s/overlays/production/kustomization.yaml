@@ -3,3 +3,41 @@ kind: Kustomization
 namespace: eesoc
 resources:
   - ../../base
+
+# Single-node cluster. A second replica of anything lands on the same node as
+# the first, so it buys no availability — it only consumes one of the kubelet's
+# 110 pod slots, which is the binding constraint here, not CPU or memory.
+#
+# The base keeps the multi-replica defaults: on a cluster with more than one
+# node they are correct, and this overlay is the right place to say "not here".
+replicas:
+  - name: frontend
+    count: 1
+  - name: database
+    count: 1
+
+patches:
+  # Same reasoning for Postgres: two CNPG instances on one node protect against
+  # a pod failure but not a node failure, which is the one that actually ends
+  # the site. Restore this to 2 the moment there is a second node — it is what
+  # makes failover real.
+  - target: { group: postgresql.cnpg.io, kind: Cluster, name: eesoc-db }
+    patch: |
+      - op: replace
+        path: /spec/instances
+        value: 1
+
+  # MinIO's images are no longer pullable from Docker Hub — the repository is
+  # gone ("object not found" from the Hub API, and the node reports
+  # insufficient_scope). quay.io is where MinIO publishes, and is what the
+  # cluster's existing MinIO in the outline namespace has run on for 180 days.
+  - target: { kind: Deployment, name: minio }
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/image
+        value: quay.io/minio/minio:latest
+  - target: { kind: Job, name: minio-init }
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/image
+        value: quay.io/minio/mc:latest

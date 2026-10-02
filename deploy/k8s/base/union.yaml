@@ -20,6 +20,10 @@ spec:
   template:
     metadata: { labels: { app: union } }
     spec:
+      # The repository is private, so its GHCR images are too. `ghcr-pull` is a
+      # docker-registry secret in this namespace and is NOT in git.
+      imagePullSecrets:
+        - name: ghcr-pull
       containers:
         - name: union
           image: ghcr.io/OWNER/eesoc-union

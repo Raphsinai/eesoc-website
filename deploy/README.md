@@ -75,6 +75,19 @@ those is the last: **Exchange Online disables SMTP AUTH per-mailbox by default**
 and no password change fixes it — Imperial IT has to enable Authenticated SMTP
 on `eesocweb@ic.ac.uk`. The checker names that case specifically.
 
+A **private repository publishes private images**, so the cluster also needs a
+registry credential. The four deployments reference `ghcr-pull`:
+
+```bash
+kubectl -n eesoc create secret docker-registry ghcr-pull \
+  --docker-server=ghcr.io \
+  --docker-username=<github-user> \
+  --docker-password=<token with read:packages>
+```
+
+Without it every pod sits in `ImagePullBackOff` with `denied`, which reads like
+a missing image rather than a missing credential.
+
 `ICU_API_KEY` comes from eActivities. Check which key belongs to EESoc before
 using it — the one currently in `backend.env` matches neither key seen in the
 HTTPie screenshots, and repeated auth failures get the cluster's IP **banned for

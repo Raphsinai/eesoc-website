@@ -35,10 +35,10 @@ services:
       api:
         condition: service_started
 
-volumes:
-  media:
-    name: eesoc-website_media
-    external: false
+# `media` is NOT redeclared here. It is defined in backend/compose.yaml, and
+# Compose rejects the same volume in both an including and an included file
+# ("volumes.media conflicts with imported resource"). Services in this file can
+# still mount it — include merges the two into one project.
 
 include:
   - backend/compose.yaml

@@ -26,18 +26,3 @@ patches:
       - op: replace
         path: /spec/instances
         value: 1
-
-  # MinIO's images are no longer pullable from Docker Hub — the repository is
-  # gone ("object not found" from the Hub API, and the node reports
-  # insufficient_scope). quay.io is where MinIO publishes, and is what the
-  # cluster's existing MinIO in the outline namespace has run on for 180 days.
-  - target: { kind: Deployment, name: minio }
-    patch: |
-      - op: replace
-        path: /spec/template/spec/containers/0/image
-        value: quay.io/minio/minio:latest
-  - target: { kind: Job, name: minio-init }
-    patch: |
-      - op: replace
-        path: /spec/template/spec/containers/0/image
-        value: quay.io/minio/mc:latest

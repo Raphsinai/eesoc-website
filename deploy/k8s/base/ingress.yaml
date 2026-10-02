@@ -60,9 +60,11 @@ metadata:
   name: eesoc-media
   namespace: eesoc
   annotations:
-    # $1 is the capture group below: /media/ab/cd.png -> /eesoc-media/ab/cd.png
-    nginx.ingress.kubernetes.io/rewrite-target: /eesoc-media/$1
-    nginx.ingress.kubernetes.io/upstream-vhost: minio:9000
+    # Garage serves anonymous reads from its web endpoint, choosing the
+    # bucket from the Host header against root_domain (.web.garage). So the
+    # path loses the /media prefix and the bucket arrives as the vhost.
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    nginx.ingress.kubernetes.io/upstream-vhost: eesoc-media.web.garage
     # Objects are immutable (random keys, never reused), so let them cache hard.
     nginx.ingress.kubernetes.io/configuration-snippet: |
       add_header Cache-Control "public, max-age=31536000, immutable" always;
@@ -77,9 +79,9 @@ spec:
             pathType: ImplementationSpecific
             backend:
               service:
-                name: minio
+                name: garage
                 port:
-                  number: 9000
+                  number: 3902
     - host: www.eesoc.com
       http:
         paths:
@@ -87,6 +89,6 @@ spec:
             pathType: ImplementationSpecific
             backend:
               service:
-                name: minio
+                name: garage
                 port:
-                  number: 9000
+                  number: 3902

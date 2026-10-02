@@ -93,44 +93,72 @@ using it — the one currently in `backend.env` matches neither key seen in the
 HTTPie screenshots, and repeated auth failures get the cluster's IP **banned for
 an hour**.
 
-### 2. Uploads (self-hosted MinIO)
+### 2. Uploads (self-hosted Garage)
 
-Committee photos, event images, sponsor logos and PDFs go to a MinIO instance in
-the cluster (`deploy/k8s/base/minio.yaml`) — no external provider. There is **no
-ReadWriteMany volume**: the earlier design shared one between the api (writing)
-and nginx (reading), which needs an RWX StorageClass many clusters lack. MinIO
-owns a plain ReadWriteOnce volume because it is the only writer.
+Committee photos, event images, sponsor logos and PDFs go to a
+[Garage](https://garagehq.deuxfleurs.fr/) instance in the cluster
+(`deploy/k8s/base/garage.yaml`) — no external provider.
+
+**This was MinIO until MinIO stopped publishing community images.** Docker Hub
+now reports the `minio/minio` *repository* as `object not found`, and quay.io
+answers `401 Unauthorized` on an anonymous pull. Anything still running MinIO is
+running on a layer cached on its node and will not survive a reschedule — worth
+checking if you have other MinIO deployments. Garage is S3-compatible and
+actively published, and nothing in the application changed: `storage.py` already
+spoke S3.
 
 Browsers read objects through the site's own domain, so there is no second
 hostname and no second certificate:
 
 ```
-GET https://eesoc.com/media/ab/cd.png
+GET https://eesoc.com/media/ab/cd.webp
       │
       ├─ edge nginx (VM, terminates TLS)
-      ├─ cluster ingress  ── rewrite /media/(.*) -> /eesoc-media/$1
-      └─ minio:9000       ── serves the object
+      ├─ cluster ingress  ── strips /media, sets Host: eesoc-media.web.garage
+      └─ garage :3902     ── serves the object anonymously
 ```
 
-A `minio-init` Job creates the bucket and sets public read on it. Every step is
-idempotent, so a rebuilt cluster comes up working and ArgoCD can re-run it.
+**Two ports, deliberately.** Garage has no public-read ACL on its S3 API the way
+MinIO did. Unauthenticated reads are served by a separate *web* endpoint (3902),
+which cannot write; the S3 API (3900) always requires credentials and is
+reachable only from the api pod. That split is enforced twice — by Garage, and
+by the NetworkPolicy. Verified: an anonymous S3-API read is refused while the
+same object fetches fine over the web endpoint.
+
+The bucket is chosen from the `Host` header against `root_domain`, which is why
+the Ingress sets `upstream-vhost: eesoc-media.web.garage` rather than putting the
+bucket in the path.
+
+**Initialisation runs as a sidecar, not a Job.** The Garage CLI authenticates
+with a node key stored in the metadata directory, so it must share the pod's
+volume; a Job would have to fight over a ReadWriteOnce volume. It also costs no
+extra pod, which matters on a node at its pod limit. The script is idempotent —
+verified by running it twice against an initialised cluster, where every step
+reports "already" and changes nothing.
+
+Credentials are **imported**, not generated: `S3_ACCESS_KEY_ID` and
+`S3_SECRET_ACCESS_KEY` in `eesoc-secrets` are the source of truth, so a rebuilt
+cluster picks the same key up instead of minting one that then has to be copied
+back into Kubernetes by hand. Garage requires a specific shape:
+
+```
+S3_ACCESS_KEY_ID      GK + 24 hex characters   (openssl rand -hex 12)
+S3_SECRET_ACCESS_KEY  64 hex characters        (openssl rand -hex 32)
+GARAGE_RPC_SECRET     64 hex characters        (openssl rand -hex 32)
+```
+
+`garage key import` rejects anything else. The import step's output is sent to
+`/dev/null` because it echoes the secret back, and that would otherwise sit in
+the pod log for anyone with read access.
 
 Public read is deliberate — these are event posters and sponsor logos, meant for
 any browser. **Nothing private is ever written here.** Objects use random keys
 that are never reused, which is what makes the one-year immutable cache header
 safe.
 
-Credentials: MinIO's root user is the same pair the api authenticates with
-(`S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` in `eesoc-secrets`), so there is one
-pair to manage rather than two that can drift.
-
-> MinIO runs as a single replica with `strategy: Recreate` — two pods cannot hold
-> the same ReadWriteOnce volume, and a rolling update would deadlock. Uploads are
-> briefly unavailable during a restart. Distributed MinIO (4+ replicas) is the
-> answer if that ever matters.
-
-Verified end to end: an upload lands in the bucket, `GET /media/<key>` returns
-`200 image/png` through the rewrite, and deleting the record removes the object.
+> Garage runs as a single replica with `strategy: Recreate` — two pods cannot
+> hold the same ReadWriteOnce volume, and a rolling update would deadlock.
+> Uploads are briefly unavailable during a restart.
 
 ### 2a. TLS and the edge proxy
 

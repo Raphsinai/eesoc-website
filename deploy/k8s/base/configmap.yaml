@@ -19,9 +19,9 @@ data:
   # request never reaches a pod. Credentials are in eesoc-secrets.
   MEDIA_BACKEND: "s3"
   S3_BUCKET: "eesoc-media"
-  S3_REGION: "us-east-1" # MinIO ignores this but boto3 requires a value
-  # Where we WRITE: the in-cluster MinIO service.
-  S3_ENDPOINT_URL: "http://minio:9000"
+  S3_REGION: "garage" # must match s3_region in garage.toml
+  # Where we WRITE: the in-cluster Garage S3 API.
+  S3_ENDPOINT_URL: "http://garage:3900"
   # Where browsers READ. Served through our own domain by the Ingress, so there
   # is no second hostname and no second certificate. The /media path is rewritten
   # to the bucket, which is why the prefix below is empty — otherwise keys would

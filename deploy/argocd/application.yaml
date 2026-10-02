@@ -13,7 +13,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/OWNER/eesoc-website.git
+    repoURL: https://github.com/Raphsinai/eesoc-website.git
     targetRevision: main
     path: deploy/k8s/overlays/production
   destination:

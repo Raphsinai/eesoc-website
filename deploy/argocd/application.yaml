@@ -13,7 +13,10 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/Raphsinai/eesoc-website.git
+    # SSH, matching the read-only deploy key registered in argocd as the
+    # `eesoc-website-repo` secret. HTTPS would need a token with repo scope;
+    # a deploy key is scoped to this one repository and cannot write.
+    repoURL: git@github.com:Raphsinai/eesoc-website.git
     targetRevision: main
     path: deploy/k8s/overlays/production
   destination:

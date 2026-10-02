@@ -21,17 +21,18 @@ commonLabels:
 # Image tags are patched by CI (kustomize edit set image), which is what makes
 # the GitOps loop work: the workflow commits a new tag and ArgoCD syncs it.
 images:
-- name: ghcr.io/OWNER/eesoc-garage-init
-  newTag: latest
 - name: ghcr.io/OWNER/eesoc-api
   newName: ghcr.io/raphsinai/eesoc-api
-  newTag: a20508846cddd0e904e3112fc161f8d58884c9d4
+  newTag: 3e997b932cc3dc5cbc57f627ae16fccc6426a03b
 - name: ghcr.io/OWNER/eesoc-database
   newName: ghcr.io/raphsinai/eesoc-database
-  newTag: a20508846cddd0e904e3112fc161f8d58884c9d4
+  newTag: 3e997b932cc3dc5cbc57f627ae16fccc6426a03b
 - name: ghcr.io/OWNER/eesoc-frontend
   newName: ghcr.io/raphsinai/eesoc-frontend
-  newTag: a20508846cddd0e904e3112fc161f8d58884c9d4
+  newTag: 3e997b932cc3dc5cbc57f627ae16fccc6426a03b
+- name: ghcr.io/OWNER/eesoc-garage-init
+  newName: ghcr.io/raphsinai/eesoc-garage-init
+  newTag: 3e997b932cc3dc5cbc57f627ae16fccc6426a03b
 - name: ghcr.io/OWNER/eesoc-union
   newName: ghcr.io/raphsinai/eesoc-union
-  newTag: a20508846cddd0e904e3112fc161f8d58884c9d4
+  newTag: 3e997b932cc3dc5cbc57f627ae16fccc6426a03b

@@ -13,6 +13,10 @@ on:
 
 env:
   REGISTRY: ghcr.io
+  # Deliberately NOT ${{ github.repository_owner }} directly: a Docker
+  # repository name must be lowercase, and a GitHub username keeps whatever
+  # case it was registered with ("Raphsinai"), which buildx rejects outright.
+  # Expressions have no lowercase function, so each job derives it in a step.
   OWNER: ${{ github.repository_owner }}
 
 jobs:
@@ -101,6 +105,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Lowercase the owner for the registry
+        run: echo "OWNER_LC=${OWNER,,}" >> "$GITHUB_ENV"
+
       - uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
@@ -109,8 +116,8 @@ jobs:
           # a moving tag makes it impossible to say what is running, and breaks
           # rollback.
           tags: |
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/eesoc-${{ matrix.name }}:${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/eesoc-${{ matrix.name }}:latest
+            ${{ env.REGISTRY }}/${{ env.OWNER_LC }}/eesoc-${{ matrix.name }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.OWNER_LC }}/eesoc-${{ matrix.name }}:latest
           build-args: |
             VITE_API_BASE=/api
             VITE_SITE_ORIGIN=https://eesoc.com
@@ -134,12 +141,15 @@ jobs:
           sudo mv kustomize /usr/local/bin/
           rm kustomize.tar.gz
 
+      - name: Lowercase the owner for the registry
+        run: echo "OWNER_LC=${OWNER,,}" >> "$GITHUB_ENV"
+
       - name: Pin the new image tags
         working-directory: deploy/k8s/base
         run: |
           for svc in api database union frontend; do
             kustomize edit set image \
-              "ghcr.io/OWNER/eesoc-${svc}=${{ env.REGISTRY }}/${{ env.OWNER }}/eesoc-${svc}:${{ github.sha }}"
+              "ghcr.io/OWNER/eesoc-${svc}=${{ env.REGISTRY }}/${{ env.OWNER_LC }}/eesoc-${svc}:${{ github.sha }}"
           done
 
       - name: Commit for ArgoCD to pick up

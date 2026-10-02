@@ -4,16 +4,16 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - namespace.yaml
-  - configmap.yaml
-  - postgres.yaml
-  - minio.yaml
-  - database.yaml
-  - union.yaml
-  - api.yaml
-  - frontend.yaml
-  - ingress.yaml
-  - networkpolicy.yaml
+- namespace.yaml
+- configmap.yaml
+- postgres.yaml
+- minio.yaml
+- database.yaml
+- union.yaml
+- api.yaml
+- frontend.yaml
+- ingress.yaml
+- networkpolicy.yaml
 
 commonLabels:
   app.kubernetes.io/part-of: eesoc-website
@@ -21,11 +21,15 @@ commonLabels:
 # Image tags are patched by CI (kustomize edit set image), which is what makes
 # the GitOps loop work: the workflow commits a new tag and ArgoCD syncs it.
 images:
-  - name: ghcr.io/OWNER/eesoc-api
-    newTag: latest
-  - name: ghcr.io/OWNER/eesoc-database
-    newTag: latest
-  - name: ghcr.io/OWNER/eesoc-union
-    newTag: latest
-  - name: ghcr.io/OWNER/eesoc-frontend
-    newTag: latest
+- name: ghcr.io/OWNER/eesoc-api
+  newName: ghcr.io/raphsinai/eesoc-api
+  newTag: f04e9d1fbdfba19e7892a73a0ff41b78a7db2db5
+- name: ghcr.io/OWNER/eesoc-database
+  newName: ghcr.io/raphsinai/eesoc-database
+  newTag: f04e9d1fbdfba19e7892a73a0ff41b78a7db2db5
+- name: ghcr.io/OWNER/eesoc-frontend
+  newName: ghcr.io/raphsinai/eesoc-frontend
+  newTag: f04e9d1fbdfba19e7892a73a0ff41b78a7db2db5
+- name: ghcr.io/OWNER/eesoc-union
+  newName: ghcr.io/raphsinai/eesoc-union
+  newTag: f04e9d1fbdfba19e7892a73a0ff41b78a7db2db5

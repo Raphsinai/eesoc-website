@@ -11,8 +11,6 @@ resources:
 # The base keeps the multi-replica defaults: on a cluster with more than one
 # node they are correct, and this overlay is the right place to say "not here".
 replicas:
-  - name: frontend
-    count: 1
   - name: database
     count: 1
 

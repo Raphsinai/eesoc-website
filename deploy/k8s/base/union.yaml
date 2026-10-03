@@ -15,7 +15,11 @@ kind: Deployment
 metadata: { name: union, namespace: eesoc }
 spec:
   replicas: 1
-  strategy: { type: Recreate }   # never two at once, even mid-rollout
+  # Recreate, not a surge-free RollingUpdate: two union pods must never exist
+  # at once, even briefly, because eActivities rate-limits per source IP and
+  # bans the society on breach. It also never needs a spare pod slot, which
+  # suits a node at its limit.
+  strategy: { type: Recreate }
   selector: { matchLabels: { app: union } }
   template:
     metadata: { labels: { app: union } }

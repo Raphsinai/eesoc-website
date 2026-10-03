@@ -17,6 +17,13 @@ metadata:
     argocd.argoproj.io/sync-wave: "1"
 spec:
   replicas: 2
+  # maxSurge 0: the node has no spare pod slot, and the default rolling update
+  # wants to start the new pod before stopping the old one — which would wait
+  # forever for capacity that cannot appear. Old pod goes first instead, so an
+  # update is a brief restart rather than a deadlock.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }
   selector: { matchLabels: { app: database } }
   template:
     metadata: { labels: { app: database } }

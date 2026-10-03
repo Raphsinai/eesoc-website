@@ -23,6 +23,13 @@ spec:
   # daily ICU sync still runs inside the process and its lock does not span pods.
   # Move the sync to a CronJob calling POST /admin/sync before scaling up.
   replicas: 1
+  # maxSurge 0: the node has no spare pod slot, and the default rolling update
+  # wants to start the new pod before stopping the old one — which would wait
+  # forever for capacity that cannot appear. Old pod goes first instead, so an
+  # update is a brief restart rather than a deadlock.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }
   selector: { matchLabels: { app: api } }
   template:
     metadata: { labels: { app: api } }
@@ -53,3 +60,24 @@ spec:
           resources:
             requests: { cpu: 100m, memory: 192Mi }
             limits:   { memory: 512Mi }
+
+        # The SPA, served from this pod rather than its own.
+        #
+        # A container costs nothing against the kubelet's pod limit, and the
+        # node is at it — this is the difference between the site fitting and
+        # not. Nothing is given up: the api is already pinned to one replica by
+        # its in-process sync lock, so the two could never scale apart anyway.
+        #
+        # nginx still proxies /api through the `api` Service rather than
+        # localhost, so the identical config works under docker compose, where
+        # these genuinely are separate containers.
+        - name: web
+          image: ghcr.io/OWNER/eesoc-frontend
+          ports: [{ containerPort: 80 }]
+          readinessProbe:
+            httpGet: { path: /, port: 80 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits:   { memory: 192Mi }

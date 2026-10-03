@@ -23,16 +23,16 @@ commonLabels:
 images:
 - name: ghcr.io/OWNER/eesoc-api
   newName: ghcr.io/raphsinai/eesoc-api
-  newTag: 4dea6f16da9b7e68ea4b54512aba9f75818f5064
+  newTag: c83df9943b7f1d2814ba18def599bb742e2f3b72
 - name: ghcr.io/OWNER/eesoc-database
   newName: ghcr.io/raphsinai/eesoc-database
-  newTag: 4dea6f16da9b7e68ea4b54512aba9f75818f5064
+  newTag: c83df9943b7f1d2814ba18def599bb742e2f3b72
 - name: ghcr.io/OWNER/eesoc-frontend
   newName: ghcr.io/raphsinai/eesoc-frontend
-  newTag: 4dea6f16da9b7e68ea4b54512aba9f75818f5064
+  newTag: c83df9943b7f1d2814ba18def599bb742e2f3b72
 - name: ghcr.io/OWNER/eesoc-garage-init
   newName: ghcr.io/raphsinai/eesoc-garage-init
-  newTag: 4dea6f16da9b7e68ea4b54512aba9f75818f5064
+  newTag: c83df9943b7f1d2814ba18def599bb742e2f3b72
 - name: ghcr.io/OWNER/eesoc-union
   newName: ghcr.io/raphsinai/eesoc-union
-  newTag: 4dea6f16da9b7e68ea4b54512aba9f75818f5064
+  newTag: c83df9943b7f1d2814ba18def599bb742e2f3b72

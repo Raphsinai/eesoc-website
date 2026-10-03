@@ -78,9 +78,17 @@ spec:
     spec:
       securityContext:
         fsGroup: 1000
+      # The init sidecar is one of our own images, so it is private like the
+      # rest. The garage server image is public and does not need this.
+      imagePullSecrets:
+        - name: ghcr-pull
       containers:
         - name: garage
           image: dxflrs/garage:v1.1.0
+          # Both halves spelled out: the image sets no ENTRYPOINT, so `args`
+          # alone would replace the command and the kubelet would try to exec a
+          # binary called "server".
+          command: ["/garage"]
           args: ["server"]
           env:
             - name: GARAGE_RPC_SECRET

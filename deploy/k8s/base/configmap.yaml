@@ -27,13 +27,15 @@ data:
   # to the bucket, which is why the prefix below is empty — otherwise keys would
   # come out as /media/media/...
   S3_PREFIX: ""
-  # TEMPORARY: both point at the test domain until eesoc.com is cut over.
-  # S3_PUBLIC_BASE_URL is where browsers fetch uploads, and SITE_ORIGIN is
-  # what goes into sign-in and booking links in email — pointing either at a
-  # domain that does not resolve yet gives broken images and dead links.
-  # Objects store only their key, so changing this later is safe.
-  S3_PUBLIC_BASE_URL: "https://eesoc.raphsinai.dev/media"
-  SITE_ORIGIN: "https://eesoc.raphsinai.dev"
+  # Where browsers fetch uploads, and what goes into sign-in and booking links
+  # in outbound email. Objects store only their key, so this can move again
+  # without touching anything already uploaded.
+  #
+  # Changing either needs `kubectl -n eesoc rollout restart deploy/api`: the
+  # pod reads its environment once at startup and nothing here triggers a new
+  # one, so ArgoCD will report Synced while the old value is still live.
+  S3_PUBLIC_BASE_URL: "https://eesoc.com/media"
+  SITE_ORIGIN: "https://eesoc.com"
 
   # PG_* are deliberately absent: CloudNativePG generates the credentials and
   # the database service reads them from the `eesoc-db-app` secret it creates.

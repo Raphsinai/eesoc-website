@@ -58,9 +58,17 @@ spec:
         - podSelector: { matchLabels: { app: api } }
       ports: [{ port: 3900 }]
     # 3902 is the anonymous read endpoint the ingress controller serves to
-    # browsers. It cannot write, so exposing it to the controller's namespace
-    # costs nothing.
+    # browsers. It cannot write, so letting the controller reach it costs
+    # nothing.
+    #
+    # The controller is RKE2's bundled one and lives in kube-system, NOT in a
+    # namespace called ingress-nginx — that guess silently blackholed every
+    # /media request into a 504, since a NetworkPolicy drops rather than
+    # rejects. The namespace and pod selectors are in one `from` entry so they
+    # AND together: kube-system holds plenty that has no business here.
     - from:
         - namespaceSelector:
-            matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { app.kubernetes.io/name: rke2-ingress-nginx }
       ports: [{ port: 3902 }]

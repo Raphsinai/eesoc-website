@@ -134,7 +134,7 @@ async function release(locker) {
         </div>
         <div class="step">
           <span class="step__n">03</span>
-          <span style="font:var(--type-small); color:var(--text-body)">Collect the key from the EESoc office, EEE 403, Tuesdays 13:00–14:00.</span>
+          <span style="font:var(--type-small); color:var(--text-body)">Use it with your own padlock — there are no keys. If a locker already has a lock on it, contact us.</span>
         </div>
       </div>
       <TraceRule />

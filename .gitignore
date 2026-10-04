@@ -34,3 +34,7 @@ yarn-error.log*
 # Scratch: the scraped copy of eesoc.com used to build the resource seed.
 # The seed itself (backend/api/seed/resources_seed.json) IS committed.
 /eesoc/
+
+# Source deck for the committee cards — a 9 MB bundled artifact with every
+# photo embedded. The content it carried now lives in the database.
+EESoc Committee Cards*.html

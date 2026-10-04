@@ -166,7 +166,7 @@ function scrollBy(dir) {
       <div class="section-x sponsors-band__head">
         <div style="display:grid; gap:var(--space-3)">
           <span class="eyebrow">Our sponsors</span>
-          <h2 style="margin:0; font:var(--type-h2); letter-spacing:var(--tracking-heading); color:var(--text-strong)">The firms that pay for the solder.</h2>
+          <h2 style="margin:0; font:var(--type-h2); letter-spacing:var(--tracking-heading); color:var(--text-strong)">The firms that keep our uptime.</h2>
         </div>
         <div style="display:flex; gap:var(--space-2); flex:none">
           <IconButton variant="secondary" label="Previous sponsors" @click="scrollBy(-1)"><Icon name="chevron-left" :size="18" /></IconButton>

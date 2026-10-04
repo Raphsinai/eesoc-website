@@ -40,6 +40,9 @@ class Event(BaseModel):
     capacity: int | None = None
     hold_hours: int = 48
     published: bool = False
+    # When tickets go on sale. None = not announced yet, which the site
+    # shows as "On sale soon" and refuses to book.
+    sales_open_at: datetime | None = None
     # Off by default: an event is only offered to sponsors when the committee
     # says so.
     sponsorship_claimable: bool = False

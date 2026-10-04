@@ -30,7 +30,8 @@ router = APIRouter()
 EVENT_COLUMNS = """
     id, slug, title, category, description, image_url, venue, starts_at, ends_at,
     capacity, hold_hours, published, sponsorship_claimable,
-    requested_by_sponsor_id, academic_year, created_by, created_at, updated_at
+    requested_by_sponsor_id, academic_year, created_by, created_at, updated_at,
+    sales_open_at
 """
 
 TT_COLUMNS = """
@@ -171,15 +172,15 @@ async def create_event(event: EventWrite, created_by: int | None = None) -> Even
                 INSERT INTO public.events
                     (slug, title, category, description, image_url, venue, starts_at,
                      ends_at, capacity, hold_hours, published, sponsorship_claimable,
-                     requested_by_sponsor_id, academic_year, created_by)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                     requested_by_sponsor_id, academic_year, created_by, sales_open_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
                 RETURNING {EVENT_COLUMNS};
                 """,
                 event.slug, event.title, event.category, event.description,
                 event.image_url, event.venue, event.starts_at, event.ends_at,
                 event.capacity, event.hold_hours, event.published,
                 event.sponsorship_claimable, event.requested_by_sponsor_id,
-                event.academic_year or "", created_by,
+                event.academic_year or "", created_by, event.sales_open_at,
             )
         except UniqueViolationError:
             raise HTTPException(409, f"An event with slug '{event.slug}' already exists")
@@ -210,6 +211,7 @@ async def update_event(event_id: int, event: EventWrite) -> EventDetail:
                 published=$12, sponsorship_claimable=$13,
                 requested_by_sponsor_id=$14,
                 academic_year=COALESCE($15, academic_year),
+                sales_open_at=$16,
                 updated_at=NOW()
              WHERE id=$1
             RETURNING {EVENT_COLUMNS};
@@ -218,7 +220,7 @@ async def update_event(event_id: int, event: EventWrite) -> EventDetail:
             event.image_url, event.venue, event.starts_at, event.ends_at,
             event.capacity, event.hold_hours, event.published,
             event.sponsorship_claimable, event.requested_by_sponsor_id,
-            event.academic_year,
+            event.academic_year, event.sales_open_at,
         )
         if row is None:
             raise HTTPException(404, "No such event")

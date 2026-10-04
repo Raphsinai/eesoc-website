@@ -9,6 +9,7 @@ their ICU login; external users type their order number in.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
@@ -25,7 +26,13 @@ from utils.deps import (
     require_session,
     verify_csrf,
 )
-from utils.present import event_card, format_price
+from utils.present import (
+    event_card,
+    format_date,
+    format_price,
+    format_time_range,
+    sales_state,
+)
 from utils.year import academic_year
 
 log = logging.getLogger("api.events")
@@ -62,6 +69,26 @@ def _ticket_view(tt: dict, is_member: bool) -> dict:
         "selectable": not tt.get("sold_out"),
         "needsMembership": bool(tt.get("members_only")) and not is_member,
     }
+
+
+def _require_sales_open(event: dict) -> None:
+    """Refuse anything that takes a place before tickets are on sale.
+
+    Enforced here and not only in the UI: the booking endpoints are reachable
+    directly, and "the form was hidden" is not a control. Applies to holds and
+    the waitlist as well as reservations — all three take a place.
+    """
+    state, opens = sales_state(event)
+    if state == "open":
+        return
+    if state == "soon":
+        raise HTTPException(409, "Tickets for this event are not on sale yet.")
+    when = datetime.fromisoformat(opens)
+    raise HTTPException(
+        409,
+        f"Tickets go on sale on {format_date(when)} at {format_time_range(when, None)}.",
+    )
+
 
 
 @router.get("/events")
@@ -155,6 +182,7 @@ async def reserve(
     event = await database.get(f"/events/by-slug/{slug}")
     if event is None or not event["published"]:
         raise HTTPException(404, "No such event")
+    _require_sales_open(event)
 
     ticket = next(
         (t for t in event.get("ticket_types", []) if t["id"] == ticket_type_id), None
@@ -434,6 +462,7 @@ async def hold_seat(
     event = await database.get(f"/events/by-slug/{slug}")
     if event is None or not event["published"]:
         raise HTTPException(404, "No such event")
+    _require_sales_open(event)
 
     ticket = next(
         (t for t in event.get("ticket_types", []) if t["id"] == ticket_type_id), None
@@ -501,6 +530,7 @@ async def join_waitlist(
     event = await database.get(f"/events/by-slug/{slug}")
     if event is None or not event["published"]:
         raise HTTPException(404, "No such event")
+    _require_sales_open(event)
 
     if session:
         user_id = session.user.id

@@ -361,39 +361,44 @@ async def set_event_product(
     return {"ok": True, "linked": row}
 
 
-@router.put("/ticket-types/{ticket_type_id}/line", dependencies=[Depends(verify_csrf)])
-async def set_ticket_line(
+@router.put("/ticket-types/{ticket_type_id}/product", dependencies=[Depends(verify_csrf)])
+async def set_ticket_product(
     ticket_type_id: int,
+    union_product_id: int | None = Body(default=None, embed=True),
     union_product_line_id: int | None = Body(default=None, embed=True),
     session: AuthSession = Depends(require_admin),
 ) -> dict:
-    """Assign one product line to one ticket type.
+    """Point one ticket type at its own Union product.
 
-    The product comes from the event's link, so only the line is chosen here —
-    which is what stops "with alcohol" money confirming a "no alcohol" seat.
-    Passing null clears it, and the ticket then accepts any line of the product
-    that no sibling type has claimed.
+    Each ticket type is sold as a separate product in eActivities, so the
+    product is chosen per ticket type rather than once for the whole event.
+    A line may also be given, for the case where one product does carry several
+    lines; leaving it null means any line of that product counts.
+
+    The event-level link still works and acts as the fallback — the matcher
+    prefers the more specific link, so a type with its own product is never
+    confirmed by a sale against a sibling's.
+
+    Passing a null product unlinks, and replaces rather than adds: two links
+    for one ticket type would make matching ambiguous.
     """
     ticket = await database.get(f"/ticket-types/{ticket_type_id}")
     if ticket is None:
         raise HTTPException(404, "No such ticket type")
 
-    event_links = await database.get(
-        "/product-links", {"event_id": ticket["event_id"]}
-    ) or []
-    event_level = next((l for l in event_links if l["ticket_type_id"] is None), None)
-    if event_level is None and union_product_line_id is not None:
+    if union_product_id is None and union_product_line_id is not None:
         raise HTTPException(
-            409,
-            "Link a Union product to the event first — a line only means "
-            "something inside a product.",
+            400, "A line belongs to a product — choose the product as well."
         )
 
-    for link in event_links:
+    existing = await database.get(
+        "/product-links", {"event_id": ticket["event_id"]}
+    ) or []
+    for link in existing:
         if link["ticket_type_id"] == ticket_type_id:
             await database.delete(f"/product-links/{link['id']}")
 
-    if union_product_line_id is None:
+    if union_product_id is None:
         return {"ok": True, "linked": None}
 
     row = await database.post(
@@ -402,7 +407,7 @@ async def set_ticket_line(
             "purpose": "event_ticket",
             "event_id": ticket["event_id"],
             "ticket_type_id": ticket_type_id,
-            "union_product_id": event_level["union_product_id"],
+            "union_product_id": union_product_id,
             "union_product_line_id": union_product_line_id,
             "academic_year": academic_year(),
             "created_by": session.user.id,

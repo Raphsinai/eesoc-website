@@ -5,7 +5,7 @@ because that is what the mockup renders. ISO timestamps are sent alongside them
 so the client can regroup or re-localise without re-parsing the display text.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -45,6 +45,27 @@ def format_price(pence) -> str:
     return f"£{pence / 100:.2f}"
 
 
+def sales_state(event: dict) -> tuple[str, str | None]:
+    """When this event's tickets open: ("open" | "scheduled" | "soon", iso).
+
+    Three states, not two. NULL is not "on sale" — it means the committee has
+    not decided yet, and the honest thing to show is "On sale soon" rather than
+    a booking form or a date we do not have.
+    """
+    opens = _parse(event.get("sales_open_at"))
+    if opens is None:
+        return "soon", None
+    if opens.tzinfo is None:
+        opens = opens.replace(tzinfo=timezone.utc)
+    if opens <= datetime.now(timezone.utc):
+        return "open", opens.isoformat()
+    return "scheduled", opens.isoformat()
+
+
+def sales_open(event: dict) -> bool:
+    return sales_state(event)[0] == "open"
+
+
 def event_status(event: dict) -> tuple[str, str]:
     """The badge on an event card: (label, tone).
 
@@ -55,6 +76,12 @@ def event_status(event: dict) -> tuple[str, str]:
         return "Draft", "neutral"
     if event.get("sold_out"):
         return "Sold out", "danger"
+
+    state, opens = sales_state(event)
+    if state == "soon":
+        return "On sale soon", "neutral"
+    if state == "scheduled":
+        return f"On sale {format_date(_parse(opens))}", "accent"
 
     remaining = event.get("remaining")
     if remaining is None:
@@ -94,6 +121,8 @@ def event_card(event: dict) -> dict:
         "endsAt": event.get("ends_at"),
         "soldOut": bool(event.get("sold_out")),
         "published": bool(event.get("published")),
+        "salesState": sales_state(event)[0],
+        "salesOpenAt": sales_state(event)[1],
     }
 
 

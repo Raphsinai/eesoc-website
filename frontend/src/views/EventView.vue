@@ -246,6 +246,18 @@ async function submitOrder(reservation) {
 const statusTone = { confirmed: 'success', held: 'accent', expired: 'neutral', cancelled: 'neutral' }
 </script>
 
+
+// Shown only when salesState is "scheduled", i.e. salesOpenAt is set and in
+// the future. Rendered in the viewer's own timezone, which is what they will
+// be going by.
+const salesOpensText = computed(() => {
+  if (!event.value?.salesOpenAt) return ''
+  return new Date(event.value.salesOpenAt).toLocaleString(undefined, {
+    weekday: 'short', day: '2-digit', month: 'short',
+    hour: '2-digit', minute: '2-digit',
+  })
+})
+
 <template>
   <main style="max-width:var(--container-lg); margin:0 auto; padding:var(--space-10) var(--space-6)">
     <p v-if="loading" style="font:var(--type-small); color:var(--text-faint)">Loading…</p>
@@ -299,6 +311,24 @@ const statusTone = { confirmed: 'success', held: 'accent', expired: 'neutral', c
             :reason="reason('bookings')"
             title="Booking is unavailable"
           />
+
+          <!-- Same reasoning as the maintenance case: the whole picker goes,
+               rather than leaving a form that cannot be submitted. -->
+          <div v-else-if="event.salesState !== 'open'" class="sales-notice">
+            <p style="margin:0; font:var(--type-small); color:var(--text-strong)">
+              {{ event.salesState === 'scheduled' ? 'Tickets go on sale' : 'On sale soon' }}
+            </p>
+            <p v-if="event.salesState === 'scheduled'" style="margin:var(--space-2) 0 0; font:var(--type-h5); color:var(--text-strong)">
+              {{ salesOpensText }}
+            </p>
+            <p style="margin:var(--space-3) 0 0; font:var(--type-small); color:var(--text-muted)">
+              {{
+                event.salesState === 'scheduled'
+                  ? 'Come back then to book your place.'
+                  : 'We haven’t set a date yet — check back shortly.'
+              }}
+            </p>
+          </div>
 
           <template v-else>
           <p v-if="!session.authenticated" style="margin:0 0 var(--space-4); font:var(--type-small); color:var(--text-muted)">
@@ -482,6 +512,13 @@ const statusTone = { confirmed: 'success', held: 'accent', expired: 'neutral', c
 .event-media--empty {
   position: relative;
   aspect-ratio: 21 / 9;
+}
+
+.sales-notice {
+  padding: var(--space-5);
+  border: 1px solid var(--border-faint);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
 }
 
 @media (max-width: 860px) {

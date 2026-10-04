@@ -125,6 +125,9 @@ async function reconcile() {
 const blank = () => ({
   slug: '', title: '', category: 'Social', description: '', image_url: '', venue: '',
   starts_at: '', ends_at: '', capacity: null, hold_hours: 48, published: false,
+  // Blank means "not announced yet" — the site shows On sale soon and
+  // refuses bookings, which is the right default for a new event.
+  sales_open_at: '',
   sponsorship_claimable: false,
   ticket_types: [{ name: 'Standard', price_pence: 0, capacity: null, max_per_user: 1, members_only: false, requires_purchase: true }],
 })
@@ -137,14 +140,19 @@ function editEvent(e) {
     ...blank(), ...e,
     starts_at: (e.starts_at || '').slice(0, 16),
     ends_at: (e.ends_at || '').slice(0, 16),
+    sales_open_at: (e.sales_open_at || '').slice(0, 16),
     ticket_types: e.ticket_types?.length ? e.ticket_types : blank().ticket_types,
   })
   // Prefill the product and per-ticket line selects from existing links.
   const ev = links.value.find((l) => l.event_id === e.id && l.ticket_type_id === null)
   eventProduct.value = ev?.union_product_id ?? null
   for (const t of draft.ticket_types) {
-    ticketLines[t.id] = links.value.find((l) => l.ticket_type_id === t.id)
-      ?.union_product_line_id ?? ''
+    const link = links.value.find((l) => l.ticket_type_id === t.id)
+    // Same "productId:lineId" key the product <select> uses, so the
+    // existing choice shows as selected rather than blank.
+    ticketProducts[t.id] = link
+      ? `${link.union_product_id}:${link.union_product_line_id ?? ''}`
+      : ''
   }
   tab.value = 'events'
 }
@@ -163,6 +171,9 @@ async function saveEvent() {
       capacity: draft.capacity || null,
       starts_at: new Date(draft.starts_at).toISOString(),
       ends_at: draft.ends_at ? new Date(draft.ends_at).toISOString() : null,
+      sales_open_at: draft.sales_open_at
+        ? new Date(draft.sales_open_at).toISOString()
+        : null,
       ticket_types: draft.ticket_types.filter((t) => t.name.trim())
         .map((t) => ({ ...t, capacity: t.capacity || null })),
     }
@@ -615,21 +626,35 @@ const productOptions = computed(() => {
   return [...seen.entries()].map(([id, name]) => ({ id, name }))
 })
 
-/** Lines belonging to whichever product the event is linked to. */
-const lineOptions = computed(() => {
-  const productId = eventLink.value?.union_product_id
-  if (!productId) return []
-  return products.value
-    .filter((p) => p.product_id === productId)
-    .map((p) => ({ id: p.product_line_id, name: p.line_name || `Line ${p.product_line_id}` }))
-})
+/** Every sellable Union product-line, for the per-ticket-type picker.
+ *
+ * Each ticket type is its own product in eActivities, so the choice here is a
+ * product, not a line within the event's product. The line is still carried in
+ * the key for the rarer case of one product with several lines.
+ */
+const ticketProductOptions = computed(() =>
+  products.value.map((p) => ({
+    key: `${p.product_id}:${p.product_line_id ?? ''}`,
+    label:
+      p.line_name && p.line_name !== p.product_name
+        ? `${p.product_name} — ${p.line_name}`
+        : p.product_name,
+  })),
+)
+
+function productNameFor(ticketTypeId) {
+  const link = linkFor(ticketTypeId)
+  if (!link) return ''
+  const row = products.value.find(
+    (p) =>
+      p.product_id === link.union_product_id &&
+      (link.union_product_line_id === null ||
+        p.product_line_id === link.union_product_line_id),
+  )
+  return row ? row.line_name || row.product_name : `product #${link.union_product_id}`
+}
 
 const eventProduct = ref(null)
-
-function lineFor(ticketTypeId) {
-  const link = links.value.find((l) => l.ticket_type_id === ticketTypeId)
-  return link?.union_product_line_id ?? null
-}
 
 async function saveEventProduct() {
   busy.value = true
@@ -647,14 +672,19 @@ async function saveEventProduct() {
   }
 }
 
-async function saveTicketLine(t) {
+async function saveTicketProduct(t) {
   busy.value = true
   error.value = ''
   try {
-    await api.put(`/admin/ticket-types/${t.id}/line`, {
-      union_product_line_id: ticketLines[t.id] || null,
+    // The select's value is "productId:lineId"; the line half is empty when
+    // the product has only one line, which is the usual case now that each
+    // ticket type is its own product.
+    const [productId, lineId] = String(ticketProducts[t.id] || '').split(':')
+    await api.put(`/admin/ticket-types/${t.id}/product`, {
+      union_product_id: productId ? Number(productId) : null,
+      union_product_line_id: lineId ? Number(lineId) : null,
     })
-    flash(ticketLines[t.id] ? `${t.name} pinned to a line.` : `${t.name} accepts any line.`)
+    flash(productId ? `${t.name} linked to its product.` : `${t.name} unlinked.`)
     await load()
   } catch (e) {
     error.value = e.message
@@ -663,7 +693,7 @@ async function saveTicketLine(t) {
   }
 }
 
-const ticketLines = reactive({})
+const ticketProducts = reactive({})
 
 async function createLink() {
   error.value = ''
@@ -723,44 +753,6 @@ function linkFor(ticketTypeId) {
   return links.value.find((l) => l.ticket_type_id === ticketTypeId) || null
 }
 
-async function linkTicket(t) {
-  const key = ticketLinks[t.id]
-  if (!key) return
-  const [productId, lineId] = String(key).split(':')
-  busy.value = true
-  error.value = ''
-  try {
-    const existing = linkFor(t.id)
-    if (existing) await api.del(`/admin/product-links/${existing.id}`)
-    await api.post('/admin/product-links', {
-      purpose: 'event_ticket',
-      event_id: editingId.value,
-      ticket_type_id: t.id,
-      union_product_id: Number(productId),
-      union_product_line_id: lineId ? Number(lineId) : null,
-    })
-    flash(`${t.name} linked.`)
-    await load()
-  } catch (e) {
-    error.value = e.message
-  } finally {
-    busy.value = false
-  }
-}
-
-async function unlinkTicket(t) {
-  const existing = linkFor(t.id)
-  if (!existing) return
-  await api.del(`/admin/product-links/${existing.id}`)
-  ticketLinks[t.id] = ''
-  await load()
-}
-
-const ticketOptions = computed(() =>
-  events.value.flatMap((e) =>
-    (e.ticket_types || []).map((t) => ({ id: t.id, label: `${e.title} → ${t.name}`, eventId: e.id })),
-  ),
-)
 
 
 
@@ -941,12 +933,25 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 <Field label="Total capacity" help="Blank = per-type only."><Input v-model.number="draft.capacity" type="number" min="1" /></Field>
                 <Field label="Hold hours" help="Min 24."><Input v-model.number="draft.hold_hours" type="number" min="24" /></Field>
               </div>
+              <Field
+                label="Tickets on sale from"
+                help="Leave blank if the date is not decided — the page says “On sale soon” and refuses bookings until you set one."
+              >
+                <Input v-model="draft.sales_open_at" type="datetime-local" />
+              </Field>
+              <p
+                v-if="!draft.sales_open_at"
+                style="margin:0; font:var(--type-2xs); color:var(--text-accent)"
+              >
+                No date set — this event will show “On sale soon” and cannot be booked.
+              </p>
 
               <TraceRule />
-              <h3 style="margin:0; font:var(--type-h5)">Union product</h3>
+              <h3 style="margin:0; font:var(--type-h5)">Union product (optional)</h3>
               <p style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
-                One product for the whole event. Each ticket type below can then be
-                pinned to one of that product's lines.
+                Only needed if every ticket type shares one product. Normally each
+                ticket type is its own product — set that on the type itself below,
+                which takes precedence over anything chosen here.
               </p>
               <div v-if="editingId" style="display:flex; gap:var(--space-2); align-items:flex-end; flex-wrap:wrap">
                 <Field label="Product" style="flex:1 1 220px">
@@ -978,25 +983,32 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                   <input v-model="t.requires_purchase" type="checkbox" style="margin-left:var(--space-4)" /> Needs a Union purchase
                 </label>
 
-                <!-- Only the LINE is chosen here; the product comes from the
-                     event above. That is what stops a "with alcohol" purchase
-                     confirming a "no alcohol" seat. -->
-                <template v-if="t.id && t.requires_purchase && eventLink">
+                <!-- Each ticket type is sold as its own Union product, so the
+                     product is chosen here rather than once for the event. It is
+                     also what stops a "with alcohol" purchase confirming a
+                     "no alcohol" seat. -->
+                <template v-if="t.id && t.requires_purchase">
                   <div style="display:flex; gap:var(--space-2); align-items:flex-end; flex-wrap:wrap">
-                    <Field label="Union product line" style="flex:1 1 200px">
-                      <select v-model="ticketLines[t.id]" class="ees-select">
-                        <option value="">Any line of the product</option>
-                        <option v-for="l in lineOptions" :key="`${t.id}-${l.id}`" :value="l.id">
-                          {{ l.name }}
+                    <Field label="Union product" style="flex:1 1 260px">
+                      <select v-model="ticketProducts[t.id]" class="ees-select">
+                        <option value="">Not linked — use the event's product</option>
+                        <option v-for="o in ticketProductOptions" :key="`${t.id}-${o.key}`" :value="o.key">
+                          {{ o.label }}
                         </option>
                       </select>
                     </Field>
-                    <Button size="sm" :disabled="busy" @click="saveTicketLine(t)">Assign</Button>
+                    <Button size="sm" :disabled="busy" @click="saveTicketProduct(t)">Link</Button>
                   </div>
-                  <p v-if="lineFor(t.id)" style="margin:0; font:var(--type-2xs); color:var(--text-muted)">
-                    Pinned to line #{{ lineFor(t.id) }} — only purchases of that line confirm this ticket.
+                  <p v-if="linkFor(t.id)" style="margin:0; font:var(--type-2xs); color:var(--text-muted)">
+                    Linked to {{ productNameFor(t.id) }} — only purchases of that confirm this ticket.
                   </p>
                 </template>
+                <p
+                  v-else-if="!t.id && t.requires_purchase"
+                  style="margin:0; font:var(--type-2xs); color:var(--text-faint)"
+                >
+                  Save the event first, then link this ticket type to its product.
+                </p>
                 <p
                   v-else-if="t.id && t.requires_purchase"
                   style="margin:0; font:var(--type-2xs); color:var(--danger)"

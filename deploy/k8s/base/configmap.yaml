@@ -27,8 +27,13 @@ data:
   # to the bucket, which is why the prefix below is empty — otherwise keys would
   # come out as /media/media/...
   S3_PREFIX: ""
-  S3_PUBLIC_BASE_URL: "https://eesoc.com/media"
-  SITE_ORIGIN: "https://eesoc.com"
+  # TEMPORARY: both point at the test domain until eesoc.com is cut over.
+  # S3_PUBLIC_BASE_URL is where browsers fetch uploads, and SITE_ORIGIN is
+  # what goes into sign-in and booking links in email — pointing either at a
+  # domain that does not resolve yet gives broken images and dead links.
+  # Objects store only their key, so changing this later is safe.
+  S3_PUBLIC_BASE_URL: "https://eesoc.raphsinai.dev/media"
+  SITE_ORIGIN: "https://eesoc.raphsinai.dev"
 
   # PG_* are deliberately absent: CloudNativePG generates the credentials and
   # the database service reads them from the `eesoc-db-app` secret it creates.

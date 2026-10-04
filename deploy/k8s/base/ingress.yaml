@@ -30,6 +30,10 @@ spec:
   rules:
     # Host-based so the proxy can pass `Host: eesoc.com` straight through, which
     # keeps redirects and canonical URLs correct.
+    #
+    # eesoc.raphsinai.dev is TEMPORARY, for testing before eesoc.com is cut
+    # over. Remove it, and reset SITE_ORIGIN and S3_PUBLIC_BASE_URL in the
+    # ConfigMap, once the real domain points here.
     - host: eesoc.com
       http:
         paths:
@@ -41,6 +45,16 @@ spec:
                 port:
                   number: 80
     - host: www.eesoc.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+    - host: eesoc.raphsinai.dev
       http:
         paths:
           - path: /
@@ -88,6 +102,16 @@ spec:
                 port:
                   number: 3902
     - host: www.eesoc.com
+      http:
+        paths:
+          - path: /media/(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: garage
+                port:
+                  number: 3902
+    - host: eesoc.raphsinai.dev
       http:
         paths:
           - path: /media/(.*)

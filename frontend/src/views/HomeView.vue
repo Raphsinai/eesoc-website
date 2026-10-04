@@ -154,7 +154,6 @@ function scrollBy(dir) {
           <div style="padding:var(--space-5) var(--space-5) var(--space-6); display:grid; gap:6px">
             <span class="eyebrow" style="letter-spacing:var(--tracking-label)">{{ m.role }}</span>
             <span style="font-family:var(--font-display); font-weight:700; font-size:var(--text-md); letter-spacing:var(--tracking-heading); color:var(--text-strong)">{{ m.name }}</span>
-            <span style="font-family:var(--font-mono); font-size:var(--text-xs); color:var(--text-muted)">{{ m.email }}</span>
             <p v-if="m.intro" style="margin:var(--space-2) 0 0; font:var(--type-2xs); color:var(--text-muted)">{{ m.intro }}</p>
           </div>
         </Card>

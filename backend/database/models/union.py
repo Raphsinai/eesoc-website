@@ -29,6 +29,7 @@ class CommitteeEntry(CommitteeMember):
     # Which row of the committee grid this person sits in, and where in it.
     row_number: int = 1
     sort_order: int = 100
+    hidden: bool = False
 
 
 class CommitteeProfile(BaseModel):
@@ -42,6 +43,8 @@ class CommitteeProfile(BaseModel):
     login: str | None = None
     intro: str = ""
     photo_url: str | None = None
+    # Hides someone ICU still lists but who has left committee.
+    hidden: bool = False
     # Optional override for ICU's post name; blank falls back to theirs.
     display_role: str | None = None
     row_number: int = 1

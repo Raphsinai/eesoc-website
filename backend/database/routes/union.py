@@ -146,7 +146,9 @@ async def sync_committee(members: list[CommitteeMember], academic_year: str) -> 
 
 
 @router.get("/committee")
-async def list_committee(academic_year: str) -> list[CommitteeEntry]:
+async def list_committee(
+    academic_year: str, include_hidden: bool = False
+) -> list[CommitteeEntry]:
     """ICU's roster left-joined with our editorial overlay."""
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -158,18 +160,24 @@ async def list_committee(academic_year: str) -> list[CommitteeEntry]:
                    p.photo_url,
                    p.display_role,
                    COALESCE(p.row_number, 1)   AS row_number,
-                   COALESCE(p.sort_order, 100) AS sort_order
+                   COALESCE(p.sort_order, 100) AS sort_order,
+                   COALESCE(p.hidden, FALSE)   AS hidden
               FROM public.committee c
               -- Matched on login: a re-sync replaces every roster row, so the
               -- overlay has to attach to the person, not to the row.
               LEFT JOIN public.committee_profiles p
                      ON lower(p.login) = lower(c.login)
              WHERE c.academic_year = $1
+               -- Left committee mid-year; ICU still lists them.
+               -- The admin editor passes include_hidden: it is the only
+               -- place a hidden person can be brought back.
+               AND (COALESCE(p.hidden, FALSE) = FALSE OR $2)
              ORDER BY COALESCE(p.row_number, 1),
                       COALESCE(p.sort_order, 100),
                       c.post_name;
             """,
             academic_year,
+            include_hidden,
         )
     return [CommitteeEntry(**dict(r)) for r in rows]
 
@@ -182,8 +190,8 @@ async def upsert_committee_profile(login: str, profile: CommitteeProfile) -> Com
         row = await conn.fetchrow(
             """
             INSERT INTO public.committee_profiles
-                (login, cid, intro, photo_url, display_role, row_number, sort_order)
-            VALUES ($1,$2,$3,$4,$5,$6,$7)
+                (login, cid, intro, photo_url, display_role, row_number, sort_order, hidden)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
             ON CONFLICT (login) DO UPDATE SET
                 cid          = COALESCE(EXCLUDED.cid, public.committee_profiles.cid),
                 intro        = EXCLUDED.intro,
@@ -191,11 +199,13 @@ async def upsert_committee_profile(login: str, profile: CommitteeProfile) -> Com
                 display_role = EXCLUDED.display_role,
                 row_number   = EXCLUDED.row_number,
                 sort_order   = EXCLUDED.sort_order,
+                hidden       = EXCLUDED.hidden,
                 updated_at   = NOW()
-            RETURNING cid, login, intro, photo_url, display_role, row_number, sort_order;
+            RETURNING cid, login, intro, photo_url, display_role, row_number, sort_order, hidden;
             """,
             login.strip().lower(), profile.cid, profile.intro, profile.photo_url,
             profile.display_role, profile.row_number, profile.sort_order,
+            profile.hidden,
         )
     return CommitteeProfile(**dict(row))
 

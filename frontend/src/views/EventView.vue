@@ -259,30 +259,32 @@ const statusTone = { confirmed: 'success', held: 'accent', expired: 'neutral', c
         ← All events
       </router-link>
 
-      <header style="display:grid; gap:var(--space-4); margin-top:var(--space-6)">
-        <div style="display:flex; gap:var(--space-3); align-items:center; flex-wrap:wrap">
-          <Badge tone="brand">{{ event.category }}</Badge>
-          <Badge :tone="event.statusTone">{{ event.status }}</Badge>
-          <Badge v-if="!event.published" tone="neutral">Draft</Badge>
-        </div>
-        <h1 style="margin:0; font:var(--type-h1)">{{ event.title }}</h1>
-        <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
-          {{ event.date }} · {{ event.time }}<span v-if="event.venue"> · {{ event.venue }}</span>
-        </p>
-      </header>
+      <div class="event-layout">
+        <!-- Source order is image, title, description — which is exactly the
+             order wanted on a phone, where this column simply stacks. No CSS
+             `order` juggling, so the reading order and the DOM order agree
+             (screen readers and tab order follow the DOM, not the visual
+             grid). -->
+        <div class="event-main">
+          <div v-if="event.imageUrl" class="event-media">
+            <img :src="event.imageUrl" :alt="event.title" class="event-image" />
+          </div>
+          <div v-else class="event-media event-media--empty">
+            <ImageSlot label="Event image" />
+          </div>
 
-      <div style="position:relative; margin:var(--space-8) 0; aspect-ratio:21/9; border-radius:var(--radius-lg); overflow:hidden">
-        <img
-          v-if="event.imageUrl"
-          :src="event.imageUrl"
-          :alt="event.title"
-          style="width:100%; height:100%; object-fit:cover"
-        />
-        <ImageSlot v-else label="Event image" />
-      </div>
+          <header style="display:grid; gap:var(--space-4)">
+            <div style="display:flex; gap:var(--space-3); align-items:center; flex-wrap:wrap">
+              <Badge tone="brand">{{ event.category }}</Badge>
+              <Badge :tone="event.statusTone">{{ event.status }}</Badge>
+              <Badge v-if="!event.published" tone="neutral">Draft</Badge>
+            </div>
+            <h1 style="margin:0; font:var(--type-h1)">{{ event.title }}</h1>
+            <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
+              {{ event.date }} · {{ event.time }}<span v-if="event.venue"> · {{ event.venue }}</span>
+            </p>
+          </header>
 
-      <div style="display:grid; grid-template-columns:minmax(0,1.6fr) minmax(280px,1fr); gap:var(--space-8); align-items:start">
-        <div>
           <p style="margin:0; font:var(--type-body); white-space:pre-line">{{ event.description }}</p>
         </div>
 
@@ -434,3 +436,57 @@ const statusTone = { confirmed: 'success', held: 'accent', expired: 'neutral', c
     </template>
   </main>
 </template>
+
+
+<style scoped>
+.event-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(300px, 1fr);
+  gap: var(--space-8);
+  align-items: start;
+  margin-top: var(--space-6);
+}
+
+.event-main {
+  display: grid;
+  gap: var(--space-6);
+  /* Without this a wide poster refuses to shrink: grid items default to
+     min-content, so the image sets the floor and the booking column gets
+     squeezed off the side. */
+  min-width: 0;
+}
+
+/* The poster is artwork, not a banner. It used to be cropped to 21:9, which
+   cut the top off anything portrait — on the Barnight poster that removed
+   half the word. Letterbox instead, and cap the height so a tall image cannot
+   push the booking panel below the fold. */
+.event-media {
+  display: flex;
+  justify-content: center;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.event-image {
+  display: block;
+  max-width: 100%;
+  max-height: min(520px, 70vh);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+/* ImageSlot fills its parent absolutely, so the empty state needs a box with
+   a size of its own. */
+.event-media--empty {
+  position: relative;
+  aspect-ratio: 21 / 9;
+}
+
+@media (max-width: 860px) {
+  .event-layout {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

@@ -160,7 +160,28 @@ safe.
 > hold the same ReadWriteOnce volume, and a rolling update would deadlock.
 > Uploads are briefly unavailable during a restart.
 
-### 2a. TLS and the edge proxy
+### 2a. Temporary test domain
+
+`eesoc.raphsinai.dev` is served while eesoc.com still points at the old site.
+Three things had to move together, and all are marked TEMPORARY:
+
+- both Ingresses list the host (without a matching rule the controller answers
+  404 from its default backend, whatever the proxy sends);
+- `SITE_ORIGIN`, which is what goes into sign-in links in email;
+- `S3_PUBLIC_BASE_URL`, which is the absolute URL browsers fetch uploads from.
+
+The vhost on the proxy VM is `deploy/nginx/eesoc.raphsinai.dev.conf`, installed
+at `/etc/nginx/sites-available/eesoc.raphsinai.dev`.
+
+**A ConfigMap change does not restart anything.** The pods read their
+environment once at startup and there is no checksum annotation on the pod
+template, so ArgoCD will show Synced while the api still holds the old values.
+`kubectl -n eesoc rollout restart deploy/api` after changing it.
+
+To cut over to the real domain: point DNS at the proxy, drop the extra host
+from both Ingresses, reset the two ConfigMap values, and restart the api.
+
+### 2b. TLS and the edge proxy
 
 **TLS terminates on the VM in front of the cluster**, not in Kubernetes. The
 Ingress carries no certificate and no cert-manager annotation; the hop from the

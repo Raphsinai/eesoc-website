@@ -21,6 +21,7 @@ silently if forgotten:
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import smtplib
 from email.message import EmailMessage
@@ -45,6 +46,35 @@ def configured() -> bool:
     if settings.smtp_user and not settings.smtp_pass:
         return False
     return True
+
+
+def _login(smtp: smtplib.SMTP, user: str, password: str) -> None:
+    """Authenticate, tolerating a password that is not pure ASCII.
+
+    smtplib base64-encodes AUTH responses via `.encode("ascii")`, so a password
+    containing so much as a £ raises UnicodeEncodeError *before anything is
+    sent* — which surfaces as a generic send failure with nothing to suggest the
+    password is the problem. Exchange accepts UTF-8, so the exchange is issued
+    by hand in that case.
+
+    The check is done up front rather than by catching the error, because
+    catching it leaves the connection half way through an AUTH it cannot
+    finish.
+    """
+    try:
+        password.encode("ascii")
+    except UnicodeEncodeError:
+        encoded_user = base64.b64encode(user.encode("utf-8")).decode("ascii")
+        code, response = smtp.docmd("AUTH", f"LOGIN {encoded_user}")
+        if code != 334:
+            raise smtplib.SMTPAuthenticationError(code, response)
+        encoded_pass = base64.b64encode(password.encode("utf-8")).decode("ascii")
+        code, response = smtp.docmd(encoded_pass)
+        if code != 235:
+            raise smtplib.SMTPAuthenticationError(code, response)
+        return
+
+    smtp.login(user, password)
 
 
 def _build(to: str, subject: str, body: str) -> EmailMessage:
@@ -77,7 +107,7 @@ def _send_sync(message: EmailMessage) -> None:
             smtp.starttls()
             smtp.ehlo()
         if settings.smtp_user:
-            smtp.login(settings.smtp_user, settings.smtp_pass)
+            _login(smtp, settings.smtp_user, settings.smtp_pass)
         smtp.send_message(message)
 
 

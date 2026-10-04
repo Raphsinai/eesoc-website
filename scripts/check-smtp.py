@@ -13,6 +13,7 @@ the application's point of view, but need completely different fixes.
 
 from __future__ import annotations
 
+import base64
 import smtplib
 import ssl
 import sys
@@ -34,6 +35,60 @@ def load_env(path: Path) -> dict[str, str]:
         key, _, value = line.partition("=")
         values[key.strip()] = value.strip()
     return values
+
+
+def _login(smtp: smtplib.SMTP, user: str, password: str) -> None:
+    """Authenticate, tolerating a password that is not pure ASCII.
+
+    smtplib base64-encodes AUTH responses via `.encode("ascii")`, so a password
+    containing so much as a £ raises UnicodeEncodeError *before anything is
+    sent* — which surfaces as a generic send failure with nothing to suggest the
+    password is the problem. Exchange accepts UTF-8, so the exchange is issued
+    by hand in that case.
+
+    The check is done up front rather than by catching the error, because
+    catching it leaves the connection half way through an AUTH it cannot
+    finish.
+    """
+    try:
+        password.encode("ascii")
+    except UnicodeEncodeError:
+        encoded_user = base64.b64encode(user.encode("utf-8")).decode("ascii")
+        code, response = smtp.docmd("AUTH", f"LOGIN {encoded_user}")
+        if code != 334:
+            raise smtplib.SMTPAuthenticationError(code, response)
+        encoded_pass = base64.b64encode(password.encode("utf-8")).decode("ascii")
+        code, response = smtp.docmd(encoded_pass)
+        if code != 235:
+            raise smtplib.SMTPAuthenticationError(code, response)
+        return
+
+    smtp.login(user, password)
+
+
+def _explain_auth_failure(code, detail, user) -> None:
+    text = detail.decode(errors="replace") if isinstance(detail, bytes) else str(detail)
+    print(f"\nFAIL  authentication rejected: {code} {text.strip()}")
+
+    # Exchange's sub-code is the useful part; the English is the same either way.
+    if "5.7.139" in text or "SmtpClientAuthentication is disabled" in text:
+        print("      SMTP AUTH is disabled FOR THIS MAILBOX. The password is not")
+        print("      the problem. Imperial ICT must enable Authenticated SMTP on")
+        print(f"      {user}.")
+        return
+
+    print("      The server offered LOGIN, so SMTP AUTH itself is available —")
+    print("      these credentials were refused. Most likely, in order:")
+    print()
+    print(f"      1. {user} is a SHARED mailbox. Shared mailboxes have a")
+    print("         disabled sign-in account and NO password of their own, so")
+    print("         no password can ever work. Authenticate as a real account")
+    print("         that holds Send As on it, and leave SMTP_FROM as the shared")
+    print("         address — SMTP_USER and SMTP_FROM are separate settings for")
+    print("         exactly this.")
+    print("      2. The password belongs to a different account than SMTP_USER.")
+    print("      3. The account has MFA or Conditional Access, which basic SMTP")
+    print("         cannot satisfy.")
 
 
 def main() -> int:
@@ -61,8 +116,15 @@ def main() -> int:
         print("      The app treats this as unconfigured and logs codes instead.")
         return 1
 
+    # Not a `with` block. On exit smtplib sends QUIT, and after a failed AUTH
+    # Exchange answers that badly enough that __exit__ raises a *new*
+    # SMTPResponseException which replaces the original SMTPAuthenticationError
+    # — so a rejected password came out reported as "could not reach the
+    # server". Closing by hand keeps the real exception.
+    smtp = None
     try:
-        with smtplib.SMTP(host, port, timeout=20) as smtp:
+        smtp = smtplib.SMTP(host, port, timeout=20)
+        if True:
             smtp.set_debuglevel(0)
             smtp.ehlo()
             print("ok    connected")
@@ -84,7 +146,7 @@ def main() -> int:
                 print("      ('Authenticated SMTP' on the mailbox).")
 
             if user:
-                smtp.login(user, password)
+                _login(smtp, user, password)
                 print("ok    authenticated")
 
             if user and from_address and from_address != user.lower():
@@ -110,11 +172,7 @@ def main() -> int:
                 print("\n(no recipient given — pass one to send a real test email)")
 
     except smtplib.SMTPAuthenticationError as exc:
-        print(f"\nFAIL  authentication rejected: {exc.smtp_code} {exc.smtp_error!r}")
-        print("      Most likely one of:")
-        print("      - the password is wrong, or was reset (Imperial forces this yearly)")
-        print("      - SMTP AUTH is disabled for the mailbox (ask IT to enable it)")
-        print("      - the account requires MFA, which basic SMTP cannot satisfy")
+        _explain_auth_failure(exc.smtp_code, exc.smtp_error, user)
         return 1
     except smtplib.SMTPNotSupportedError as exc:
         print(f"\nFAIL  {exc}")
@@ -122,18 +180,33 @@ def main() -> int:
             print("      The port is probably wrong: 587 is STARTTLS, 465 is")
             print("      implicit TLS, 25 is usually blocked outright.")
         else:
-            # Reaching here means the server took the connection but offers no
-            # AUTH — see the WARN above, which has already named the cause.
             print("      See the warning above: the mailbox almost certainly has")
             print("      SMTP AUTH disabled. A new password will not fix it.")
         return 1
-    except (TimeoutError, OSError) as exc:
-        print(f"\nFAIL  could not reach {host}:{port} — {exc}")
-        print("      Outbound SMTP is often blocked on home and campus networks.")
+    except smtplib.SMTPResponseException as exc:
+        # Includes anything raised while closing the connection.
+        if exc.smtp_code in (454, 530, 534, 535):
+            _explain_auth_failure(exc.smtp_code, exc.smtp_error, user)
+        else:
+            print(f"\nFAIL  {exc.smtp_code} {exc.smtp_error!r}")
         return 1
     except smtplib.SMTPException as exc:
         print(f"\nFAIL  {type(exc).__name__}: {exc}")
         return 1
+    except (TimeoutError, OSError) as exc:
+        # Last, because smtplib.SMTPException subclasses OSError.
+        print(f"\nFAIL  could not reach {host}:{port} — {exc}")
+        print("      Outbound SMTP is often blocked on home and campus networks.")
+        return 1
+    finally:
+        if smtp is not None:
+            try:
+                smtp.quit()
+            except Exception:
+                try:
+                    smtp.close()
+                except Exception:
+                    pass
 
     print("\nAll good.")
     return 0

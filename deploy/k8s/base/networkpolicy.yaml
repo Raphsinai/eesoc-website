@@ -66,9 +66,14 @@ spec:
     # /media request into a 504, since a NetworkPolicy drops rather than
     # rejects. The namespace and pod selectors are in one `from` entry so they
     # AND together: kube-system holds plenty that has no business here.
+    #
+    # Namespace only, no podSelector. kustomize's commonLabels rewrites
+    # selectors as well as metadata, so a podSelector here silently gains
+    # `app.kubernetes.io/part-of: eesoc-website` — and the ingress controller
+    # is not part of this app, so the rule matched nothing and the 504 came
+    # back. Narrowing it is not worth much anyway: 3902 is the endpoint we
+    # deliberately publish to the entire internet through that controller.
     - from:
         - namespaceSelector:
             matchLabels: { kubernetes.io/metadata.name: kube-system }
-          podSelector:
-            matchLabels: { app.kubernetes.io/name: rke2-ingress-nginx }
       ports: [{ port: 3902 }]

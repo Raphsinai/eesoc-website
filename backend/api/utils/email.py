@@ -423,7 +423,7 @@ async def send_locker_clearout(to: str, locker: str, deadline: str) -> bool:
     the reservations are wiped, because anything left behind gets cut off.
     """
     body = (
-        f"You're holding EESoc locker {locker} on Level 4.\n\n"
+        f"You're holding EESoc locker {locker}.\n\n"
         f"Please empty it before {deadline}. Locker allocations reset for the new "
         "academic year, and anything left in it after that is removed.\n\n"
         "If you want a locker next year, you'll be able to book one again once "
@@ -432,7 +432,7 @@ async def send_locker_clearout(to: str, locker: str, deadline: str) -> bool:
     html = _shell(
         f"Empty locker {locker} before {deadline}",
         f"Locker allocations reset for the new academic year.",
-        _p(f"You're holding EESoc locker <strong>{locker}</strong> on Level 4.")
+        _p(f"You're holding EESoc locker <strong>{locker}</strong>.")
         + _p(
             f"Please empty it before <strong>{deadline}</strong>. Locker "
             "allocations reset for the new academic year, and anything left in "

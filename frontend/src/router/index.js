@@ -28,7 +28,7 @@ const routes = [
   { path: '/sponsors', name: 'sponsors', component: SponsorsView,
     meta: { title: 'Sponsors', description: 'The companies that support EESoc — workshops, careers events and the hackathon.' } },
   { path: '/lockers', name: 'lockers', component: LockersView,
-    meta: { title: 'Lockers', description: 'Book an EESoc locker on Level 4 of the EEE building at Imperial College London.' } },
+    meta: { title: 'Lockers', description: 'Book an EESoc locker in the EEE building at Imperial College London.' } },
   { path: '/portal', name: 'portal', component: PortalView, meta: { title: 'Sponsor portal', requires: 'sponsor', noindex: true } },
   { path: '/admin', name: 'admin', component: AdminView, meta: { title: 'Committee admin', requires: 'admin', noindex: true } },
   { path: '/:pathMatch(.*)*', redirect: '/' },

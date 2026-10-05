@@ -61,7 +61,7 @@ const bookingEyebrow = computed(() => {
 const bookingTitle = computed(() => {
   if (!session.authenticated) return 'Log in to book a locker'
   if (!session.isMember) return 'Lockers are for Union members'
-  return sel.value ? `Locker ${sel.value}, Level 4` : 'Pick a locker from the map'
+  return sel.value ? `Locker ${sel.value}` : 'Pick a locker from the map'
 })
 
 const bookingNote = computed(() => {
@@ -122,16 +122,15 @@ async function release(locker) {
        map with a banner over it still reads as "pick one" — which is what it
        looked like — and the API would refuse anyway. -->
   <main v-if="!available('lockers')" class="lockers-paused">
-    <span class="eyebrow">Level 4 · EEE building</span>
+    <span class="eyebrow">Levels 3–5 · EEE building</span>
     <h1 style="margin:0; font:var(--type-h1); letter-spacing:var(--tracking-display); color:var(--text-strong)">Lockers</h1>
     <MaintenanceNotice
       :reason="reason('lockers')"
       title="Locker booking is not open yet"
     />
     <p style="margin:0; font:var(--type-body-long); color:var(--text-body)">
-      EESoc lockers are on Level 4 of the EEE building and run for the academic
-      year. They are bought through the Union shop — please don’t buy one yet,
-      we’ll announce here as soon as booking opens.
+      EESoc lockers are bought through the Union shop — please don’t buy one
+      yet, we’ll announce here as soon as booking opens.
     </p>
     <p v-if="mine.length" style="margin:0; font:var(--type-small); color:var(--text-body)">
       You currently hold {{ mine.map((l) => l.id).join(', ') }}.
@@ -142,7 +141,7 @@ async function release(locker) {
   <main v-else class="lockers-layout">
 
     <div class="lockers-intro">
-      <span class="eyebrow">Level 4 · EEE building</span>
+      <span class="eyebrow">Levels 3–5 · EEE building</span>
       <h1 style="margin:0; font:var(--type-h1); letter-spacing:var(--tracking-display); color:var(--text-strong)">Lockers</h1>
       <p style="margin:0; font:var(--type-body-long); color:var(--text-body)">
         Lockers run for the academic year and are bought through the Union shop. Bring your own padlock; anything left after the last exam day is cut off and cleared.

@@ -37,10 +37,30 @@ function flash(message) {
 }
 
 // Admins belong to no sponsor, so the portal needs to be told which one to act
-// for. Without this every write 400s with "you are signed in as committee".
-const actingSponsorId = computed(() =>
-  session.sponsorIds.length ? session.sponsorIds[0] : null,
+// for. Without this every read and write 400s with "you are signed in as
+// committee" — which is what the whole page did for a committee account.
+//
+// A sponsor account is pinned to its own sponsor and never sees the picker.
+const chosenSponsorId = ref(null)
+const sponsorOptions = ref([])
+const canChooseSponsor = computed(
+  () => !session.sponsorIds.length && (session.capabilities ?? []).includes('sponsors'),
 )
+const actingSponsorId = computed(() =>
+  session.sponsorIds.length ? session.sponsorIds[0] : chosenSponsorId.value,
+)
+
+async function loadSponsorOptions() {
+  if (!canChooseSponsor.value) return
+  try {
+    // The admin list, not the public one: the portal scopes by numeric id and
+    // /sponsors publishes the slug as its id.
+    const data = await api.get('/admin/sponsors')
+    sponsorOptions.value = (data.sponsors ?? []).map((x) => ({ id: x.id, name: x.name }))
+  } catch (e) {
+    error.value = e.message
+  }
+}
 
 function scoped(path) {
   return actingSponsorId.value ? `${path}?sponsor_id=${actingSponsorId.value}` : path
@@ -189,14 +209,23 @@ const listings = computed(() => dashboard.value?.listings ?? [])
 
 async function loadDashboard() {
   error.value = ''
+  // Nothing to ask for until a committee account has picked a sponsor. Asking
+  // anyway is what produced the 400 that made the page look broken.
+  if (!actingSponsorId.value && canChooseSponsor.value) {
+    dashboard.value = null
+    sponsorName.value = ''
+    return
+  }
   try {
-    dashboard.value = await api.get('/portal/dashboard')
-    // The portal is scoped to whichever sponsor this account represents; the
-    // heading should say which one rather than a hardcoded name.
-    if (session.sponsorIds.length) {
-      const all = await api.get('/sponsors')
-      sponsorName.value = all.sponsors.find((x) => x.id)?.name ?? ''
-    }
+    dashboard.value = await api.get(scoped('/portal/dashboard'))
+    // Named by the response where it says so, since that is the one thing that
+    // knows which sponsor it was scoped to; the picked option otherwise. The
+    // old guess read the public list and took whichever came back first, so it
+    // routinely named a different company than the one on screen.
+    sponsorName.value =
+      dashboard.value?.sponsor?.name ??
+      sponsorOptions.value.find((o) => o.id === actingSponsorId.value)?.name ??
+      ''
   } catch (e) {
     error.value = e.message
   }
@@ -205,8 +234,12 @@ async function loadDashboard() {
 async function loadPanel(id) {
   if (id === 'dashboard') return loadDashboard()
   error.value = ''
+  if (!actingSponsorId.value && canChooseSponsor.value) {
+    panel.value = null
+    return
+  }
   try {
-    panel.value = await api.get(`/portal/panels/${id}`)
+    panel.value = await api.get(scoped(`/portal/panels/${id}`))
   } catch (e) {
     error.value = e.message
     panel.value = null
@@ -214,6 +247,9 @@ async function loadPanel(id) {
 }
 
 watch(portal, loadPanel, { immediate: true })
+// Switching sponsor reloads whatever panel is on screen, dashboard included.
+watch(actingSponsorId, () => loadPanel(portal.value))
+loadSponsorOptions()
 
 async function claim(row) {
   busy.value = true
@@ -233,6 +269,13 @@ async function claim(row) {
 const portalTitle = computed(
   () => `${panel.value?.eyebrow || 'Dashboard'}${sponsorName.value ? ` · ${sponsorName.value}` : ''}`,
 )
+// Sector and agreement year when we have them, so the sidebar says something
+// true rather than a fixed "Package · 2026-27".
+const sponsorStrapline = computed(() => {
+  const sp = dashboard.value?.sponsor
+  return [sp?.sector, sp?.agreementYear].filter(Boolean).join(' · ')
+})
+
 const portalHeading = computed(
   () => panel.value?.heading || (isDash.value ? 'Your term at a glance.' : ''),
 )
@@ -243,8 +286,10 @@ const portalHeading = computed(
     <aside class="eesoc-dark portal-aside">
       <div style="display:grid; gap:6px">
         <span class="eyebrow">Sponsor portal</span>
-        <span style="font-family:var(--font-display); font-weight:700; font-size:var(--text-lg); color:var(--text-strong)">IMC Trading</span>
-        <span style="font-family:var(--font-mono); font-size:var(--text-xs); color:var(--text-muted)">Package · 2026–27</span>
+        <!-- Was hardcoded to "IMC Trading", one of the mockup's invented
+             sponsors, so every real sponsor saw somebody else's name. -->
+        <span style="font-family:var(--font-display); font-weight:700; font-size:var(--text-lg); color:var(--text-strong)">{{ sponsorName || 'No sponsor selected' }}</span>
+        <span style="font-family:var(--font-mono); font-size:var(--text-xs); color:var(--text-muted)">{{ sponsorStrapline }}</span>
       </div>
       <div style="display:grid; gap:2px">
         <a
@@ -267,11 +312,33 @@ const portalHeading = computed(
           <span class="eyebrow">{{ portalTitle }}</span>
           <h1 style="margin:0; font:var(--type-h2); letter-spacing:var(--tracking-heading); color:var(--text-strong)">{{ portalHeading }}</h1>
         </div>
-        <div style="display:flex; gap:var(--space-3)">
-          <Button @click="showJobForm = true">Post a job</Button>
-          <Button variant="secondary" @click="showRequestForm = true">Request an event</Button>
+        <div style="display:flex; gap:var(--space-3); align-items:center; flex-wrap:wrap">
+          <!-- Committee only. A sponsor account is pinned to its own sponsor and
+               never sees this. -->
+          <label v-if="canChooseSponsor" class="portal-acting">
+            <span class="portal-acting__label">Acting for</span>
+            <select v-model="chosenSponsorId" class="portal-acting__select">
+              <option :value="null">Choose a sponsor…</option>
+              <option v-for="o in sponsorOptions" :key="o.id" :value="o.id">{{ o.name }}</option>
+            </select>
+          </label>
+          <Button :disabled="!actingSponsorId" @click="showJobForm = true">Post a job</Button>
+          <Button
+            variant="secondary"
+            :disabled="!actingSponsorId"
+            @click="showRequestForm = true"
+          >Request an event</Button>
         </div>
       </div>
+
+      <!-- A committee account belongs to no sponsor, so there is nothing to show
+           until one is picked. Saying so beats the bare 400 this used to throw. -->
+      <Card v-if="canChooseSponsor && !actingSponsorId" variant="outline">
+        <p style="margin:0; font:var(--type-small); color:var(--text-body)">
+          You are signed in as committee, so this portal has no sponsor of its own.
+          Pick one above to see and edit what that sponsor sees.
+        </p>
+      </Card>
 
       <!-- Shown on every panel, not just the dashboard: a failed claim or post
            on another tab was previously silent. -->
@@ -333,8 +400,10 @@ const portalHeading = computed(
         </div>
       </template>
 
-      <!-- Panel views -->
-      <template v-else>
+      <!-- Panel views. Guarded on the panel actually being loaded: this branch
+           dereferences it throughout, and a failed fetch sets it back to null,
+           which used to throw and blank the entire page. -->
+      <template v-else-if="panel">
         <div class="portal-cols" style="display:grid; grid-template-columns:minmax(0,1.5fr) minmax(0,1fr); gap:var(--space-10); align-items:start">
           <div style="display:grid; gap:var(--space-4)">
             <span class="eyebrow">{{ panel.label }}</span>
@@ -451,5 +520,25 @@ const portalHeading = computed(
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--space-6);
   align-items: center;
+}
+.portal-acting {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.portal-acting__label {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  color: var(--text-muted);
+}
+.portal-acting__select {
+  font: var(--type-small);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface-card);
+  color: var(--text-strong);
 }
 </style>

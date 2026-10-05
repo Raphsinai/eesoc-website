@@ -122,6 +122,11 @@ async function release(locker) {
     <div class="lockers-intro">
       <span class="eyebrow">Level 4 · EEE building</span>
       <h1 style="margin:0; font:var(--type-h1); letter-spacing:var(--tracking-display); color:var(--text-strong)">Lockers</h1>
+      <MaintenanceNotice
+        v-if="!available('lockers')"
+        :reason="reason('lockers')"
+        title="Locker booking is paused"
+      />
       <p style="margin:0; font:var(--type-body-long); color:var(--text-body)">
         Lockers are free to members for the academic year. Bring your own padlock; anything left after the last exam day is cut off and cleared.
       </p>
@@ -132,7 +137,7 @@ async function release(locker) {
         </div>
         <div class="step">
           <span class="step__n">02</span>
-          <span style="font:var(--type-small); color:var(--text-body)">Buy a locker on the Union shop, then pick any free one on the map.</span>
+          <span style="font:var(--type-small); color:var(--text-body)">{{ available('lockers') ? 'Buy a locker on the Union shop, then pick any free one on the map.' : 'Booking is paused — please don’t buy a locker on the Union shop yet.' }}</span>
         </div>
         <div class="step">
           <span class="step__n">03</span>
@@ -154,10 +159,13 @@ async function release(locker) {
           <h2 style="margin:0; font-family:var(--font-display); font-weight:700; font-size:var(--text-lg); letter-spacing:var(--tracking-heading); color:var(--text-strong)">Bank {{ b.letter }}</h2>
           <span class="eyebrow" style="letter-spacing:var(--tracking-label); color:var(--text-faint)">{{ b.note }}</span>
         </div>
-        <div class="locker-grid">
+        <div :class="['locker-grid', !available('lockers') && 'locker-grid--paused']">
           <template v-for="l in b.lockers" :key="l.id">
-            <Button v-if="l.selected" variant="primary" block @click="pick(l)">{{ l.id }}</Button>
-            <Button v-else-if="l.mine" variant="accent" block :title="'Yours — click to release'" @click="release(l)">{{ l.id }}</Button>
+            <!-- Releasing stays live while booking is paused: someone who no
+                 longer wants their locker should not be stuck with it. -->
+            <Button v-if="l.mine" variant="accent" block :title="'Yours — click to release'" @click="release(l)">{{ l.id }}</Button>
+            <Button v-else-if="!available('lockers')" variant="ghost" block disabled :title="reason('lockers')">{{ l.id }}</Button>
+            <Button v-else-if="l.selected" variant="primary" block @click="pick(l)">{{ l.id }}</Button>
             <Button v-else-if="l.free" variant="secondary" block @click="pick(l)">{{ l.id }}</Button>
             <Button v-else variant="ghost" block disabled>{{ l.id }}</Button>
           </template>
@@ -203,6 +211,14 @@ async function release(locker) {
   gap: var(--space-16);
   align-items: start;
 }
+/* Visibly inert: the free/taken colours still read, but nothing invites a
+   click. opacity alone would leave the buttons looking live on hover. */
+.locker-grid--paused {
+  opacity: 0.55;
+  filter: saturate(0.35);
+  pointer-events: none;
+}
+
 .lockers-intro {
   display: grid;
   gap: var(--space-6);

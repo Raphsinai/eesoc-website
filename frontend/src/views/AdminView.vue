@@ -125,8 +125,9 @@ async function reconcile() {
 const blank = () => ({
   slug: '', title: '', category: 'Social', description: '', image_url: '', venue: '',
   starts_at: '', ends_at: '', capacity: null, hold_hours: 48, published: false,
-  // Blank means "not announced yet" — the site shows On sale soon and
-  // refuses bookings, which is the right default for a new event.
+  // Not announced is the default for a new event: the site shows On sale
+  // soon and refuses bookings until someone chooses a date.
+  sales_scheduled: false,
   sales_open_at: '',
   sponsorship_claimable: false,
   ticket_types: [{ name: 'Standard', price_pence: 0, capacity: null, max_per_user: 1, members_only: false, requires_purchase: true }],
@@ -140,6 +141,7 @@ function editEvent(e) {
     ...blank(), ...e,
     starts_at: (e.starts_at || '').slice(0, 16),
     ends_at: (e.ends_at || '').slice(0, 16),
+    sales_scheduled: Boolean(e.sales_open_at),
     sales_open_at: (e.sales_open_at || '').slice(0, 16),
     ticket_types: e.ticket_types?.length ? e.ticket_types : blank().ticket_types,
   })
@@ -171,9 +173,11 @@ async function saveEvent() {
       capacity: draft.capacity || null,
       starts_at: new Date(draft.starts_at).toISOString(),
       ends_at: draft.ends_at ? new Date(draft.ends_at).toISOString() : null,
-      sales_open_at: draft.sales_open_at
-        ? new Date(draft.sales_open_at).toISOString()
-        : null,
+      // The radio decides, not whether the field happens to be empty.
+      sales_open_at:
+        draft.sales_scheduled && draft.sales_open_at
+          ? new Date(draft.sales_open_at).toISOString()
+          : null,
       ticket_types: draft.ticket_types.filter((t) => t.name.trim())
         .map((t) => ({ ...t, capacity: t.capacity || null })),
     }
@@ -933,18 +937,38 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 <Field label="Total capacity" help="Blank = per-type only."><Input v-model.number="draft.capacity" type="number" min="1" /></Field>
                 <Field label="Hold hours" help="Min 24."><Input v-model.number="draft.hold_hours" type="number" min="24" /></Field>
               </div>
-              <Field
-                label="Tickets on sale from"
-                help="Leave blank if the date is not decided — the page says “On sale soon” and refuses bookings until you set one."
-              >
-                <Input v-model="draft.sales_open_at" type="datetime-local" />
-              </Field>
-              <p
-                v-if="!draft.sales_open_at"
-                style="margin:0; font:var(--type-2xs); color:var(--text-accent)"
-              >
-                No date set — this event will show “On sale soon” and cannot be booked.
-              </p>
+              <!-- An explicit choice, not "leave the date blank". Clearing a
+                   datetime-local is fiddly in every browser and near-impossible
+                   in Safari, which is why the date kept coming back as now. -->
+              <fieldset style="margin:0; padding:0; border:0; display:grid; gap:var(--space-2)">
+                <legend style="padding:0; font:var(--type-label); color:var(--text-muted)">Ticket sales</legend>
+                <label style="font:var(--type-small); color:var(--text-body); display:flex; gap:var(--space-2); align-items:center">
+                  <input v-model="draft.sales_scheduled" type="radio" :value="false" />
+                  Not announced yet — show “On sale soon”
+                </label>
+                <label style="font:var(--type-small); color:var(--text-body); display:flex; gap:var(--space-2); align-items:center">
+                  <input v-model="draft.sales_scheduled" type="radio" :value="true" />
+                  On sale from a set date
+                </label>
+                <Input
+                  v-if="draft.sales_scheduled"
+                  v-model="draft.sales_open_at"
+                  type="datetime-local"
+                />
+                <p
+                  v-if="draft.sales_scheduled && !draft.sales_open_at"
+                  style="margin:0; font:var(--type-2xs); color:var(--danger)"
+                >
+                  Pick a date, or choose “Not announced yet”.
+                </p>
+                <p v-else style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
+                  {{
+                    draft.sales_scheduled
+                      ? 'Bookings open automatically at that time.'
+                      : 'The event is listed, but cannot be booked until you set a date.'
+                  }}
+                </p>
+              </fieldset>
 
               <TraceRule />
               <h3 style="margin:0; font:var(--type-h5)">Union product (optional)</h3>

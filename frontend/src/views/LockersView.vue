@@ -74,7 +74,7 @@ const bookingNote = computed(() => {
       : 'Buy a locker on the Union shop. Purchases reach us the following morning.'
   }
   if (sel.value) return 'Free for the year. Key collection Tuesdays, EEE 403.'
-  return `Free lockers are outlined in blue. You have ${entitlement.value?.remaining ?? 0} left to claim.`
+  return `Available lockers are outlined in blue. You have ${entitlement.value?.remaining ?? 0} left to claim.`
 })
 
 const canBook = computed(
@@ -129,9 +129,9 @@ async function release(locker) {
       title="Locker booking is not open yet"
     />
     <p style="margin:0; font:var(--type-body-long); color:var(--text-body)">
-      Lockers are free to members for the academic year, on Level 4 of the EEE
-      building. Please don’t buy anything on the Union shop for a locker yet —
-      we’ll announce here when booking opens.
+      EESoc lockers are on Level 4 of the EEE building and run for the academic
+      year. They are bought through the Union shop — please don’t buy one yet,
+      we’ll announce here as soon as booking opens.
     </p>
     <p v-if="mine.length" style="margin:0; font:var(--type-small); color:var(--text-body)">
       You currently hold {{ mine.map((l) => l.id).join(', ') }}.
@@ -145,7 +145,7 @@ async function release(locker) {
       <span class="eyebrow">Level 4 · EEE building</span>
       <h1 style="margin:0; font:var(--type-h1); letter-spacing:var(--tracking-display); color:var(--text-strong)">Lockers</h1>
       <p style="margin:0; font:var(--type-body-long); color:var(--text-body)">
-        Lockers are free to members for the academic year. Bring your own padlock; anything left after the last exam day is cut off and cleared.
+        Lockers run for the academic year and are bought through the Union shop. Bring your own padlock; anything left after the last exam day is cut off and cleared.
       </p>
       <div style="display:grid; gap:var(--space-4)">
         <div class="step">
@@ -154,7 +154,7 @@ async function release(locker) {
         </div>
         <div class="step">
           <span class="step__n">02</span>
-          <span style="font:var(--type-small); color:var(--text-body)">Buy a locker on the Union shop, then pick any free one on the map.</span>
+          <span style="font:var(--type-small); color:var(--text-body)">Buy a locker on the Union shop, then pick any available one on the map.</span>
         </div>
         <div class="step">
           <span class="step__n">03</span>
@@ -163,7 +163,7 @@ async function release(locker) {
       </div>
       <TraceRule />
       <div class="legend">
-        <span class="legend__item"><span class="legend__swatch legend__swatch--free"></span>Free</span>
+        <span class="legend__item"><span class="legend__swatch legend__swatch--free"></span>Available</span>
         <span class="legend__item"><span class="legend__swatch legend__swatch--sel"></span>Selected</span>
         <span class="legend__item"><span class="legend__swatch legend__swatch--sel"></span>Yours</span>
         <span class="legend__item"><span class="legend__swatch legend__swatch--taken"></span>Taken</span>

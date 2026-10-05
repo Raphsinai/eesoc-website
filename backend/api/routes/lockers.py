@@ -52,7 +52,9 @@ async def list_lockers(session: AuthSession | None = Depends(current_session)) -
         out.append(
             {
                 "letter": letter,
-                "note": f"{free} of {len(items)} free",
+                # "available", not "free": lockers are paid for, and the
+                # same word for "vacant" reads as "no charge".
+                "note": f"{free} of {len(items)} available",
                 "lockers": items,
             }
         )

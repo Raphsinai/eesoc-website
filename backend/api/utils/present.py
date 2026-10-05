@@ -77,6 +77,12 @@ def event_status(event: dict) -> tuple[str, str]:
     if event.get("sold_out"):
         return "Sold out", "danger"
 
+    # No ticket types at all = nothing to book. A drop-in event is not
+    # "on sale soon", it is simply free to turn up to, and saying otherwise
+    # makes people wait for tickets that are never coming.
+    if not types:
+        return "Free · just turn up", "success"
+
     state, opens = sales_state(event)
     if state == "soon":
         return "On sale soon", "neutral"

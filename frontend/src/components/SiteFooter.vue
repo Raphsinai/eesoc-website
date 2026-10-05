@@ -32,10 +32,20 @@ import PinStrip from '@/components/ds/PinStrip.vue'
 
       <div class="site-footer__col">
         <span class="site-footer__eyebrow">Follow</span>
+        <!-- Instagram only. The LinkedIn and GitHub buttons went nowhere —
+             an icon that looks like a link and does nothing is worse than no
+             icon. Add them back when there are accounts to point at. -->
         <div style="display:flex; gap:var(--space-3)">
-          <IconButton variant="ghost" label="Instagram"><Icon name="instagram" :size="18" /></IconButton>
-          <IconButton variant="ghost" label="LinkedIn"><Icon name="linkedin" :size="18" /></IconButton>
-          <IconButton variant="ghost" label="GitHub"><Icon name="github" :size="18" /></IconButton>
+          <a
+            href="https://instagram.com/eesoc"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="EESoc on Instagram (@eesoc)"
+            class="site-footer__social"
+          >
+            <Icon name="instagram" :size="18" />
+            <span>@eesoc</span>
+          </a>
         </div>
       </div>
     </div>
@@ -82,5 +92,17 @@ import PinStrip from '@/components/ds/PinStrip.vue'
 .site-footer__link {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
+}
+
+.site-footer__social {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font: var(--type-small);
+  color: var(--text-muted);
+  text-decoration: none;
+}
+.site-footer__social:hover {
+  color: var(--text-strong);
 }
 </style>

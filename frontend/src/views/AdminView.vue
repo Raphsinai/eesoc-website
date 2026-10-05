@@ -130,7 +130,10 @@ const blank = () => ({
   sales_scheduled: false,
   sales_open_at: '',
   sponsorship_claimable: false,
-  ticket_types: [{ name: 'Standard', price_pence: 0, capacity: null, max_per_user: 1, members_only: false, requires_purchase: true }],
+  // Empty by default. An event with no ticket types is a drop-in event: no
+  // booking, no "on sale" state, just a listing. Adding a type is the
+  // deliberate act, not removing the one that was there.
+  ticket_types: [],
 })
 const draft = reactive(blank())
 const editingId = ref(null)
@@ -143,7 +146,7 @@ function editEvent(e) {
     ends_at: (e.ends_at || '').slice(0, 16),
     sales_scheduled: Boolean(e.sales_open_at),
     sales_open_at: (e.sales_open_at || '').slice(0, 16),
-    ticket_types: e.ticket_types?.length ? e.ticket_types : blank().ticket_types,
+    ticket_types: e.ticket_types ?? [],
   })
   // Prefill the product and per-ticket line selects from existing links.
   const ev = links.value.find((l) => l.event_id === e.id && l.ticket_type_id === null)
@@ -940,7 +943,10 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               <!-- An explicit choice, not "leave the date blank". Clearing a
                    datetime-local is fiddly in every browser and near-impossible
                    in Safari, which is why the date kept coming back as now. -->
-              <fieldset style="margin:0; padding:0; border:0; display:grid; gap:var(--space-2)">
+              <fieldset
+                v-if="draft.ticket_types.length"
+                style="margin:0; padding:0; border:0; display:grid; gap:var(--space-2)"
+              >
                 <legend style="padding:0; font:var(--type-label); color:var(--text-muted)">Ticket sales</legend>
                 <label style="font:var(--type-small); color:var(--text-body); display:flex; gap:var(--space-2); align-items:center">
                   <input v-model="draft.sales_scheduled" type="radio" :value="false" />
@@ -1040,7 +1046,19 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                   Link a Union product to this event first (above) — no purchase can
                   confirm this ticket until you do.
                 </p>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  @click="draft.ticket_types.splice(i, 1)"
+                >Remove this ticket type</Button>
               </div>
+              <p
+                v-if="!draft.ticket_types.length"
+                style="margin:0; font:var(--type-small); color:var(--text-muted)"
+              >
+                No ticket types — this is a drop-in event. The page will say
+                “No booking needed” and nobody has to reserve a place.
+              </p>
               <Button size="sm" variant="ghost" @click="draft.ticket_types.push({ name: '', price_pence: 0, capacity: null, max_per_user: 1, members_only: false, requires_purchase: true })">
                 Add ticket type
               </Button>

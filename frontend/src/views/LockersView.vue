@@ -118,15 +118,32 @@ async function release(locker) {
 </script>
 
 <template>
-  <main class="lockers-layout">
+  <!-- While booking is paused the whole page is the notice. Showing the bank
+       map with a banner over it still reads as "pick one" — which is what it
+       looked like — and the API would refuse anyway. -->
+  <main v-if="!available('lockers')" class="lockers-paused">
+    <span class="eyebrow">Level 4 · EEE building</span>
+    <h1 style="margin:0; font:var(--type-h1); letter-spacing:var(--tracking-display); color:var(--text-strong)">Lockers</h1>
+    <MaintenanceNotice
+      :reason="reason('lockers')"
+      title="Locker booking is not open yet"
+    />
+    <p style="margin:0; font:var(--type-body-long); color:var(--text-body)">
+      Lockers are free to members for the academic year, on Level 4 of the EEE
+      building. Please don’t buy anything on the Union shop for a locker yet —
+      we’ll announce here when booking opens.
+    </p>
+    <p v-if="mine.length" style="margin:0; font:var(--type-small); color:var(--text-body)">
+      You currently hold {{ mine.map((l) => l.id).join(', ') }}.
+      <Button size="sm" variant="ghost" :disabled="busy" @click="release(mine[0])">Release</Button>
+    </p>
+  </main>
+
+  <main v-else class="lockers-layout">
+
     <div class="lockers-intro">
       <span class="eyebrow">Level 4 · EEE building</span>
       <h1 style="margin:0; font:var(--type-h1); letter-spacing:var(--tracking-display); color:var(--text-strong)">Lockers</h1>
-      <MaintenanceNotice
-        v-if="!available('lockers')"
-        :reason="reason('lockers')"
-        title="Locker booking is paused"
-      />
       <p style="margin:0; font:var(--type-body-long); color:var(--text-body)">
         Lockers are free to members for the academic year. Bring your own padlock; anything left after the last exam day is cut off and cleared.
       </p>
@@ -137,7 +154,7 @@ async function release(locker) {
         </div>
         <div class="step">
           <span class="step__n">02</span>
-          <span style="font:var(--type-small); color:var(--text-body)">{{ available('lockers') ? 'Buy a locker on the Union shop, then pick any free one on the map.' : 'Booking is paused — please don’t buy a locker on the Union shop yet.' }}</span>
+          <span style="font:var(--type-small); color:var(--text-body)">Buy a locker on the Union shop, then pick any free one on the map.</span>
         </div>
         <div class="step">
           <span class="step__n">03</span>
@@ -159,13 +176,10 @@ async function release(locker) {
           <h2 style="margin:0; font-family:var(--font-display); font-weight:700; font-size:var(--text-lg); letter-spacing:var(--tracking-heading); color:var(--text-strong)">Bank {{ b.letter }}</h2>
           <span class="eyebrow" style="letter-spacing:var(--tracking-label); color:var(--text-faint)">{{ b.note }}</span>
         </div>
-        <div :class="['locker-grid', !available('lockers') && 'locker-grid--paused']">
+        <div class="locker-grid">
           <template v-for="l in b.lockers" :key="l.id">
-            <!-- Releasing stays live while booking is paused: someone who no
-                 longer wants their locker should not be stuck with it. -->
-            <Button v-if="l.mine" variant="accent" block :title="'Yours — click to release'" @click="release(l)">{{ l.id }}</Button>
-            <Button v-else-if="!available('lockers')" variant="ghost" block disabled :title="reason('lockers')">{{ l.id }}</Button>
-            <Button v-else-if="l.selected" variant="primary" block @click="pick(l)">{{ l.id }}</Button>
+            <Button v-if="l.selected" variant="primary" block @click="pick(l)">{{ l.id }}</Button>
+            <Button v-else-if="l.mine" variant="accent" block :title="'Yours — click to release'" @click="release(l)">{{ l.id }}</Button>
             <Button v-else-if="l.free" variant="secondary" block @click="pick(l)">{{ l.id }}</Button>
             <Button v-else variant="ghost" block disabled>{{ l.id }}</Button>
           </template>
@@ -177,12 +191,7 @@ async function release(locker) {
              map above still shows which lockers are free, and a live-looking
              "Book this locker" that cannot work reads as a broken site rather
              than a deliberate pause. -->
-        <MaintenanceNotice
-          v-if="!available('lockers')"
-          :reason="reason('lockers')"
-          title="Locker booking is paused"
-        />
-        <div v-else class="booking">
+        <div class="booking">
           <div style="display:grid; gap:6px">
             <span class="eyebrow" style="letter-spacing:var(--tracking-label)">{{ bookingEyebrow }}</span>
             <span style="font-family:var(--font-display); font-weight:700; font-size:var(--text-xl); letter-spacing:var(--tracking-heading); color:var(--text-strong)">{{ bookingTitle }}</span>
@@ -211,12 +220,12 @@ async function release(locker) {
   gap: var(--space-16);
   align-items: start;
 }
-/* Visibly inert: the free/taken colours still read, but nothing invites a
-   click. opacity alone would leave the buttons looking live on hover. */
-.locker-grid--paused {
-  opacity: 0.55;
-  filter: saturate(0.35);
-  pointer-events: none;
+.lockers-paused {
+  max-width: 62ch;
+  margin: 0 auto;
+  padding: var(--space-12) var(--space-6);
+  display: grid;
+  gap: var(--space-5);
 }
 
 .lockers-intro {

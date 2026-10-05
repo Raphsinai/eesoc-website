@@ -300,7 +300,17 @@ const salesOpensText = computed(() => {
           <p style="margin:0; font:var(--type-body); white-space:pre-line">{{ event.description }}</p>
         </div>
 
-        <Card variant="offset">
+        <!-- No ticket types means no booking: a drop-in event gets a short
+             note instead of a panel, rather than a "Book a place" card with
+             nothing in it. -->
+        <Card v-if="!event.ticketTypes?.length" variant="offset">
+          <h2 style="margin:0 0 var(--space-3); font:var(--type-h4)">No booking needed</h2>
+          <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
+            This one is free and open to all — just turn up.
+          </p>
+        </Card>
+
+        <Card v-else variant="offset">
           <h2 style="margin:0 0 var(--space-5); font:var(--type-h4)">Book a place</h2>
 
           <!-- The whole panel goes, not just the button. Leaving the ticket

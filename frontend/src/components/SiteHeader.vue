@@ -70,6 +70,11 @@ function goResult(r) {
   results.value = []
   router.push(r.to)
 }
+
+// Closed on every navigation: a panel that stays open over the page you just
+// asked for is the classic mobile-menu bug.
+const menuOpen = ref(false)
+router.afterEach(() => { menuOpen.value = false })
 </script>
 
 <template>
@@ -79,6 +84,18 @@ function goResult(r) {
         <Logo variant="pins" :height="26" />
       </router-link>
 
+      <button
+        class="site-burger"
+        type="button"
+        :aria-expanded="menuOpen"
+        aria-controls="site-menu"
+        :aria-label="menuOpen ? 'Close menu' : 'Open menu'"
+        @click="menuOpen = !menuOpen"
+      >
+        <Icon :name="menuOpen ? 'x' : 'menu'" :size="22" />
+      </button>
+
+      <div id="site-menu" class="site-menu" :class="{ 'is-open': menuOpen }">
       <nav class="site-nav">
         <router-link
           v-for="n in visibleNav"
@@ -118,6 +135,7 @@ function goResult(r) {
         <Button variant="ghost" size="sm" @click="logout">Log out</Button>
       </template>
       <Button v-else variant="secondary" size="sm" @click="$emit('open-login')">Log in</Button>
+      </div>
     </div>
   </header>
 </template>
@@ -227,5 +245,79 @@ function goResult(r) {
   padding: 14px;
   font: var(--type-small);
   color: var(--text-muted);
+}
+
+/* The burger only exists on small screens. */
+.site-burger {
+  display: none;
+  margin-left: auto;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  background: none;
+  border: 1px solid var(--border-hairline);
+  border-radius: 8px;
+  color: var(--text-strong);
+  cursor: pointer;
+}
+
+.site-menu {
+  display: contents;
+}
+
+/* 900px, not 768: the breakpoint is set by when the nav links, the search box
+   and the identity stop fitting on one row, which happens well above tablet
+   width. Below it everything that was in the row moves into a dropped panel,
+   so the header cannot overflow sideways and drag the page with it. */
+@media (max-width: 900px) {
+  .site-header__inner {
+    height: auto;
+    min-height: 60px;
+    padding: 0 var(--space-5);
+    gap: var(--space-4);
+    flex-wrap: wrap;
+  }
+
+  .site-burger { display: inline-flex; }
+
+  .site-menu {
+    display: none;
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-4);
+    padding: var(--space-4) 0 var(--space-6);
+    border-top: 1px solid var(--border-hairline);
+  }
+  .site-menu.is-open { display: flex; }
+
+  .site-nav {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-4);
+  }
+  .site-nav__link {
+    font-size: var(--text-sm);
+    padding: var(--space-2) 0;
+  }
+
+  /* margin-left:auto pushed this off the row on narrow screens — the cause of
+     the sideways scroll. */
+  .header-search {
+    margin-left: 0;
+    width: 100%;
+  }
+  .header-search__results {
+    width: 100%;
+    right: auto;
+    left: 0;
+  }
+
+  .site-identity {
+    white-space: normal;
+  }
 }
 </style>

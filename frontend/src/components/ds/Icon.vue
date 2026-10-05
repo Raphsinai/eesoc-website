@@ -8,10 +8,12 @@ import {
   Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown,
   Calendar, Clock, MapPin, X, Instagram, Linkedin, Github, Mail,
   BookOpen, FileText, Folder, ExternalLink, Cpu, Users, Check, Zap, ArrowRight,
+  Menu,
 } from 'lucide-vue-next'
 
 const registry = {
   'search': Search,
+  'menu': Menu,
   'chevron-left': ChevronLeft,
   'chevron-right': ChevronRight,
   'chevron-up': ChevronUp,

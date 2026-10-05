@@ -67,14 +67,6 @@ data:
   SMTP_USER: "eesocweb@ic.ac.uk"
   SMTP_FROM: "EESoc Webmaster <eesocweb@ic.ac.uk>"
   SMTP_REPLY_TO: "eesoc@imperial.ac.uk"
-  # Lockers are paused until a Union product is linked to them. Without a
-  # link the site cannot tell who has paid, so every booking would be taken on
-  # trust and reconciled by hand. Clear this value to turn them back on; it
-  # needs a `kubectl -n eesoc rollout restart deploy/api` like any other
-  # ConfigMap change.
-  MAINTENANCE_FEATURES: "lockers"
-  MAINTENANCE_MESSAGE: "Locker booking is paused while we finish setting up payment through the Union shop. It will be back shortly."
-
   # Codes must never be written to logs in production.
   LOG_CODES_WHEN_UNCONFIGURED: "false"
 
@@ -84,5 +76,9 @@ data:
   # rather than accepting bookings that can never be confirmed. This is only for
   # breakage the process cannot detect itself.
   # Keys: login, bookings, lockers, sponsor_portal, admin
-  MAINTENANCE_FEATURES: ""
-  MAINTENANCE_MESSAGE: ""
+  #
+  # Lockers: paused until a Union product is linked to them. Without a link
+  # the site cannot tell who has paid, so every booking would be taken on
+  # trust and reconciled by hand. Empty this to turn booking back on.
+  MAINTENANCE_FEATURES: "lockers"
+  MAINTENANCE_MESSAGE: "Locker booking is paused while we finish setting up payment through the Union shop. It will be back shortly."

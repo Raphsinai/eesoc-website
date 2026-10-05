@@ -27,14 +27,22 @@ data:
   # to the bucket, which is why the prefix below is empty — otherwise keys would
   # come out as /media/media/...
   S3_PREFIX: ""
-  # Where browsers fetch uploads, and what goes into sign-in and booking links
-  # in outbound email. Objects store only their key, so this can move again
-  # without touching anything already uploaded.
+  # Deliberately relative, not "https://eesoc.com/media".
   #
-  # Changing either needs `kubectl -n eesoc rollout restart deploy/api`: the
-  # pod reads its environment once at startup and nothing here triggers a new
-  # one, so ArgoCD will report Synced while the old value is still live.
-  S3_PUBLIC_BASE_URL: "https://eesoc.com/media"
+  # The URL this produces is stored in the database on upload — on
+  # committee_profiles.photo_url and events.image_url — so an absolute one
+  # bakes today's hostname into every row and the cutover from the test domain
+  # left them all pointing at it. Relative follows whatever host serves the
+  # page, and the Ingress answers /media on all of them. Nothing needs it
+  # absolute: og:image is a static asset with its own hardcoded URL.
+  S3_PUBLIC_BASE_URL: "/media"
+
+  # This one must stay absolute — it goes into sign-in links in email, where
+  # there is no page to be relative to.
+  #
+  # Changing it needs `kubectl -n eesoc rollout restart deploy/api`: the pod
+  # reads its environment once at startup and nothing here triggers a new one,
+  # so ArgoCD will report Synced while the old value is still live.
   SITE_ORIGIN: "https://eesoc.com"
 
   # PG_* are deliberately absent: CloudNativePG generates the credentials and

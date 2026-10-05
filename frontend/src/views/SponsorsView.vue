@@ -50,7 +50,7 @@ function toggle(i) {
       <span class="eyebrow">Sponsors 2026–27</span>
       <h1 style="margin:0; font:var(--type-h1); letter-spacing:var(--tracking-display); color:var(--text-strong)">Who backs us, and why it matters to you.</h1>
       <p style="margin:0; font:var(--type-body); color:var(--text-body); max-width:62ch">
-        Every event you attend for free is paid for by one of these firms. Open a card for their open roles and the events they run with us.
+        Every event you attend is paid for by one of these firms. Open a card for their open roles and the events they run with us.
       </p>
       <p
         v-if="sponsors.some((s) => s.active === false)"

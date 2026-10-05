@@ -5,6 +5,8 @@ import Button from '@/components/ds/Button.vue'
 import Card from '@/components/ds/Card.vue'
 import TraceRule from '@/components/ds/TraceRule.vue'
 import session from '@/stores/session'
+import { available, reason } from '@/stores/status'
+import MaintenanceNotice from '@/components/MaintenanceNotice.vue'
 
 const raw = ref([])
 const entitlement = ref(null)
@@ -163,7 +165,16 @@ async function release(locker) {
       </div>
 
       <Card variant="offset">
-        <div class="booking">
+        <!-- The panel is replaced outright, not just the button disabled: the
+             map above still shows which lockers are free, and a live-looking
+             "Book this locker" that cannot work reads as a broken site rather
+             than a deliberate pause. -->
+        <MaintenanceNotice
+          v-if="!available('lockers')"
+          :reason="reason('lockers')"
+          title="Locker booking is paused"
+        />
+        <div v-else class="booking">
           <div style="display:grid; gap:6px">
             <span class="eyebrow" style="letter-spacing:var(--tracking-label)">{{ bookingEyebrow }}</span>
             <span style="font-family:var(--font-display); font-weight:700; font-size:var(--text-xl); letter-spacing:var(--tracking-heading); color:var(--text-strong)">{{ bookingTitle }}</span>

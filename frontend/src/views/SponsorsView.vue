@@ -58,7 +58,13 @@ function toggle(i) {
       <Card v-for="(s, i) in sponsors" :key="i" variant="outline" :padded="false">
         <a href="#" class="sponsor-row" @click.prevent="toggle(i)">
           <div class="sponsor-row__logo">
-            <ImageSlot :placeholder="s.name" shape="rect" />
+            <img
+              v-if="s.logoUrl"
+              :src="s.logoUrl"
+              :alt="s.name"
+              class="sponsor-row__img"
+            />
+            <ImageSlot v-else :placeholder="s.name" shape="rect" />
           </div>
           <div style="display:grid; gap:6px">
             <span style="font-family:var(--font-display); font-weight:700; font-size:var(--text-xl); letter-spacing:var(--tracking-heading); color:var(--text-strong)">{{ s.name }}</span>
@@ -168,6 +174,16 @@ function toggle(i) {
   border-radius: 4px;
   position: relative;
   overflow: hidden;
+}
+/* Supplied logos vary wildly in aspect ratio and in how much whitespace the
+   brand pack bakes in, so contain them and add our own breathing room rather
+   than trusting the file to be cropped sensibly. */
+.sponsor-row__img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 6px;
+  box-sizing: border-box;
 }
 .sponsor-detail {
   border-top: 2px solid var(--border-strong);

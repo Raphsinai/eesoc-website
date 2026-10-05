@@ -558,6 +558,14 @@ async function saveSponsor() {
   }
 }
 
+// Same one-click publish as events. `active` is a full-row replace, so spread
+// the row and flip the one field — `amount` and `users` are added by the API
+// for display and are dropped by the model on the way back in.
+async function toggleSponsorActive(sp) {
+  await api.put(`/admin/sponsors/${sp.id}`, { ...sp, active: !sp.active })
+  await load()
+}
+
 async function removeSponsor(sp) {
   if (!confirm(`Delete ${sp.name}? Their listings, claims and portal access go too.`)) return
   await api.del(`/admin/sponsors/${sp.id}`)
@@ -1423,7 +1431,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 <div style="display:grid; gap:2px; min-width:0">
                   <span style="font:var(--type-h5)">
                     {{ sp.name }}
-                    <Badge :tone="sp.active ? 'success' : 'neutral'">{{ sp.active ? 'Live' : 'Hidden' }}</Badge>
+                    <Badge :tone="sp.active ? 'success' : 'neutral'">{{ sp.active ? 'Live' : 'Draft' }}</Badge>
                   </span>
                   <span style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">
                     {{ sp.sector || 'No sector' }} · {{ sp.amount }}
@@ -1436,6 +1444,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 <div style="display:flex; gap:4px">
                   <Button size="sm" variant="ghost" @click="moveSponsor(sp, -1)">↑</Button>
                   <Button size="sm" variant="ghost" @click="moveSponsor(sp, 1)">↓</Button>
+                  <Button size="sm" variant="ghost" @click="toggleSponsorActive(sp)">{{ sp.active ? 'Unpublish' : 'Publish' }}</Button>
                   <Button size="sm" variant="ghost" @click="editSponsor(sp)">Edit</Button>
                   <Button size="sm" variant="danger" @click="removeSponsor(sp)">Delete</Button>
                 </div>
@@ -1498,7 +1507,10 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 <textarea v-model="sponsorDraft.internal_note" rows="2" class="ees-textarea" />
               </Field>
 
-              <label style="font:var(--type-small)"><input v-model="sponsorDraft.active" type="checkbox" /> Visible on the site</label>
+              <label style="font:var(--type-small)"><input v-model="sponsorDraft.active" type="checkbox" /> Published</label>
+              <p style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
+                Draft sponsors stay on this page only. Publish once the agreement is signed.
+              </p>
               <div style="display:flex; gap:var(--space-3)">
                 <Button :disabled="busy" @click="saveSponsor">{{ editingSponsor ? 'Save' : 'Add sponsor' }}</Button>
                 <Button variant="ghost" @click="resetSponsor">Clear</Button>

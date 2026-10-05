@@ -52,6 +52,12 @@ function toggle(i) {
       <p style="margin:0; font:var(--type-body); color:var(--text-body); max-width:62ch">
         Every event you attend for free is paid for by one of these firms. Open a card for their open roles and the events they run with us.
       </p>
+      <p
+        v-if="sponsors.some((s) => s.active === false)"
+        style="margin:0; font:var(--type-small); color:var(--text-muted)"
+      >
+        Cards marked <strong>Draft</strong> are visible to the committee only.
+      </p>
     </div>
 
     <div style="display:grid; gap:var(--space-4)">
@@ -71,6 +77,9 @@ function toggle(i) {
             <span style="font:var(--type-small); color:var(--text-muted)">{{ s.oneLine }}</span>
           </div>
           <div style="display:flex; align-items:center; gap:var(--space-4)">
+            <!-- Only an admin is ever served a draft, so this never appears for
+                 a member. It is the preview events and resource pages give. -->
+            <Badge v-if="s.active === false" tone="neutral">Draft</Badge>
             <Badge tone="accent">{{ s.sector }}</Badge>
             <Icon :name="open === i ? 'chevron-up' : 'chevron-down'" :size="20" />
           </div>

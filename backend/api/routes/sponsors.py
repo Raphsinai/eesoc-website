@@ -13,21 +13,35 @@ from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadF
 from clients import database
 from services import storage
 from models.auth import AuthSession
-from utils.deps import require_feature, require_sponsor, sponsor_scope, verify_csrf
+from utils.deps import (
+    current_session,
+    require_feature,
+    require_sponsor,
+    sponsor_scope,
+    verify_csrf,
+)
 from utils.present import event_card, format_date
 
 router = APIRouter()
 
 
 @router.get("/sponsors")
-async def list_sponsors() -> dict:
+async def list_sponsors(
+    session: AuthSession | None = Depends(current_session),
+) -> dict:
     """Public. Feeds both the home carousel and the Sponsors page.
+
+    Admins additionally see unpublished drafts, the same preview events and
+    resource pages give, so a card can be checked in place before it goes live.
 
     Explicitly field-by-field: `amount_pence` and `internal_note` are committee
     information and must never reach this response. Returning the row wholesale
     is how that leaks the first time somebody adds a column.
     """
-    sponsors = await database.get("/sponsors", {"active_only": True}) or []
+    is_admin = bool(session and session.is_admin)
+    sponsors = await database.get(
+        "/sponsors", {"active_only": not is_admin}
+    ) or []
     return {
         "sponsors": [
             {
@@ -41,6 +55,10 @@ async def list_sponsors() -> dict:
                 "site": s.get("site"),
                 "roles": s.get("roles", 0),
                 "logoUrl": s.get("logo_url"),
+                # Only ever false for an admin: everyone else is served the
+                # filtered list, so this cannot say anything about a draft to
+                # somebody who was not already allowed to see it.
+                "active": s.get("active", True),
                 # Published so members can write to the sponsor directly. EESoc
                 # never handles a CV.
                 "cvContact": s.get("cv_contact_email"),

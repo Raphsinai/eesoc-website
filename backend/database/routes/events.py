@@ -146,71 +146,6 @@ async def get_event_by_slug(slug: str) -> EventDetail:
         if row is None:
             raise HTTPException(404, "No such event")
 
-        # Ticket types travel with the event, as they do on create. Without
-        # this the handler updated the events row and returned, so every edit
-        # to a price, cap or name made in the event form was silently thrown
-        # away — the save reported success and nothing changed.
-        existing = {
-            r["id"]: r
-            for r in await conn.fetch(
-                "SELECT id FROM public.ticket_types WHERE event_id = $1;", event_id
-            )
-        }
-        seen: set[int] = set()
-
-        for tt in event.ticket_types:
-            if tt.id in existing:
-                seen.add(tt.id)
-                await conn.execute(
-                    """
-                    UPDATE public.ticket_types SET
-                        name=$2, description=$3, price_pence=$4, capacity=$5,
-                        requires_purchase=$6, members_only=$7, max_per_user=$8,
-                        sort_order=$9
-                     WHERE id=$1;
-                    """,
-                    tt.id, tt.name, tt.description, tt.price_pence, tt.capacity,
-                    tt.requires_purchase, tt.members_only, tt.max_per_user,
-                    tt.sort_order,
-                )
-            else:
-                await conn.execute(
-                    """
-                    INSERT INTO public.ticket_types
-                        (event_id, name, description, price_pence, capacity,
-                         requires_purchase, members_only, max_per_user, sort_order)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9);
-                    """,
-                    event_id, tt.name, tt.description, tt.price_pence, tt.capacity,
-                    tt.requires_purchase, tt.members_only, tt.max_per_user,
-                    tt.sort_order,
-                )
-
-        # Anything the form no longer lists has been removed deliberately —
-        # but not if somebody holds a ticket of that type. Refusing the whole
-        # save is the honest answer: dropping the type would orphan their
-        # booking, and quietly keeping it is how the bug above went unnoticed.
-        for removed in set(existing) - seen:
-            held = await conn.fetchval(
-                """
-                SELECT count(*) FROM public.reservations
-                 WHERE ticket_type_id = $1 AND status <> 'cancelled';
-                """,
-                removed,
-            )
-            if held:
-                name = await conn.fetchval(
-                    "SELECT name FROM public.ticket_types WHERE id = $1;", removed
-                )
-                raise HTTPException(
-                    409,
-                    f"{held} booking(s) exist for ticket type '{name}'. "
-                    "Cancel them before removing it.",
-                )
-            await conn.execute(
-                "DELETE FROM public.ticket_types WHERE id = $1;", removed
-            )
-
         return await _detail(conn, row)
 
 
@@ -290,6 +225,71 @@ async def update_event(event_id: int, event: EventWrite) -> EventDetail:
         )
         if row is None:
             raise HTTPException(404, "No such event")
+        # Ticket types travel with the event, as they do on create. Without
+        # this the handler updated the events row and returned, so every edit
+        # to a price, cap or name made in the event form was silently thrown
+        # away — the save reported success and nothing changed.
+        existing = {
+            r["id"]: r
+            for r in await conn.fetch(
+                "SELECT id FROM public.ticket_types WHERE event_id = $1;", event_id
+            )
+        }
+        seen: set[int] = set()
+
+        for tt in event.ticket_types:
+            if tt.id in existing:
+                seen.add(tt.id)
+                await conn.execute(
+                    """
+                    UPDATE public.ticket_types SET
+                        name=$2, description=$3, price_pence=$4, capacity=$5,
+                        requires_purchase=$6, members_only=$7, max_per_user=$8,
+                        sort_order=$9
+                     WHERE id=$1;
+                    """,
+                    tt.id, tt.name, tt.description, tt.price_pence, tt.capacity,
+                    tt.requires_purchase, tt.members_only, tt.max_per_user,
+                    tt.sort_order,
+                )
+            else:
+                await conn.execute(
+                    """
+                    INSERT INTO public.ticket_types
+                        (event_id, name, description, price_pence, capacity,
+                         requires_purchase, members_only, max_per_user, sort_order)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9);
+                    """,
+                    event_id, tt.name, tt.description, tt.price_pence, tt.capacity,
+                    tt.requires_purchase, tt.members_only, tt.max_per_user,
+                    tt.sort_order,
+                )
+
+        # Anything the form no longer lists has been removed deliberately —
+        # but not if somebody holds a ticket of that type. Refusing the whole
+        # save is the honest answer: dropping the type would orphan their
+        # booking, and quietly keeping it is how the bug above went unnoticed.
+        for removed in set(existing) - seen:
+            held = await conn.fetchval(
+                """
+                SELECT count(*) FROM public.reservations
+                 WHERE ticket_type_id = $1 AND status <> 'cancelled';
+                """,
+                removed,
+            )
+            if held:
+                name = await conn.fetchval(
+                    "SELECT name FROM public.ticket_types WHERE id = $1;", removed
+                )
+                raise HTTPException(
+                    409,
+                    f"{held} booking(s) exist for ticket type '{name}'. "
+                    "Cancel them before removing it.",
+                )
+            await conn.execute(
+                "DELETE FROM public.ticket_types WHERE id = $1;", removed
+            )
+
         return await _detail(conn, row)
 
 

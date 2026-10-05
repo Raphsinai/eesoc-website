@@ -75,6 +75,10 @@ class EventWrite(BaseModel):
     capacity: int | None = None
     hold_hours: int = 48
     published: bool = False
+    # When tickets go on sale. None = not announced yet, which the site shows
+    # as "On sale soon" and refuses to book. Must be on THIS model, not just
+    # on Event: create and update both read it off the write payload.
+    sales_open_at: datetime | None = None
     sponsorship_claimable: bool = False
     requested_by_sponsor_id: int | None = None
     academic_year: str | None = None

@@ -8,7 +8,7 @@ name: build and deploy
 
 on:
   push:
-    branches: [main]
+    branches: [main, "hotfix/**"]
   pull_request:
 
 env:

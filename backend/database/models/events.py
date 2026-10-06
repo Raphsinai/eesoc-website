@@ -101,7 +101,7 @@ class Reservation(BaseModel):
     id: int | None = None
     event_id: int
     ticket_type_id: int
-    user_id: int
+    user_id: int | None = None  # a guest draft hold has no user until claimed
     quantity: int = 1
     status: str = "held"
     created_at: datetime | None = None

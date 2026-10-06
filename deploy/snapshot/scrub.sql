@@ -28,9 +28,24 @@ TRUNCATE TABLE public.sessions;
 -- Sign-in codes, their hashes, and the IP that asked for them.
 TRUNCATE TABLE public.login_codes;
 
+-- The snapshot is of PRODUCTION's schema, which lags staging's by whatever is
+-- waiting to be promoted. So anything scrubbed here that a newer migration
+-- introduced is guarded by whether it exists yet — a scrub that fails on a
+-- missing table publishes nothing, and staging stops refreshing.
+
 -- Keyed by raw email address, and of no use in staging — an opt-out only
--- matters to the mail that is actually being sent.
-TRUNCATE TABLE public.email_optouts;
+-- matters to the mail that is actually being sent. Sale alerts likewise: the
+-- address is personal and the token is an unsubscribe credential. Test alerts
+-- are made on staging, not copied to it.
+DO $$
+BEGIN
+    IF to_regclass('public.email_optouts') IS NOT NULL THEN
+        TRUNCATE TABLE public.email_optouts;
+    END IF;
+    IF to_regclass('public.event_sale_alerts') IS NOT NULL THEN
+        TRUNCATE TABLE public.event_sale_alerts;
+    END IF;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- 2. Identities.
@@ -90,10 +105,21 @@ UPDATE public.committee_members SET
 UPDATE public.committee_profiles SET
     cid        = CASE WHEN cid IS NULL THEN NULL
                       ELSE '9' || lpad((abs(hashtext(cid)) % 10000000)::text, 7, '0') END,
-    user_email = CASE WHEN user_email IS NULL THEN NULL
-                      ELSE 'committee' || abs(hashtext(user_email)) || '@staging.invalid' END,
     login      = CASE WHEN login IS NULL THEN NULL
                       ELSE 'cmte' || abs(hashtext(login)) END;
+
+-- user_email arrives with migration 030; guarded for the reason above.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name   = 'committee_profiles'
+                  AND column_name  = 'user_email') THEN
+        UPDATE public.committee_profiles SET
+            user_email = 'committee' || abs(hashtext(user_email)) || '@staging.invalid'
+          WHERE user_email IS NOT NULL;
+    END IF;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- 4. Third parties and free text.

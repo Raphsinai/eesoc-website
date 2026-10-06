@@ -6,6 +6,19 @@ so the client can regroup or re-localise without re-parsing the display text.
 """
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+# Every event is in London. Times are stored in UTC, so anything shown to a
+# person goes through here first — formatting the UTC value directly showed
+# every time an hour early during BST.
+LONDON = ZoneInfo("Europe/London")
+
+
+def london(when: datetime) -> datetime:
+    """The same instant on a London clock. Naive values are taken as UTC."""
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone(LONDON)
 
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -15,12 +28,15 @@ DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 def format_date(when: datetime | None) -> str:
     if when is None:
         return ""
+    when = london(when)
     return f"{DAYS[when.weekday()]} {when.day:02d} {MONTHS[when.month - 1]}"
 
 
 def format_time_range(start: datetime | None, end: datetime | None) -> str:
     if start is None:
         return ""
+    start = london(start)
+    end = london(end) if end is not None else None
     if end is None:
         return start.strftime("%H:%M")
     # En dash with spaces, matching the mockup's "12:00 – 17:00".

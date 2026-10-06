@@ -138,14 +138,26 @@ const blank = () => ({
 const draft = reactive(blank())
 const editingId = ref(null)
 
+// The API sends UTC ("…T17:00:00+00:00"); a datetime-local input wants the
+// browser's own clock with no offset. Slicing the ISO string showed the UTC
+// time as if it were local — an hour early in BST — and saving the form
+// unchanged then moved the event an hour earlier every time.
+function toLocalInput(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
 function editEvent(e) {
   editingId.value = e.id
   Object.assign(draft, {
     ...blank(), ...e,
-    starts_at: (e.starts_at || '').slice(0, 16),
-    ends_at: (e.ends_at || '').slice(0, 16),
+    starts_at: toLocalInput(e.starts_at),
+    ends_at: toLocalInput(e.ends_at),
     sales_scheduled: Boolean(e.sales_open_at),
-    sales_open_at: (e.sales_open_at || '').slice(0, 16),
+    sales_open_at: toLocalInput(e.sales_open_at),
     ticket_types: e.ticket_types ?? [],
   })
   // Prefill the product and per-ticket line selects from existing links.

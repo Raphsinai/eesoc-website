@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from clients import database, union
 from utils import email as mailer
 from config import settings
-from utils.present import format_date, format_time_range
+from utils.present import format_date, format_time_range, london
 from utils.year import academic_year
 
 log = logging.getLogger("api.sync")
@@ -243,4 +243,4 @@ def _readable(iso: str | None) -> str:
         when = datetime.fromisoformat(str(iso))
     except ValueError:
         return str(iso)
-    return f"{format_date(when)} at {when.strftime('%H:%M')}"
+    return f"{format_date(when)} at {london(when).strftime('%H:%M')}"

@@ -93,7 +93,6 @@ spec:
             requests: { cpu: 50m, memory: 128Mi }
             limits:   { memory: 512Mi }
 
-      containers:
         # ---------------------------------------------------------------
         # 2. Replace staging's database with it.
         # ---------------------------------------------------------------
@@ -126,3 +125,46 @@ spec:
           resources:
             requests: { cpu: 100m, memory: 192Mi }
             limits:   { memory: 512Mi }
+
+      containers:
+        # ---------------------------------------------------------------
+        # 3. Bring the restored schema up to staging's code.
+        # ---------------------------------------------------------------
+        # The snapshot is production's schema, which lags staging's by whatever
+        # is waiting to be promoted. Migrations only run when the adapter
+        # starts, and it started BEFORE this restore replaced the schema — so
+        # without this step staging runs new code on the old schema. Same
+        # image as staging's adapter, same runner, so it applies exactly the
+        # numbers production has not got yet and nothing else.
+        - name: migrate
+          image: ghcr.io/OWNER/eesoc-database
+          command:
+            - python
+            - -c
+            - |
+              import asyncio, os, asyncpg, migrate
+              async def main():
+                  conn = await asyncpg.connect(
+                      host=os.environ["PG_HOST"], port=os.environ["PG_PORT"],
+                      user=os.environ["PG_USER"], password=os.environ["PG_PASS"],
+                      database=os.environ["PG_DB"])
+                  try:
+                      await migrate.backfill_existing(conn)
+                      print("[migrate]", await migrate.run(conn))
+                  finally:
+                      await conn.close()
+              asyncio.run(main())
+          env:
+            - name: PG_HOST
+              valueFrom: { secretKeyRef: { name: eesoc-db-app, key: host } }
+            - name: PG_PORT
+              valueFrom: { secretKeyRef: { name: eesoc-db-app, key: port } }
+            - name: PG_DB
+              valueFrom: { secretKeyRef: { name: eesoc-db-app, key: dbname } }
+            - name: PG_USER
+              valueFrom: { secretKeyRef: { name: eesoc-db-app, key: username } }
+            - name: PG_PASS
+              valueFrom: { secretKeyRef: { name: eesoc-db-app, key: password } }
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits:   { memory: 256Mi }

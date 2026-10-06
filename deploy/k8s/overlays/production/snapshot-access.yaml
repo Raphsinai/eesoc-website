@@ -16,6 +16,12 @@ spec:
     - from:
         - podSelector: { matchLabels: { app: api } }
       ports: [{ port: 3900 }]
+    # The snapshot CronJob, writing the scrubbed dump into eesoc-snapshots.
+    # Labelled in snapshot-cronjob.yaml; this patch is applied after the base's
+    # commonLabels, so the selector is matched exactly as written.
+    - from:
+        - podSelector: { matchLabels: { app: snapshot } }
+      ports: [{ port: 3900 }]
     - from:
         - namespaceSelector:
             matchLabels: { kubernetes.io/metadata.name: kube-system }

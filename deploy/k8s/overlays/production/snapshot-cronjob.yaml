@@ -29,6 +29,10 @@ spec:
       # database.
       backoffLimit: 2
       template:
+        metadata:
+          # What garage's NetworkPolicy admits to the S3 port (snapshot-access.yaml).
+          # Without it the upload hangs: a NetworkPolicy drops, it does not refuse.
+          labels: { app: snapshot }
         spec:
           restartPolicy: Never
           imagePullSecrets:

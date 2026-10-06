@@ -1,0 +1,26 @@
+# Let the refresh job write production's media into staging's own Garage.
+#
+# Without this the media copy hung: garage-ingress admits only app=api to the
+# S3 port, and a NetworkPolicy drops rather than refuses. The job's pods are
+# labelled app=refresh in refresh-job.yaml. This is a patch applied after the
+# base's commonLabels, so the selector is matched exactly as written.
+#
+# A strategic merge patch replaces the ingress list, so the base's two rules
+# are restated here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: garage-ingress }
+spec:
+  podSelector: { matchLabels: { app: garage } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: api } }
+      ports: [{ port: 3900 }]
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+      ports: [{ port: 3902 }]
+    - from:
+        - podSelector: { matchLabels: { app: refresh } }
+      ports: [{ port: 3900 }]

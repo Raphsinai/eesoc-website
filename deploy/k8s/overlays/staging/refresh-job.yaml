@@ -25,6 +25,9 @@ spec:
   # old refresh jobs, but the logs survive long enough to read after a deploy.
   ttlSecondsAfterFinished: 3600
   template:
+    metadata:
+      # Admitted to staging Garage's S3 port by refresh-access.yaml.
+      labels: { app: refresh }
     spec:
       restartPolicy: Never
       imagePullSecrets:

@@ -50,6 +50,20 @@ LIVE = "(status = 'confirmed' OR (status IN ('held','draft') AND expires_at > NO
 # Those holds last until the event starts instead, and the committee checks
 # them by hand. Same link rules as the matcher: the ticket type's own link, or
 # an event-level one.
+# One person's live bookings of one ticket type, for the per-person limit.
+# "Person" is the account OR the browser: a guest has no account until the form
+# is submitted, and a guest who books twice usually does it from the same page.
+# Drafts are not counted — they are the request being decided, not a booking.
+MINE_OF_TYPE = """
+    SELECT COALESCE(SUM(quantity), 0)
+      FROM public.reservations
+     WHERE ticket_type_id = $1
+       AND status IN ('held', 'confirmed')
+       AND (status = 'confirmed' OR expires_at > NOW())
+       AND (user_id = $2 OR (visitor_hash IS NOT NULL AND visitor_hash = $3))
+       AND id <> $4;
+"""
+
 HOLD_EXPIRES = """
     CASE WHEN EXISTS (
             SELECT 1 FROM public.product_links pl
@@ -442,10 +456,10 @@ async def reserve(req: ReservationRequest) -> ReservationResult:
             f"""
             INSERT INTO public.reservations
                 (event_id, ticket_type_id, user_id, quantity, expires_at,
-                 order_number, booked_as_guest)
+                 order_number, booked_as_guest, visitor_hash)
             VALUES ($1, $2, $3, $4,
                     {HOLD_EXPIRES.format(tt="$2", ev="$1", hours="$5", starts="$8::timestamptz")},
-                    $6, $7)
+                    $6, $7, $9)
             RETURNING id, event_id, ticket_type_id, user_id, quantity, status,
                       created_at, expires_at, confirmed_at, cancelled_at,
                       order_number, matched_sale_id, note, booked_as_guest;
@@ -458,6 +472,7 @@ async def reserve(req: ReservationRequest) -> ReservationResult:
             req.order_number,
             req.booked_as_guest,
             event["starts_at"],
+            req.visitor_hash,
         )
     return ReservationResult(ok=True, reservation=Reservation(**dict(row)))
 
@@ -468,6 +483,7 @@ async def list_reservations(
     event_id: int | None = None,
     status: str | None = None,
     limit: int = 200,
+    visitor_hash: str | None = None,
 ) -> list[ReservationDetail]:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -487,6 +503,7 @@ async def list_reservations(
              WHERE ($1::bigint  IS NULL OR r.user_id  = $1)
                AND ($2::bigint  IS NULL OR r.event_id = $2)
                AND ($3::varchar IS NULL OR r.status   = $3)
+               AND ($5::varchar IS NULL OR r.visitor_hash = $5)
              ORDER BY r.created_at DESC
              LIMIT $4;
             """,
@@ -494,6 +511,7 @@ async def list_reservations(
             event_id,
             status,
             limit,
+            visitor_hash,
         )
     return [ReservationDetail(**dict(r)) for r in rows]
 
@@ -852,22 +870,35 @@ async def create_draft(req: ReservationRequest, minutes: int = 15) -> Reservatio
         if event["capacity"] is not None and counts["event_taken"] + req.quantity > event["capacity"]:
             return ReservationResult(ok=False, reason="sold_out")
 
+        # Checked here as well as at claim so a browser that has already booked
+        # is told before typing its details in, not after.
+        if req.visitor_hash:
+            mine = await conn.fetchval(
+                MINE_OF_TYPE, req.ticket_type_id, None, req.visitor_hash, 0
+            )
+            if mine + req.quantity > tt["max_per_user"]:
+                return ReservationResult(ok=False, reason="over_user_limit")
+
         row = await conn.fetchrow(
             f"""
             INSERT INTO public.reservations
                 (event_id, ticket_type_id, user_id, quantity, status, expires_at,
-                 booked_as_guest, draft_token)
-            VALUES ($1, $2, NULL, $3, 'draft', NOW() + make_interval(mins => $4), true, $5)
+                 booked_as_guest, draft_token, visitor_hash)
+            VALUES ($1, $2, NULL, $3, 'draft', NOW() + make_interval(mins => $4), true, $5, $6)
             RETURNING {RESERVATION_COLUMNS};
             """,
             req.event_id, req.ticket_type_id, req.quantity, minutes, req.draft_token,
+            req.visitor_hash,
         )
     return ReservationResult(ok=True, reservation=Reservation(**dict(row)))
 
 
 @router.post("/reservations/draft/{draft_token}/claim")
 async def claim_draft(
-    draft_token: str, user_id: int, hold_hours: int | None = None
+    draft_token: str,
+    user_id: int,
+    hold_hours: int | None = None,
+    visitor_hash: str | None = None,
 ) -> ReservationResult:
     """Turn a draft into a real hold once the guest form is submitted.
 
@@ -878,10 +909,11 @@ async def claim_draft(
     async with pool.acquire() as conn, conn.transaction():
         draft = await conn.fetchrow(
             """
-            SELECT r.id, r.event_id, r.ticket_type_id, r.expires_at, r.status,
-                   e.hold_hours, e.starts_at
+            SELECT r.id, r.event_id, r.ticket_type_id, r.quantity, r.expires_at,
+                   r.status, r.visitor_hash, e.hold_hours, e.starts_at, tt.max_per_user
               FROM public.reservations r
-              JOIN public.events e ON e.id = r.event_id
+              JOIN public.events e        ON e.id  = r.event_id
+              JOIN public.ticket_types tt ON tt.id = r.ticket_type_id
              WHERE r.draft_token = $1
              FOR UPDATE OF r;
             """,
@@ -902,16 +934,31 @@ async def claim_draft(
         if draft["expires_at"] <= datetime.now(timezone.utc):
             return ReservationResult(ok=False, reason="draft_expired")
 
+        # The per-person limit, which this path used to skip entirely: a guest
+        # could submit the form again and again and hold a ticket each time.
+        # Counted against the account the email resolved to AND the browser.
+        vh = visitor_hash or draft["visitor_hash"]
+        mine = await conn.fetchval(
+            MINE_OF_TYPE, draft["ticket_type_id"], user_id, vh, draft["id"]
+        )
+        if mine + draft["quantity"] > draft["max_per_user"]:
+            # Give the seat straight back rather than leave it parked.
+            await conn.execute(
+                "DELETE FROM public.reservations WHERE id = $1;", draft["id"]
+            )
+            return ReservationResult(ok=False, reason="over_user_limit")
+
         row = await conn.fetchrow(
             f"""
             UPDATE public.reservations
                SET user_id = $2, status = 'held', draft_token = NULL,
+                   visitor_hash = COALESCE(visitor_hash, $7),
                    expires_at = {HOLD_EXPIRES.format(tt="$4", ev="$5", hours="$3", starts="$6::timestamptz")}
              WHERE id = $1
             RETURNING {RESERVATION_COLUMNS};
             """,
             draft["id"], user_id, hold_hours or draft["hold_hours"],
-            draft["ticket_type_id"], draft["event_id"], draft["starts_at"],
+            draft["ticket_type_id"], draft["event_id"], draft["starts_at"], vh,
         )
     return ReservationResult(ok=True, reservation=Reservation(**dict(row)))
 

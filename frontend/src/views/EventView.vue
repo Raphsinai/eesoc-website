@@ -148,6 +148,9 @@ const maxQuantity = computed(() => {
 
 const canBook = computed(() => {
   if (!selected.value?.selectable) return false
+  // A guest's own bookings come back via their visitor cookie, so a second
+  // Reserve for a ticket they already hold is refused here, not after the form.
+  if (maxQuantity.value <= 0) return false
   if (!session.authenticated) {
     // The form has to be filled in before the second press does anything.
     if (!showGuestForm.value) return true
@@ -461,14 +464,22 @@ const salesOpensText = computed(() => {
 
               <!-- Guests have no Union identity in the sales feed, so this is
                    the only way we can tie their purchase to this booking. -->
-              <template v-if="r.status === 'held' && r.requiresPurchase && !session.isMember && !r.orderNumber">
+              <!-- A guest sees this booking because this browser made it, which
+                   is not proof of who they are. Changing it needs the code. -->
+              <p v-if="!session.authenticated" style="margin:0; font:var(--type-2xs); color:var(--text-muted)">
+                Booked from this browser. To cancel it or add an order number,
+                <a href="#" @click.prevent="emit('need-login')">sign in</a>
+                with the code we emailed you.
+              </p>
+
+              <template v-if="session.authenticated && r.status === 'held' && r.requiresPurchase && !session.isMember && !r.orderNumber">
                 <Field label="Union order number" help="From your receipt, e.g. AB99ZZ4.">
                   <Input v-model="orderNumbers[r.id]" placeholder="Order number" />
                 </Field>
                 <Button size="sm" :disabled="busy" @click="submitOrder(r)">Submit order number</Button>
               </template>
 
-              <Button size="sm" variant="ghost" :disabled="busy" @click="cancel(r)">Cancel</Button>
+              <Button v-if="session.authenticated" size="sm" variant="ghost" :disabled="busy" @click="cancel(r)">Cancel</Button>
             </div>
           </template>
         </Card>

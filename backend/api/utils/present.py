@@ -5,12 +5,20 @@ because that is what the mockup renders. ISO timestamps are sent alongside them
 so the client can regroup or re-localise without re-parsing the display text.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-# Event times are stored as London wall-clock times with no offset (migration
-# 031), so "has it happened yet" is a question about the time in London.
+# Every event is in London. Times are stored in UTC, so anything shown to a
+# person goes through here first — formatting the UTC value directly showed
+# every time an hour early during BST.
 LONDON = ZoneInfo("Europe/London")
+
+
+def london(when: datetime) -> datetime:
+    """The same instant on a London clock. Naive values are taken as UTC."""
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone(LONDON)
 
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -20,12 +28,15 @@ DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 def format_date(when: datetime | None) -> str:
     if when is None:
         return ""
+    when = london(when)
     return f"{DAYS[when.weekday()]} {when.day:02d} {MONTHS[when.month - 1]}"
 
 
 def format_time_range(start: datetime | None, end: datetime | None) -> str:
     if start is None:
         return ""
+    start = london(start)
+    end = london(end) if end is not None else None
     if end is None:
         return start.strftime("%H:%M")
     # En dash with spaces, matching the mockup's "12:00 – 17:00".
@@ -60,8 +71,9 @@ def sales_state(event: dict) -> tuple[str, str | None]:
     opens = _parse(event.get("sales_open_at"))
     if opens is None:
         return "soon", None
-    opens = opens.replace(tzinfo=None)
-    if opens <= london_now():
+    if opens.tzinfo is None:
+        opens = opens.replace(tzinfo=timezone.utc)
+    if opens <= datetime.now(timezone.utc):
         return "open", opens.isoformat()
     return "scheduled", opens.isoformat()
 
@@ -139,11 +151,6 @@ def event_card(event: dict) -> dict:
         "salesState": sales_state(event)[0],
         "salesOpenAt": sales_state(event)[1],
     }
-
-
-def london_now() -> datetime:
-    """Now, as a naive London wall-clock time — comparable with event times."""
-    return datetime.now(LONDON).replace(tzinfo=None)
 
 
 def _parse(value) -> datetime | None:

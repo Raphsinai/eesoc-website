@@ -37,6 +37,7 @@ from utils.present import (
     format_date,
     format_price,
     format_time_range,
+    london,
     sales_state,
 )
 from utils.year import academic_year
@@ -402,7 +403,7 @@ def _readable_deadline(iso: str | None) -> str:
     when = _parse_dt(iso)
     if when is None:
         return "soon"
-    return f"{format_date(when)} at {when.strftime('%H:%M')}"
+    return f"{format_date(when)} at {london(when).strftime('%H:%M')}"
 
 
 async def _send_guest_code(address: str) -> None:

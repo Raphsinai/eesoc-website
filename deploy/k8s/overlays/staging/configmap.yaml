@@ -31,6 +31,13 @@ data:
   # are ones you typed in yourself.
   LOG_CODES_WHEN_UNCONFIGURED: "true"
 
+  # Staging sends from the REAL mailbox, so only these addresses get real
+  # mail; anything else (the scrubbed .invalid members, the department's real
+  # year-group lists) is logged instead. Add a tester's address here to let
+  # them receive mail; everyone else can read their sign-in code with
+  #   kubectl -n eesoc-staging logs deploy/api -c api | grep -A12 'Not sending'
+  MAIL_ALLOWLIST: "ras124@ic.ac.uk,raph@tensorhost.com"
+
   # Nothing here is paid for, so the production pause is lifted — locker
   # booking is one of the things worth exercising before a release.
   MAINTENANCE_FEATURES: ""

@@ -48,9 +48,7 @@ LIVE = "(status = 'confirmed' OR (status IN ('held','draft') AND expires_at > NO
 # the matcher, so its purchase window would lapse with nobody able to act on
 # it — and an expired hold stops counting against capacity, which oversells.
 # Those holds last until the event starts instead, and the committee checks
-# them by hand. Event times are London wall-clock (migration 031), hence the
-# AT TIME ZONE at the call sites. Same link rules as the matcher: the ticket
-# type's own link, or
+# them by hand. Same link rules as the matcher: the ticket type's own link, or
 # an event-level one.
 # One person's live bookings of one ticket type, for the per-person limit.
 # "Person" is the account OR the browser: a guest has no account until the form
@@ -156,7 +154,7 @@ async def list_events(
             f"""
             SELECT {EVENT_COLUMNS} FROM public.events
              WHERE ($1::bool IS NOT TRUE OR published)
-               AND ($2::bool IS NOT TRUE OR starts_at >= (NOW() AT TIME ZONE 'Europe/London'))
+               AND ($2::bool IS NOT TRUE OR starts_at >= NOW())
                AND ($3::varchar IS NULL OR academic_year = $3)
              ORDER BY starts_at
              LIMIT $4;
@@ -198,7 +196,7 @@ async def events_due_announcement() -> list[EventDetail]:
              WHERE published
                AND sales_announced_at IS NULL
                AND sales_open_at IS NOT NULL
-               AND sales_open_at <= (NOW() AT TIME ZONE 'Europe/London')
+               AND sales_open_at <= NOW()
              ORDER BY sales_open_at;
             """
         )
@@ -518,7 +516,7 @@ async def reserve(req: ReservationRequest) -> ReservationResult:
                 (event_id, ticket_type_id, user_id, quantity, expires_at,
                  order_number, booked_as_guest, visitor_hash)
             VALUES ($1, $2, $3, $4,
-                    {HOLD_EXPIRES.format(tt="$2", ev="$1", hours="$5", starts="($8::timestamp AT TIME ZONE 'Europe/London')")},
+                    {HOLD_EXPIRES.format(tt="$2", ev="$1", hours="$5", starts="$8::timestamptz")},
                     $6, $7, $9)
             RETURNING id, event_id, ticket_type_id, user_id, quantity, status,
                       created_at, expires_at, confirmed_at, cancelled_at,
@@ -1075,7 +1073,7 @@ async def claim_draft(
             UPDATE public.reservations
                SET user_id = $2, status = 'held', draft_token = NULL,
                    visitor_hash = COALESCE(visitor_hash, $7),
-                   expires_at = {HOLD_EXPIRES.format(tt="$4", ev="$5", hours="$3", starts="($6::timestamp AT TIME ZONE 'Europe/London')")}
+                   expires_at = {HOLD_EXPIRES.format(tt="$4", ev="$5", hours="$3", starts="$6::timestamptz")}
              WHERE id = $1
             RETURNING {RESERVATION_COLUMNS};
             """,

@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     # With no SMTP host configured, codes are logged instead of sent so the flow
     # is testable before credentials exist. Never leave this on in production.
     log_codes_when_unconfigured: bool = True
+    # Who may actually receive mail. Comma-separated addresses, or "@domain"
+    # for a whole domain. Empty means everyone — EXCEPT on staging, where empty
+    # means no one: staging sends from the real mailbox, and its newsletter
+    # audiences include the department's real year-group lists. Anything not
+    # allowed is logged instead of sent, so a sign-in code can still be read
+    # from the api log.
+    mail_allowlist: str = ""
 
     # --- publicity mailbox (bulk) ---
     # Anything sent to a list rather than to one person goes from the publicity

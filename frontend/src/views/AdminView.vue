@@ -214,14 +214,26 @@ const blank = () => ({
 const draft = reactive(blank())
 const editingId = ref(null)
 
+// The API sends UTC ("…T17:00:00+00:00"); a datetime-local input wants the
+// browser's own clock with no offset. Slicing the ISO string showed the UTC
+// time as if it were local — an hour early in BST — and saving the form
+// unchanged then moved the event an hour earlier every time.
+function toLocalInput(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
 function editEvent(e) {
   editingId.value = e.id
   Object.assign(draft, {
     ...blank(), ...e,
-    starts_at: (e.starts_at || '').slice(0, 16),
-    ends_at: (e.ends_at || '').slice(0, 16),
+    starts_at: toLocalInput(e.starts_at),
+    ends_at: toLocalInput(e.ends_at),
     sales_scheduled: Boolean(e.sales_open_at),
-    sales_open_at: (e.sales_open_at || '').slice(0, 16),
+    sales_open_at: toLocalInput(e.sales_open_at),
     signup_url: e.signup_url ?? '',
     ticket_types: e.ticket_types ?? [],
   })
@@ -251,14 +263,14 @@ async function saveEvent() {
     const payload = {
       ...draft,
       capacity: draft.capacity || null,
-      // Sent exactly as typed ("2026-10-14T18:00"). Event times are London
-      // wall-clock times with no offset; converting to UTC here is what used
-      // to move every event by an hour during BST.
-      starts_at: draft.starts_at,
-      ends_at: draft.ends_at || null,
+      // datetime-local is the browser's own clock; send the instant in UTC.
+      starts_at: new Date(draft.starts_at).toISOString(),
+      ends_at: draft.ends_at ? new Date(draft.ends_at).toISOString() : null,
       // The radio decides, not whether the field happens to be empty.
       sales_open_at:
-        draft.sales_scheduled && draft.sales_open_at ? draft.sales_open_at : null,
+        draft.sales_scheduled && draft.sales_open_at
+          ? new Date(draft.sales_open_at).toISOString()
+          : null,
       signup_url: draft.signup_url.trim() || null,
       ticket_types: draft.ticket_types.filter((t) => t.name.trim())
         .map((t) => ({ ...t, capacity: t.capacity || null })),

@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 
 class TicketType(BaseModel):
@@ -105,13 +105,6 @@ class EventWrite(BaseModel):
     academic_year: str | None = None
     ticket_types: list[TicketType] = []
 
-    @field_validator("starts_at", "ends_at", "sales_open_at")
-    @classmethod
-    def _wall_clock(cls, value: datetime | None) -> datetime | None:
-        """Event times are London wall-clock times, stored as typed (migration
-        031). An offset on the way in is dropped, not converted: converting is
-        exactly what used to move events by an hour."""
-        return value.replace(tzinfo=None) if value is not None else None
 
 
 class ProductLink(BaseModel):

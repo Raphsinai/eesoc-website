@@ -419,6 +419,17 @@ def _warn_once(key: str, message: str, *args) -> None:
         log.error(message, *args)
 
 
+def _deliverable(to: str) -> bool:
+    """Whether MAIL_ALLOWLIST lets this address receive real mail."""
+    allowed = [a.strip().lower() for a in settings.mail_allowlist.split(",") if a.strip()]
+    if not allowed:
+        return settings.environment != "staging"
+    address = to.strip().lower()
+    return any(
+        address == a or (a.startswith("@") and address.endswith(a)) for a in allowed
+    )
+
+
 async def send(
     to: str,
     subject: str,
@@ -434,6 +445,13 @@ async def send(
     the caller already returns an indistinguishable 202 either way.
     """
     prof = profile_for(profile)
+    if not _deliverable(to):
+        log.warning(
+            "Not sending to %s: not on MAIL_ALLOWLIST (%s). Subject: %s\n%s",
+            to, settings.environment, subject,
+            body if settings.log_codes_when_unconfigured else "",
+        )
+        return False
     if not prof.usable():
         if settings.log_codes_when_unconfigured:
             reason = "no host" if not prof.host else "no password"

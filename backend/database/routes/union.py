@@ -448,7 +448,7 @@ async def dashboard_stats() -> dict:
               (SELECT COUNT(*) FROM public.events WHERE published)                 AS events_published,
               (SELECT COUNT(*) FROM public.events
                 WHERE published
-                  AND starts_at >= (NOW() AT TIME ZONE 'Europe/London'))           AS events_upcoming,
+                  AND starts_at >= NOW())           AS events_upcoming,
               (SELECT COUNT(*) FROM public.reservations WHERE status='held')       AS res_held,
               (SELECT COUNT(*) FROM public.reservations WHERE status='confirmed')  AS res_confirmed,
               (SELECT COUNT(*) FROM public.reservations WHERE status='expired')    AS res_expired,

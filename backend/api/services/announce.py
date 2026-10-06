@@ -25,7 +25,7 @@ from clients import database
 from config import settings
 from services import emailing, purchase
 from utils import email as mailer
-from utils.present import format_date, format_price, format_time_range
+from utils.present import format_date, format_price, format_time_range, london
 
 log = logging.getLogger("api.announce")
 
@@ -189,7 +189,7 @@ async def _chase_one(reservation: dict) -> bool:
 
     expires = _parse(reservation.get("expires_at"))
     deadline = (
-        f"{format_date(expires)} at {expires.strftime('%H:%M')}" if expires else "soon"
+        f"{format_date(expires)} at {london(expires).strftime('%H:%M')}" if expires else "soon"
     )
     return await mailer.send_last_chance(
         address,

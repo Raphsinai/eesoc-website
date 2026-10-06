@@ -44,6 +44,25 @@ TT_COLUMNS = """
 # it must count against capacity, or two guests could fill the same last seat.
 LIVE = "(status = 'confirmed' OR (status IN ('held','draft') AND expires_at > NOW()))"
 
+# A hold on a ticket with no Union product linked can never be confirmed by
+# the matcher, so its purchase window would lapse with nobody able to act on
+# it — and an expired hold stops counting against capacity, which oversells.
+# Those holds last until the event starts instead, and the committee checks
+# them by hand. Event times are London wall-clock (migration 031), hence the
+# AT TIME ZONE at the call sites. Same link rules as the matcher: the ticket
+# type's own link, or
+# an event-level one.
+HOLD_EXPIRES = """
+    CASE WHEN EXISTS (
+            SELECT 1 FROM public.product_links pl
+             WHERE pl.purpose = 'event_ticket'
+               AND (pl.ticket_type_id = {tt}
+                    OR (pl.ticket_type_id IS NULL AND pl.event_id = {ev})))
+         THEN NOW() + make_interval(hours => {hours})
+         ELSE GREATEST({starts}, NOW() + make_interval(hours => {hours}))
+    END
+"""
+
 WAITLIST_COLUMNS = """
     id, event_id, user_id, preferred_ticket_type_id, quantity, created_at,
     offered_at, offer_expires_at, reservation_id, claimed_at, released_at,
@@ -480,11 +499,13 @@ async def reserve(req: ReservationRequest) -> ReservationResult:
             return ReservationResult(ok=False, reason="over_user_limit")
 
         row = await conn.fetchrow(
-            """
+            f"""
             INSERT INTO public.reservations
                 (event_id, ticket_type_id, user_id, quantity, expires_at,
                  order_number, booked_as_guest)
-            VALUES ($1, $2, $3, $4, NOW() + make_interval(hours => $5), $6, $7)
+            VALUES ($1, $2, $3, $4,
+                    {HOLD_EXPIRES.format(tt="$2", ev="$1", hours="$5", starts="($8::timestamp AT TIME ZONE 'Europe/London')")},
+                    $6, $7)
             RETURNING id, event_id, ticket_type_id, user_id, quantity, status,
                       created_at, expires_at, confirmed_at, cancelled_at,
                       order_number, matched_sale_id, note, booked_as_guest;
@@ -496,6 +517,7 @@ async def reserve(req: ReservationRequest) -> ReservationResult:
             req.hold_hours_override or event["hold_hours"],
             req.order_number,
             req.booked_as_guest,
+            event["starts_at"],
         )
     return ReservationResult(ok=True, reservation=Reservation(**dict(row)))
 
@@ -974,7 +996,8 @@ async def claim_draft(
     async with pool.acquire() as conn, conn.transaction():
         draft = await conn.fetchrow(
             """
-            SELECT r.id, r.event_id, r.expires_at, r.status, e.hold_hours
+            SELECT r.id, r.event_id, r.ticket_type_id, r.expires_at, r.status,
+                   e.hold_hours, e.starts_at
               FROM public.reservations r
               JOIN public.events e ON e.id = r.event_id
              WHERE r.draft_token = $1
@@ -1001,11 +1024,12 @@ async def claim_draft(
             f"""
             UPDATE public.reservations
                SET user_id = $2, status = 'held', draft_token = NULL,
-                   expires_at = NOW() + make_interval(hours => $3)
+                   expires_at = {HOLD_EXPIRES.format(tt="$4", ev="$5", hours="$3", starts="($6::timestamp AT TIME ZONE 'Europe/London')")}
              WHERE id = $1
             RETURNING {RESERVATION_COLUMNS};
             """,
             draft["id"], user_id, hold_hours or draft["hold_hours"],
+            draft["ticket_type_id"], draft["event_id"], draft["starts_at"],
         )
     return ReservationResult(ok=True, reservation=Reservation(**dict(row)))
 

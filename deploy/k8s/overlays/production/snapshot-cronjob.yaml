@@ -34,10 +34,12 @@ spec:
           imagePullSecrets:
             - name: ghcr-pull
           securityContext:
-            # The postgres image's own uid. initdb refuses to run as root.
-            runAsUser: 999
-            runAsGroup: 999
-            fsGroup: 999
+            # The CloudNativePG image's postgres uid (26, not the Docker Hub image's 999 —
+            # initdb fails with "could not look up effective user ID" for a uid the
+            # image has no passwd entry for). initdb refuses to run as root.
+            runAsUser: 26
+            runAsGroup: 26
+            fsGroup: 26
           volumes:
             - name: scratch
               emptyDir: {}

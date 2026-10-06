@@ -6,11 +6,11 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: eesoc
-resources:
-  - ../../base
-  - snapshot-cronjob.yaml
   # The scrub/restore scripts, shared with the other environment.
-  - ../../../snapshot
+resources:
+- ../../base
+- snapshot-cronjob.yaml
+- ../../../snapshot
 
 # The scrub, its verification, and the two scripts that drive them. A generator
 # rather than a checked-in ConfigMap so the content is versioned with the
@@ -24,19 +24,19 @@ resources:
 images:
 - name: ghcr.io/OWNER/eesoc-api
   newName: ghcr.io/raphsinai/eesoc-api
-  newTag: 8efca7df15b2a7a60442ea07d85bc95d9fbe1a10
+  newTag: 393cc0e0b3d67f38a16232cb2572eb5a2772aacc
 - name: ghcr.io/OWNER/eesoc-database
   newName: ghcr.io/raphsinai/eesoc-database
-  newTag: 8efca7df15b2a7a60442ea07d85bc95d9fbe1a10
+  newTag: 393cc0e0b3d67f38a16232cb2572eb5a2772aacc
 - name: ghcr.io/OWNER/eesoc-frontend
   newName: ghcr.io/raphsinai/eesoc-frontend
-  newTag: 8efca7df15b2a7a60442ea07d85bc95d9fbe1a10
+  newTag: 393cc0e0b3d67f38a16232cb2572eb5a2772aacc
 - name: ghcr.io/OWNER/eesoc-garage-init
   newName: ghcr.io/raphsinai/eesoc-garage-init
-  newTag: 8efca7df15b2a7a60442ea07d85bc95d9fbe1a10
+  newTag: 393cc0e0b3d67f38a16232cb2572eb5a2772aacc
 - name: ghcr.io/OWNER/eesoc-union
   newName: ghcr.io/raphsinai/eesoc-union
-  newTag: 8efca7df15b2a7a60442ea07d85bc95d9fbe1a10
+  newTag: 393cc0e0b3d67f38a16232cb2572eb5a2772aacc
 
 # Single-node cluster. A second replica of anything lands on the same node as
 # the first, so it buys no availability — it only consumes one of the kubelet's
@@ -45,18 +45,21 @@ images:
 # The base keeps the multi-replica defaults: on a cluster with more than one
 # node they are correct, and this overlay is the right place to say "not here".
 replicas:
-  - name: database
-    count: 1
+- count: 1
+  name: database
 
-patches:
-  - path: ingress-hosts.yaml
-  - path: snapshot-access.yaml
   # Same reasoning for Postgres: two CNPG instances on one node protect against
   # a pod failure but not a node failure, which is the one that actually ends
   # the site. Restore this to 2 the moment there is a second node — it is what
   # makes failover real.
-  - target: { group: postgresql.cnpg.io, kind: Cluster, name: eesoc-db }
-    patch: |
-      - op: replace
-        path: /spec/instances
-        value: 1
+patches:
+- path: ingress-hosts.yaml
+- path: snapshot-access.yaml
+- patch: |
+    - op: replace
+      path: /spec/instances
+      value: 1
+  target:
+    group: postgresql.cnpg.io
+    kind: Cluster
+    name: eesoc-db

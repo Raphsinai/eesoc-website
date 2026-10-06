@@ -11,6 +11,7 @@ from clients import database
 from config import settings
 from models.auth import AuthSession
 from utils.auth import hash_token
+from utils.year import academic_year
 
 
 async def current_session(request: Request) -> AuthSession | None:
@@ -128,3 +129,43 @@ def require_feature(feature: str):
             raise HTTPException(503, down[feature])
 
     return Depends(guard)
+
+
+async def committee_card(session: AuthSession | None) -> dict | None:
+    """The committee entry this person owns, or None.
+
+    Three ways to match, in descending order of trust:
+
+      1. an address linked to the card by hand (`user_email`) — the override for
+         the person whose account does not look like their ICU identity;
+      2. the shortcode on their account, or the login on their ICU member
+         record, against the roster's login;
+      3. the address ICU holds for them on the roster.
+
+    Owning a card is not a role. A committee member with no admin access at all
+    can still fix the typo in their own blurb, and that is the whole point.
+    """
+    if session is None:
+        return None
+
+    email = (str(session.user.email) or "").strip().lower()
+    logins = {
+        (session.user.shortcode or "").strip().lower(),
+        (session.member.login or "").strip().lower() if session.member else "",
+    } - {""}
+
+    roster = await database.get(
+        "/union/committee",
+        {"academic_year": academic_year(), "include_hidden": True},
+    ) or []
+
+    for entry in roster:
+        if email and (entry.get("user_email") or "").strip().lower() == email:
+            return entry
+    for entry in roster:
+        if (entry.get("login") or "").strip().lower() in logins:
+            return entry
+    for entry in roster:
+        if email and (entry.get("email") or "").strip().lower() == email:
+            return entry
+    return None

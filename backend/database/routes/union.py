@@ -161,7 +161,8 @@ async def list_committee(
                    p.display_role,
                    COALESCE(p.row_number, 1)   AS row_number,
                    COALESCE(p.sort_order, 100) AS sort_order,
-                   COALESCE(p.hidden, FALSE)   AS hidden
+                   COALESCE(p.hidden, FALSE)   AS hidden,
+                   p.user_email                AS user_email
               FROM public.committee c
               -- Matched on login: a re-sync replaces every roster row, so the
               -- overlay has to attach to the person, not to the row.
@@ -190,8 +191,9 @@ async def upsert_committee_profile(login: str, profile: CommitteeProfile) -> Com
         row = await conn.fetchrow(
             """
             INSERT INTO public.committee_profiles
-                (login, cid, intro, photo_url, display_role, row_number, sort_order, hidden)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                (login, cid, intro, photo_url, display_role, row_number,
+                 sort_order, hidden, user_email)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8, NULLIF(lower($9), ''))
             ON CONFLICT (login) DO UPDATE SET
                 cid          = COALESCE(EXCLUDED.cid, public.committee_profiles.cid),
                 intro        = EXCLUDED.intro,
@@ -200,12 +202,17 @@ async def upsert_committee_profile(login: str, profile: CommitteeProfile) -> Com
                 row_number   = EXCLUDED.row_number,
                 sort_order   = EXCLUDED.sort_order,
                 hidden       = EXCLUDED.hidden,
+                -- NULL keeps the link, '' clears it (see CommitteeProfile).
+                user_email   = CASE WHEN $9::varchar IS NULL
+                                    THEN public.committee_profiles.user_email
+                                    ELSE NULLIF(lower($9), '') END,
                 updated_at   = NOW()
-            RETURNING cid, login, intro, photo_url, display_role, row_number, sort_order, hidden;
+            RETURNING cid, login, intro, photo_url, display_role, row_number,
+                      sort_order, hidden, user_email;
             """,
             login.strip().lower(), profile.cid, profile.intro, profile.photo_url,
             profile.display_role, profile.row_number, profile.sort_order,
-            profile.hidden,
+            profile.hidden, profile.user_email,
         )
     return CommitteeProfile(**dict(row))
 

@@ -436,6 +436,10 @@ async function saveMember(m) {
       display_role: (m.displayRole || '').trim() || null,
       row_number: Math.max(1, Number(m.row) || 1),
       sort_order: Number(m.sortOrder) || 100,
+      // Carried, or an unrelated edit would un-hide somebody hidden.
+      hidden: Boolean(m.hidden),
+      // The account allowed to edit this card when login matching misses.
+      user_email: (m.linkedEmail || '').trim(),
     })
     flash(`${m.name} saved.`)
     await load()
@@ -471,6 +475,10 @@ async function persist(person) {
     display_role: (person.displayRole || '').trim() || null,
     row_number: Math.max(1, Number(person.row) || 1),
     sort_order: Number(person.sortOrder) || 100,
+    // Carried, or an unrelated edit would un-hide somebody hidden.
+    hidden: Boolean(person.hidden),
+    // The account allowed to edit this card when login matching misses.
+    user_email: (person.linkedEmail || '').trim(),
   })
 }
 
@@ -1318,6 +1326,12 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                       v-model="m.intro"
                       rows="2" class="ees-textarea"
                     />
+                  </Field>
+                  <Field
+                    label="Linked account email"
+                    help="Only if they can't see “My card” after signing in — e.g. they sign in with a personal address. Blank uses their Imperial login."
+                  >
+                    <Input v-model="m.linkedEmail" placeholder="name@example.com" />
                   </Field>
                 </div>
 

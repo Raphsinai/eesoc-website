@@ -30,6 +30,8 @@ class CommitteeEntry(CommitteeMember):
     row_number: int = 1
     sort_order: int = 100
     hidden: bool = False
+    # The account linked to this card by hand (migration 033).
+    user_email: str | None = None
 
 
 class CommitteeProfile(BaseModel):
@@ -49,6 +51,9 @@ class CommitteeProfile(BaseModel):
     display_role: str | None = None
     row_number: int = 1
     sort_order: int = 100
+    # None = leave as it is; "" = unlink. Lets the admin editor, which does
+    # not show this field everywhere, save without wiping it.
+    user_email: str | None = None
 
 
 class UnionProduct(BaseModel):

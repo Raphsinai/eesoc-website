@@ -7,11 +7,12 @@ an uploaded photo.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 
 from clients import database
 from models.auth import AuthSession
-from utils.deps import require_admin, verify_csrf
+from services import storage
+from utils.deps import committee_card, require_admin, require_session, verify_csrf
 from utils.year import academic_year
 
 router = APIRouter()
@@ -75,6 +76,8 @@ async def set_profile(
     sort_order: int = Body(default=100, embed=True),
     cid: str | None = Body(default=None, embed=True),
     hidden: bool = Body(default=False, embed=True),
+    # Not sent = leave the link alone; "" = unlink.
+    user_email: str | None = Body(default=None, embed=True),
     session: AuthSession = Depends(require_admin),
 ) -> dict:
     """The editable half of a committee entry: intro, photo, display role, order.
@@ -98,8 +101,97 @@ async def set_profile(
             # Carried explicitly: omitting it would default to False and
             # quietly un-hide someone on the next unrelated edit.
             "hidden": hidden,
+            "user_email": None if user_email is None else user_email.strip().lower(),
         },
     )
+
+
+# ------------------------------------------------------------- my own card
+
+
+_NOT_ON_ROSTER = (
+    "You are not on this year's committee roster. If you are, ask an admin to "
+    "link your email to your card."
+)
+
+
+@router.get("/committee/me")
+async def my_card(session: AuthSession = Depends(require_session)) -> dict:
+    """The card this person may edit, if the roster has one for them.
+
+    Answers `{"card": null}` rather than 404 for somebody who is not on
+    committee: it is not an error to ask.
+    """
+    entry = await committee_card(session)
+    return {"card": _own(entry) if entry else None}
+
+
+@router.put("/committee/me", dependencies=[Depends(verify_csrf)])
+async def update_my_card(
+    intro: str = Body(default="", embed=True),
+    photo_url: str | None = Body(default=None, embed=True),
+    session: AuthSession = Depends(require_session),
+) -> dict:
+    """Edit your own blurb and photograph — and nothing else.
+
+    Display role, row and order are how the page is laid out, and `hidden` is
+    the committee's call, so they are carried through unchanged. Everything ICU
+    owns (name, post, CID) comes from the roster, so saving here cannot blank a
+    field the form never showed.
+    """
+    entry = await committee_card(session)
+    if entry is None:
+        raise HTTPException(403, _NOT_ON_ROSTER)
+
+    await database.put(
+        f"/union/committee/profiles/{entry['login']}",
+        {
+            "login": entry["login"],
+            "cid": entry.get("cid"),
+            "intro": intro,
+            "photo_url": photo_url,
+            "display_role": entry.get("display_role"),
+            "row_number": max(1, entry.get("row_number") or 1),
+            "sort_order": entry.get("sort_order") or 100,
+            "hidden": bool(entry.get("hidden")),
+            "user_email": None,  # keep whatever link there is
+        },
+    )
+    return {"ok": True, "card": _own({**entry, "intro": intro, "photo_url": photo_url})}
+
+
+@router.post("/committee/me/photo", dependencies=[Depends(verify_csrf)])
+async def upload_my_photo(
+    file: UploadFile = File(...), session: AuthSession = Depends(require_session)
+) -> dict:
+    """Upload your own committee photograph.
+
+    Its own endpoint rather than a widened admin upload: a committee member with
+    no admin role still needs to put a face on their card, and that is not a
+    reason to give them the file manager for the whole site.
+    """
+    entry = await committee_card(session)
+    if entry is None:
+        raise HTTPException(403, _NOT_ON_ROSTER)
+
+    meta = await storage.save(file, "committee")
+    row = await database.post("/uploads", {**meta, "uploaded_by": session.user.id})
+    return {**row, "url": storage.public_url(row["stored_name"])}
+
+
+def _own(entry: dict) -> dict:
+    """One committee entry as its owner sees it: what they may change, plus the
+    read-only facts ICU holds, so the form can show why a field is fixed."""
+    return {
+        "login": entry.get("login"),
+        "name": " ".join(
+            p for p in [entry.get("first_name"), entry.get("last_name")] if p
+        ),
+        "unionRole": entry.get("post_name"),
+        "displayRole": entry.get("display_role") or "",
+        "intro": entry.get("intro", ""),
+        "photoUrl": entry.get("photo_url"),
+    }
 
 
 @router.get("/admin/committee")
@@ -131,6 +223,7 @@ async def admin_committee(session: AuthSession = Depends(require_admin)) -> dict
                 "row": m.get("row_number", 1),
                 "sortOrder": m.get("sort_order", 100),
                 "hidden": m.get("hidden", False),
+                "linkedEmail": m.get("user_email") or "",
             }
             for m in members
         ],

@@ -34,6 +34,7 @@ from utils.auth import (
 )
 from services.identity import resolve_or_create_user
 from utils.deps import (
+    committee_card,
     client_ip,
     current_session,
     require_feature,
@@ -155,7 +156,7 @@ async def verify_code(
     full = await database.get(
         "/auth/sessions/user", {"token_hash": tokens["token_hash"]}
     )
-    return _view(AuthSession(**full), csrf_token=tokens["csrf_token"])
+    return await _view(AuthSession(**full), csrf_token=tokens["csrf_token"])
 
 
 async def _open_session(user_id: int, response: Response) -> dict:
@@ -209,7 +210,18 @@ async def _bootstrap_first_admin(user_id: int) -> None:
         log.warning("Promoted user %s to admin (first committee sign-in)", user_id)
 
 
-def _view(session: AuthSession, csrf_token: str | None = None) -> SessionView:
+async def _card_login(session: AuthSession) -> str | None:
+    """The committee card this person may edit. Never allowed to break sign-in:
+    a roster hiccup means no "My card" link this time, not a 500."""
+    try:
+        card = await committee_card(session)
+    except Exception:  # noqa: BLE001
+        log.exception("Could not look up the committee card for a session")
+        return None
+    return (card or {}).get("login")
+
+
+async def _view(session: AuthSession, csrf_token: str | None = None) -> SessionView:
     """Flatten a session into what the header needs.
 
     `roles` is a list rather than API.md's single `role`, because the three are
@@ -245,6 +257,7 @@ def _view(session: AuthSession, csrf_token: str | None = None) -> SessionView:
         is_admin=session.is_admin,
         is_sponsor=bool(session.sponsor_ids),
         sponsor_ids=session.sponsor_ids,
+        committee_login=await _card_login(session),
         academic_year=year,
         # Members get their name from the Union feed and sponsors are set up by
         # the committee, so neither is ever asked.
@@ -268,7 +281,7 @@ async def get_session(
                 settings.dev_login_enabled and settings.environment == "development"
             ),
         )
-    return _view(session, csrf_token=session.session.csrf_token)
+    return await _view(session, csrf_token=session.session.csrf_token)
 
 
 @router.post("/logout", dependencies=[Depends(verify_csrf)])
@@ -335,7 +348,7 @@ async def dev_login(
         await database.post(f"/auth/admins/{user['id']}", params={"note": "dev-login"})
 
     full = await database.get("/auth/sessions/user", {"token_hash": tokens["token_hash"]})
-    return _view(AuthSession(**full), csrf_token=tokens["csrf_token"])
+    return await _view(AuthSession(**full), csrf_token=tokens["csrf_token"])
 
 
 @router.get("/dev-code")

@@ -17,6 +17,9 @@ export const state = reactive({
   isAdmin: false,
   isSponsor: false,
   sponsorIds: [],
+  // The committee card this person may edit (by login), whether or not they
+  // hold an admin role.
+  committeeLogin: null,
   academicYear: null,
   devLogin: false,
   needsName: false,
@@ -30,6 +33,7 @@ function apply(data) {
   state.isAdmin = Boolean(data?.is_admin)
   state.isSponsor = Boolean(data?.is_sponsor)
   state.sponsorIds = data?.sponsor_ids ?? []
+  state.committeeLogin = data?.committee_login ?? null
   state.academicYear = data?.academic_year ?? null
   state.devLogin = Boolean(data?.dev_login)
   state.needsName = Boolean(data?.needs_name)

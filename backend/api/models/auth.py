@@ -109,6 +109,9 @@ class SessionView(BaseModel):
     is_member: bool = False
     is_admin: bool = False
     is_sponsor: bool = False
+    # The committee card this person may edit, if any — by login. Present for
+    # committee members who hold no admin role at all.
+    committee_login: str | None = None
     sponsor_ids: list[int] = []
     academic_year: str | None = None
     csrf_token: str | None = None

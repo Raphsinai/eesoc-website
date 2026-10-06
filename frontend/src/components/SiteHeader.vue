@@ -16,6 +16,8 @@ defineEmits(['open-login'])
 const visibleNav = computed(() =>
   nav
     .filter((n) => n.id !== 'portal' || session.isSponsor || session.isAdmin)
+    // Any committee member can edit their own card, admin role or not.
+    .concat(session.committeeLogin ? [{ id: 'card', label: 'My card', to: '/me/card' }] : [])
     .concat(session.isAdmin ? [{ id: 'admin', label: 'Admin', to: '/admin' }] : []),
 )
 

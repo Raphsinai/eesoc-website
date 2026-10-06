@@ -7,6 +7,7 @@ import LockersView from '@/views/LockersView.vue'
 import PortalView from '@/views/PortalView.vue'
 import EventsView from '@/views/EventsView.vue'
 import EventView from '@/views/EventView.vue'
+import MyCardView from '@/views/MyCardView.vue'
 import AdminView from '@/views/AdminView.vue'
 import JobsView from '@/views/JobsView.vue'
 import session, { refresh } from '@/stores/session'
@@ -30,6 +31,7 @@ const routes = [
   { path: '/lockers', name: 'lockers', component: LockersView,
     meta: { title: 'Lockers', description: 'Book an EESoc locker in the EEE building at Imperial College London.' } },
   { path: '/portal', name: 'portal', component: PortalView, meta: { title: 'Sponsor portal', requires: 'sponsor', noindex: true } },
+  { path: '/me/card', name: 'my-card', component: MyCardView, meta: { title: 'My committee card', requires: 'committee', noindex: true } },
   { path: '/admin', name: 'admin', component: AdminView, meta: { title: 'Committee admin', requires: 'admin', noindex: true } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
@@ -53,6 +55,7 @@ router.beforeEach(async (to) => {
   if (!to.meta?.requires) return true
   if (!session.loaded) await refresh()
   if (to.meta.requires === 'admin' && !session.isAdmin) return { path: '/' }
+  if (to.meta.requires === 'committee' && !session.committeeLogin) return { path: '/' }
   if (to.meta.requires === 'sponsor' && !session.isSponsor && !session.isAdmin) return { path: '/' }
   return true
 })

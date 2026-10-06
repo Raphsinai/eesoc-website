@@ -6,7 +6,10 @@ between them is these definitions rather than an import.
 
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
+
+from config import settings
+from utils import roles
 
 
 class User(BaseModel):
@@ -40,14 +43,47 @@ class Session(BaseModel):
     expires_at: datetime
     created_at: datetime | None = None
     last_seen_at: datetime | None = None
+    impersonator_id: int | None = None
 
 
 class AuthSession(BaseModel):
     session: Session
     user: User
+    role: str | None = None
     is_admin: bool = False
     member: Member | None = None
     sponsor_ids: list[int] = []
+    impersonator: User | None = None
+
+    @model_validator(mode="after")
+    def _pin_superuser(self) -> "AuthSession":
+        """The configured address is a superuser whatever the database says.
+
+        Deliberately enforced here rather than only in the admins table: this
+        runs on every construction of a session, so the role cannot be lost to a
+        bad migration, a hand-run DELETE, or somebody with admin access trying
+        to demote the person who granted it to them. The table is still written
+        — the row is what makes them visible in the People tab — but it is a
+        record of the fact, not the source of it.
+
+        It does not fire for an impersonated session: the user there is the
+        person being impersonated, which is the whole point.
+        """
+        if _is_standing_superuser(self.user.email):
+            self.role = "superuser"
+        self.is_admin = self.role is not None
+        return self
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        return roles.capabilities(self.role)
+
+    def can(self, capability: str) -> bool:
+        return capability in self.capabilities
+
+    @property
+    def is_impersonating(self) -> bool:
+        return self.impersonator is not None
 
     @property
     def is_member_now(self) -> bool:
@@ -57,6 +93,11 @@ class AuthSession(BaseModel):
         from utils.year import academic_year
 
         return self.member is not None and self.member.academic_year == academic_year()
+
+
+def _is_standing_superuser(email: str | None) -> bool:
+    configured = (settings.superuser_email or "").strip().lower()
+    return bool(configured) and str(email or "").strip().lower() == configured
 
 
 # --------------------------------------------------------------------- requests
@@ -110,6 +151,18 @@ class SessionView(BaseModel):
     is_admin: bool = False
     is_sponsor: bool = False
     sponsor_ids: list[int] = []
+    # The committee role held, and what it unlocks. The SPA hides the tabs it
+    # has no capability for; the server refuses them regardless, so this is
+    # presentation, not security.
+    role: str | None = None
+    capabilities: list[str] = []
+    # The committee card this person may edit, if any — by login. Present for
+    # ordinary committee members who hold no role at all.
+    committee_login: str | None = None
+    # Set while a superuser is signed in as somebody else, so the page can say
+    # so in a banner that does not go away.
+    impersonating: bool = False
+    impersonator_email: str | None = None
     academic_year: str | None = None
     csrf_token: str | None = None
     # True only in development. Drives the dev sign-in panel in the login

@@ -35,6 +35,7 @@ from utils.auth import (
 from services.identity import resolve_or_create_user
 from utils.deps import (
     client_ip,
+    committee_card,
     current_session,
     require_feature,
     require_session,
@@ -150,12 +151,13 @@ async def verify_code(
     tokens = await _open_session(user["id"], response)
 
     await database.post(f"/auth/users/{user['id']}/touch-login")
+    await _record_standing_superuser(user)
     await _bootstrap_first_admin(user["id"])
 
     full = await database.get(
         "/auth/sessions/user", {"token_hash": tokens["token_hash"]}
     )
-    return _view(AuthSession(**full), csrf_token=tokens["csrf_token"])
+    return await _view(AuthSession(**full), csrf_token=tokens["csrf_token"])
 
 
 async def _open_session(user_id: int, response: Response) -> dict:
@@ -170,10 +172,31 @@ async def _open_session(user_id: int, response: Response) -> dict:
             "csrf_token": csrf_token,
             "user_id": user_id,
             "expires_at": expires.isoformat(),
+            "impersonator_id": None,
         },
     )
     set_session_cookies(response, token, csrf_token)
     return {"token_hash": hash_token(token), "csrf_token": csrf_token}
+
+
+async def _record_standing_superuser(user: dict) -> None:
+    """Write the row for the configured superuser the first time they sign in.
+
+    The migration seeds this, but only if the account already exists — and on a
+    fresh database it does not: the account is created by the sign-in that is
+    happening right now. The api would treat them as a superuser either way
+    (the pin in `models.auth`), but with no row they are missing from the
+    People tab, which reads as "nobody has the keys".
+
+    One write, for one address, once per sign-in.
+    """
+    configured = (settings.superuser_email or "").strip().lower()
+    if not configured or str(user.get("email", "")).strip().lower() != configured:
+        return
+    await database.post(
+        f"/auth/admins/{user['id']}",
+        params={"role": "superuser", "note": "standing superuser"},
+    )
 
 
 async def _bootstrap_first_admin(user_id: int) -> None:
@@ -202,19 +225,25 @@ async def _bootstrap_first_admin(user_id: int) -> None:
         await database.get("/union/committee", {"academic_year": academic_year()}) or []
     )
     if any(c["cid"] == member["cid"] for c in committee):
+        # Superuser, not admin: on a fresh deployment this is the only account
+        # there is, and an admin cannot grant roles — it would be a committee
+        # with the keys locked inside. The standing superuser address overrides
+        # this on every request anyway, so in practice this only matters for a
+        # deployment configured with a different one.
         await database.post(
             f"/auth/admins/{user_id}",
-            params={"note": "auto: first committee sign-in"},
+            params={"role": "superuser", "note": "auto: first committee sign-in"},
         )
-        log.warning("Promoted user %s to admin (first committee sign-in)", user_id)
+        log.warning("Promoted user %s to superuser (first committee sign-in)", user_id)
 
 
-def _view(session: AuthSession, csrf_token: str | None = None) -> SessionView:
+async def _view(session: AuthSession, csrf_token: str | None = None) -> SessionView:
     """Flatten a session into what the header needs.
 
     `roles` is a list rather than API.md's single `role`, because the three are
     not mutually exclusive: a committee member is usually also a member, and an
-    admin may hold a sponsor account too.
+    admin may hold a sponsor account too. The *committee* role — superuser,
+    admin, events, industry — is the separate `role` field, and is at most one.
     """
     year = academic_year()
     is_member = session.member is not None and session.member.academic_year == year
@@ -226,6 +255,11 @@ def _view(session: AuthSession, csrf_token: str | None = None) -> SessionView:
         roles.append("committee")
     if session.sponsor_ids:
         roles.append("sponsor")
+
+    # Which committee card is theirs to edit, if any. Costs one cached roster
+    # read and is what lets an ordinary committee member — no role at all —
+    # reach the editor for their own entry.
+    card = await committee_card(session)
 
     user = session.user
     name = " ".join(p for p in [user.first_name, user.last_name] if p) or None
@@ -245,6 +279,13 @@ def _view(session: AuthSession, csrf_token: str | None = None) -> SessionView:
         is_admin=session.is_admin,
         is_sponsor=bool(session.sponsor_ids),
         sponsor_ids=session.sponsor_ids,
+        role=session.role,
+        capabilities=sorted(session.capabilities),
+        committee_login=(card or {}).get("login"),
+        impersonating=session.is_impersonating,
+        impersonator_email=(
+            str(session.impersonator.email) if session.impersonator else None
+        ),
         academic_year=year,
         # Members get their name from the Union feed and sponsors are set up by
         # the committee, so neither is ever asked.
@@ -268,7 +309,7 @@ async def get_session(
                 settings.dev_login_enabled and settings.environment == "development"
             ),
         )
-    return _view(session, csrf_token=session.session.csrf_token)
+    return await _view(session, csrf_token=session.session.csrf_token)
 
 
 @router.post("/logout", dependencies=[Depends(verify_csrf)])
@@ -287,6 +328,45 @@ async def logout_everywhere(
     await database.delete(f"/auth/sessions/for-user/{session.user.id}")
     clear_session_cookies(response)
     return {"ok": True}
+
+
+@router.post("/stop-impersonating", dependencies=[Depends(verify_csrf)])
+async def stop_impersonating(
+    response: Response,
+    request: Request,
+    session: AuthSession = Depends(require_session),
+) -> SessionView:
+    """Hand the browser back to whoever started this.
+
+    Lives on /auth rather than /admin because the session it is called from is
+    the *impersonated* one — which, by design, has none of the superuser's
+    access. Gating it on anything the superuser holds would strand them as a
+    first-year with no way back but clearing cookies.
+
+    The impersonated session is deleted rather than left to expire: leaving a
+    live token for somebody else's account lying around for a week is the one
+    thing this feature must not do.
+    """
+    if not session.is_impersonating or session.impersonator is None:
+        raise HTTPException(400, "You are not impersonating anybody.")
+
+    was = session.user.email
+    back_to = session.impersonator.id
+
+    token = request.cookies.get(settings.session_cookie)
+    if token:
+        await database.delete("/auth/sessions", {"token_hash": hash_token(token)})
+
+    tokens = await _open_session(back_to, response)
+    full = await database.get(
+        "/auth/sessions/user", {"token_hash": tokens["token_hash"]}
+    )
+    log.warning(
+        "IMPERSONATION ENDED: %s is no longer signed in as %s",
+        session.impersonator.email,
+        was,
+    )
+    return await _view(AuthSession(**full), csrf_token=tokens["csrf_token"])
 
 
 @router.patch("/me", dependencies=[Depends(verify_csrf)])
@@ -330,12 +410,13 @@ async def dev_login(
     user = await resolve_or_create_user(address, verified=True)
     tokens = await _open_session(user["id"], response)
     await database.post(f"/auth/users/{user['id']}/touch-login")
+    await _record_standing_superuser(user)
 
     if make_admin:
         await database.post(f"/auth/admins/{user['id']}", params={"note": "dev-login"})
 
     full = await database.get("/auth/sessions/user", {"token_hash": tokens["token_hash"]})
-    return _view(AuthSession(**full), csrf_token=tokens["csrf_token"])
+    return await _view(AuthSession(**full), csrf_token=tokens["csrf_token"])
 
 
 @router.get("/dev-code")

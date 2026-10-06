@@ -3,7 +3,7 @@
 # straight to the unauthenticated SQL adapter.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
-metadata: { name: database-ingress, namespace: eesoc }
+metadata: { name: database-ingress }
 spec:
   podSelector: { matchLabels: { app: database } }
   policyTypes: [Ingress]
@@ -13,7 +13,7 @@ spec:
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
-metadata: { name: union-ingress, namespace: eesoc }
+metadata: { name: union-ingress }
 spec:
   podSelector: { matchLabels: { app: union } }
   policyTypes: [Ingress]
@@ -23,7 +23,7 @@ spec:
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
-metadata: { name: postgres-ingress, namespace: eesoc }
+metadata: { name: postgres-ingress }
 spec:
   # CNPG labels its pods with the cluster name, not `app: postgres`.
   podSelector:
@@ -44,7 +44,7 @@ spec:
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
-metadata: { name: garage-ingress, namespace: eesoc }
+metadata: { name: garage-ingress }
 spec:
   podSelector: { matchLabels: { app: garage } }
   policyTypes: [Ingress]

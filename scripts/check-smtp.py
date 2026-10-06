@@ -1,8 +1,20 @@
 #!/usr/bin/env python3
 """Check the SMTP settings actually work, and say precisely why if they don't.
 
-    python3 scripts/check-smtp.py                 # connect + authenticate only
-    python3 scripts/check-smtp.py you@ic.ac.uk    # also send a real test email
+    python3 scripts/check-smtp.py                   # webmaster: connect + auth
+    python3 scripts/check-smtp.py you@ic.ac.uk      # also send a real test email
+    python3 scripts/check-smtp.py --pub             # the publicity mailbox
+    python3 scripts/check-smtp.py --pub you@ic.ac.uk
+
+There are two mailboxes. The webmaster one (SMTP_*) carries sign-in codes and
+booking confirmations; the publicity one (PUB_SMTP_*) carries newsletters and
+announcements. They fail independently and for different reasons, so check them
+separately.
+
+A blank PUB_SMTP_USER or PUB_SMTP_PASS is not an error — the application falls
+back to authenticating as the webmaster account while still sending *from* the
+publicity address, which is the normal Exchange arrangement for a shared
+mailbox. That only works if Send As has been granted, which this script says.
 
 Reads backend.env. Never prints the password.
 
@@ -92,13 +104,37 @@ def _explain_auth_failure(code, detail, user) -> None:
 
 
 def main() -> int:
+    args = sys.argv[1:]
+    publicity = "--pub" in args or "--publicity" in args
+    args = [a for a in args if not a.startswith("--")]
+
     env = load_env(ENV)
-    host = env.get("SMTP_HOST") or "smtp.office365.com"
-    port = int(env.get("SMTP_PORT") or 587)
-    user = env.get("SMTP_USER") or ""
-    password = env.get("SMTP_PASS") or ""
-    sender = env.get("SMTP_FROM") or user
-    starttls = (env.get("SMTP_STARTTLS") or "true").lower() not in ("false", "0", "no")
+
+    if publicity:
+        # Each field falls back to the webmaster one when blank, exactly as the
+        # application does — so what this tests is what would actually be sent.
+        host = env.get("PUB_SMTP_HOST") or env.get("SMTP_HOST") or "smtp.office365.com"
+        port = int(env.get("PUB_SMTP_PORT") or env.get("SMTP_PORT") or 587)
+        has_own = bool(env.get("PUB_SMTP_USER") and env.get("PUB_SMTP_PASS"))
+        user = env.get("PUB_SMTP_USER") if has_own else (env.get("SMTP_USER") or "")
+        password = env.get("PUB_SMTP_PASS") if has_own else (env.get("SMTP_PASS") or "")
+        sender = env.get("PUB_SMTP_FROM") or env.get("SMTP_FROM") or user
+        starttls = (
+            env.get("PUB_SMTP_STARTTLS") or env.get("SMTP_STARTTLS") or "true"
+        ).lower() not in ("false", "0", "no")
+        print("profile   publicity (newsletters and announcements)")
+        if not has_own:
+            print("          no PUB_SMTP_USER/PASS of its own — authenticating as")
+            print("          the webmaster account and sending as the publicity")
+            print("          address. Needs Send As on that mailbox.")
+    else:
+        host = env.get("SMTP_HOST") or "smtp.office365.com"
+        port = int(env.get("SMTP_PORT") or 587)
+        user = env.get("SMTP_USER") or ""
+        password = env.get("SMTP_PASS") or ""
+        sender = env.get("SMTP_FROM") or user
+        starttls = (env.get("SMTP_STARTTLS") or "true").lower() not in ("false", "0", "no")
+        print("profile   transactional (sign-in codes, booking confirmations)")
 
     # Exchange Online refuses a From the authenticated mailbox is not allowed to
     # send as, and the rejection happens at send time, not login — so a checker
@@ -157,8 +193,8 @@ def main() -> int:
                 print("      Send As right for. Either match them, or have IT")
                 print("      grant Send As on the other address.")
 
-            if len(sys.argv) > 1:
-                to = sys.argv[1]
+            if args:
+                to = args[0]
                 message = EmailMessage()
                 message["From"] = sender
                 message["To"] = to

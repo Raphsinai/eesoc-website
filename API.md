@@ -58,12 +58,26 @@ expire in 10 minutes, and lock out after 5 wrong attempts.
   "user": { "id": 3, "email": "…", "name": "Qais Masri", "cid": "02689451", "login": "qm225" },
   "roles": ["member", "committee"],
   "is_member": true, "is_admin": true, "is_sponsor": false,
+  "role": "admin",
+  "capabilities": ["events", "site", "sponsors"],
+  "committee_login": "qm225",
+  "impersonating": false, "impersonator_email": null,
   "academic_year": "26-27"
 }
 ```
 `roles` is a **list**, not the single `role` this document used to specify — a
 committee member is usually also a member, and an admin may hold a sponsor
 account too.
+
+`role` is the separate **committee** role, and is at most one of
+`superuser | admin | events | industry` (or null). `capabilities` is what it
+unlocks — see Access below. `committee_login` is the committee card this person
+may edit, which needs no role at all.
+
+### `POST /auth/stop-impersonating` 🔒
+Ends an impersonated session and returns the caller to their own account.
+Deliberately on `/auth` and not `/admin`: the session calling it is the
+impersonated one, which by design holds none of the superuser's access.
 
 ### Others
 `POST /auth/logout` 🔒 · `POST /auth/logout-everywhere` 🔒 · `PATCH /auth/me` 🔒
@@ -176,16 +190,163 @@ to, so changing an id in the URL cannot reach a competitor's data:
 | `GET /admin/events/{id}/reservations` | Door list, split held/confirmed |
 | `GET /admin/union/products` | Synced product list for the link dropdown |
 | `GET/POST/DELETE /admin/product-links` | **Map a Union product to a ticket type, locker or membership** |
-| `GET/POST/DELETE /admin/admins` | Manage committee access |
+| `GET /admin/admins` | Who holds what role (any committee role may read) |
+| `POST/DELETE /admin/admins` | Grant, change or revoke a role — **superuser only** |
+| `POST /admin/impersonate` | Open a session as another account — **superuser only** |
 | `GET/POST/PUT /admin/sponsors`, `POST /admin/sponsors/{id}/users` | Sponsors and portal access |
 | `GET/PATCH /admin/lockers`, `GET /admin/locker-bookings` | Locker estate |
+| `GET /admin/email/audiences` | Who can be mailed, with live counts, plus both mailboxes' state |
+| `POST /admin/email/preview` | Render the message and count the audience — **sends nothing** |
+| `POST /admin/email/send` | Send a newsletter |
+| `POST /admin/events/{id}/announce` | Email people **about one event**, same audiences |
+| `GET /admin/email/campaigns` | Send history, updated live while one runs |
+| `GET /admin/events/{id}/sale-alerts` | Who is waiting to hear this event is on sale |
+| `GET /admin/email/optouts` | Who has unsubscribed (read-only, deliberately) |
+| `POST /admin/email/announce-now` | Run the on-sale + last-chance pass immediately |
 
 **Product links** are what tie a Union purchase to a booking. Leaving
 `union_product_line_id` null means "any line of this product", which is the safe
 default — line ids are not documented as unique across products.
 
 **First admin:** with no admins in the database, the first *committee member*
-(per the ICU feed) to sign in is promoted automatically, then the rule stops.
+(per the ICU feed) to sign in is promoted to superuser automatically, then the
+rule stops. Superuser rather than admin: an admin cannot grant roles, so on a
+fresh deployment that would be a committee with the keys locked inside.
+
+---
+
+## Access 🔒
+
+One role per account, in `admins.role`. The table of what each unlocks is
+`backend/api/utils/roles.py`; enforcement is `backend/api/utils/deps.py`.
+
+| Role | users | events | sponsors | site |
+|---|:--:|:--:|:--:|:--:|
+| `superuser` | ✓ | all | ✓ | ✓ |
+| `admin` | — | all | ✓ | ✓ |
+| `events` | — | all | — | — |
+| `industry` | — | industry events only | ✓ | — |
+
+* **users** — grant and revoke roles, and impersonate. Superuser only.
+* **events** — events, ticket types, bookings, waitlists, product links on an
+  event. `industry` is the same set, narrowed to events with `industry = true`:
+  the careers fair, a sponsor's talk, a site visit. An event created by somebody
+  holding only `industry` is flagged automatically, so they cannot make one they
+  are then locked out of.
+* **sponsors** — sponsors, their listings and requests, and **adding emails to a
+  sponsor portal**. That last one is on `sponsors` and not `users` on purpose:
+  it creates an account that can see one company's portal and nothing else,
+  which is sponsorship work rather than access control.
+* **site** — resources, files, lockers, Union products, bulk email, the
+  committee page's layout and other people's cards.
+
+**Editing your own committee card needs no role.** Anyone matched to a row on
+this year's roster can change their own intro and photograph
+(`GET/PUT /committee/me`, `POST /committee/me/photo`) and nothing else.
+Matching is by linked address, then login/shortcode, then the address ICU holds.
+Where none of those reach the right account, an admin sets `user_email` on the
+profile (`PUT /committee/{login}/profile`) and that address owns the card.
+
+**The standing superuser** is `SUPERUSER_EMAIL` (default `ras124@ic.ac.uk`).
+That address is a superuser on every request whatever the database says, cannot
+be demoted or removed through the API, and is recorded in `admins` the first
+time it signs in. Changing it is a deploy, which is the point.
+
+**Impersonation** mints a real session for the target account with
+`sessions.impersonator_id` set to the superuser. A red banner shows on every
+page until it ends, nesting is refused, the standing superuser cannot be
+impersonated, and both the start and the end are logged at WARNING with both
+addresses.
+
+---
+
+## Email
+
+Two mailboxes, because they fail differently and must not take each other down:
+
+| Profile | Mailbox | Carries |
+|---|---|---|
+| transactional | `SMTP_*` — webmaster | Sign-in codes, your own booking, your own locker |
+| publicity | `PUB_SMTP_*` — publicity officer | Newsletters, announcements, on-sale alerts |
+
+Blank `PUB_SMTP_*` fields fall back to their `SMTP_*` counterparts. Blank
+`PUB_SMTP_USER`/`PUB_SMTP_PASS` specifically means "log in as the webmaster
+account, send **from** the publicity address" — the normal Exchange arrangement
+for a shared mailbox, which needs Send As granted on it. If Exchange refuses the
+sender the message is retried once from the webmaster address rather than lost,
+and the problem is logged.
+
+Check either with `python3 scripts/check-smtp.py [--pub]`.
+
+### What gets sent, and when
+
+| Trigger | Email | Profile |
+|---|---|---|
+| A hold is taken | "We're holding your ticket" — with the Union purchase link and the pay-by deadline | transactional |
+| ~24h before a hold lapses unpaid | "Last chance" | transactional |
+| A seat frees on a waitlist | The offer, with its deadline | transactional |
+| An event's `sales_open_at` passes | "Tickets are on sale" to everyone who asked | publicity |
+| Committee presses send | Newsletter, or a message about one event | publicity |
+
+The on-sale and last-chance jobs run every `ANNOUNCE_INTERVAL_MINUTES` (default
+10). Both read **only our own database**, so they cost nothing against the Union
+rate limit. Both *claim* their work in SQL before sending, so a crash mid-send
+loses an email rather than sending it twice — the right way round, because
+somebody mailed twice unsubscribes.
+
+### Where the purchase link comes from
+
+Most specific first, because the Union's product feed often carries no URL at
+all for our centre:
+
+1. `ticket_types.purchase_url` — set by the committee
+2. the URL on the Union product that ticket type is linked to
+3. `events.purchase_url` — set by the committee
+4. the URL on the Union product linked to the event
+
+None of them? The email says "find it on the Union shop" rather than linking to
+a page that does not exist.
+
+### Public endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /email/topics` | Subscribable topics; includes the caller's choices when signed in |
+| `PUT /me/email-preferences` 🔒 | Save topic choices |
+| `GET /me/email-status` 🔒 | Whether this address is suppressed outright |
+| `POST /events/{slug}/notify-me` 👤 | "Tell me when this goes on sale" — **no account needed** |
+| `DELETE /events/{slug}/notify-me` 🔒 | Cancel that |
+| `GET /email/unsubscribe?e=&t=` | What a link is about to do |
+| `POST /email/unsubscribe?e=&t=` | Unsubscribe — **unauthenticated by design** |
+| `POST /me/email-resubscribe` 🔒 | Undo a blanket unsubscribe (needs a session) |
+
+Unsubscribing is deliberately open: the request arrives from a mail client, days
+later, from somebody who may never have signed in, and an unsubscribe that asks
+you to log in first is one people answer with the spam button. What stands in
+for authentication is an HMAC over the address (`EMAIL_TOKEN_SECRET`) — enough
+that one person cannot unsubscribe another. Re-subscribing is **not** open, or a
+forwarded email would let anyone put an address back on a list.
+
+Every bulk message carries `List-Unsubscribe` and `List-Unsubscribe-Post`, so
+Gmail and Outlook show their own one-click control. Header folding is turned off
+when building messages precisely so that header survives intact — folded by the
+default policy it becomes an RFC 2047 encoded-word, which clients silently
+ignore.
+
+### Who can be mailed
+
+- **members** — everyone ICU reports as a member this year, from the synced
+  feed. Most have never signed in; they are who a society newsletter is for.
+- **accounts** — everyone with an account on the site.
+- **topic:`<key>`** — standing subscribers. An account with no row counts as the
+  topic's declared default (`newsletter`, `events_new` and `tickets_on_sale` are
+  on by default; everything else is opt-in).
+- **department lists** — the year-group aliases (`ee1ugs@ic.ac.uk` and the
+  rest). One address each, owned by the department — nothing here can
+  unsubscribe them, and they are listed separately for that reason.
+
+Addresses are de-duplicated across every audience, and opt-outs are applied in
+SQL rather than by the caller, so a new audience cannot forget them.
 
 ---
 
@@ -215,8 +376,8 @@ bridge throttles and caches; every read serves from the local mirror.
 ## Configuration
 
 `.env` (compose interpolation) holds Postgres credentials. `backend.env` (app
-secrets) holds `ICU_API_KEY`, `ICU_CENTRE_CODE` and the `SMTP_*` settings. See
-`.env.example` and `backend.env.example`.
+secrets) holds `ICU_API_KEY`, `ICU_CENTRE_CODE`, the `SMTP_*` and `PUB_SMTP_*`
+settings and `EMAIL_TOKEN_SECRET`. See `.env.example` and `backend.env.example`.
 
 With no `SMTP_HOST` set, login codes are **written to the api log** instead of
 emailed, so the flow is testable before credentials exist.

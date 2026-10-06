@@ -55,14 +55,24 @@ class Session(BaseModel):
     expires_at: datetime
     created_at: datetime | None = None
     last_seen_at: datetime | None = None
+    # Set when a superuser opened this session as somebody else. NULL is the
+    # normal case: the person signed in as themselves.
+    impersonator_id: int | None = None
 
 
 class AuthSession(BaseModel):
     session: Session
     user: User
+    # One of superuser / admin / events / industry, or None for an account with
+    # no committee role. `is_admin` is kept as the "holds some role" shorthand
+    # the older call sites read.
+    role: str | None = None
     is_admin: bool = False
     member: Member | None = None
     sponsor_ids: list[int] = []
+    # The account a superuser opened this session from, if they are
+    # impersonating. Carried so the api can offer a way back.
+    impersonator: User | None = None
 
 
 class LoginCodeCreate(BaseModel):

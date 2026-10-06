@@ -53,6 +53,11 @@ const committeeYear = computed(() =>
     ? `20${committeeAcademicYear.value.replace('-', '–20')}`
     : '',
 )
+// Every card is sized off the widest row, so a row of two sits centred at the
+// same width as the cards in a row of three rather than stretching to fill.
+const committeeColumns = computed(() =>
+  Math.min(6, committeeRows.value.reduce((n, g) => Math.max(n, g.members.length), 1)),
+)
 const committeeHeading = computed(() =>
   committee.value.length
     ? `${committee.value.length} people, one department.`
@@ -135,28 +140,29 @@ function scrollBy(dir) {
       <!-- Laid out in the rows the committee chose in the admin dashboard, so
            the exec sits together rather than reflowing wherever the column
            count happens to break. -->
-      <div
-        v-for="group in committeeRows"
-        :key="group.row"
-        class="committee-row"
-        :style="{ '--members': group.members.length }"
-      >
-        <Card v-for="m in group.members" :key="m.cid" variant="default" :padded="false">
-          <div style="aspect-ratio:1/1; background:var(--surface-sunken); border-bottom:1px solid var(--border-hairline); position:relative">
-            <img
-              v-if="m.photoUrl"
-              :src="m.photoUrl"
-              :alt="m.name"
-              style="width:100%; height:100%; object-fit:cover"
-            />
-            <ImageSlot v-else :placeholder="m.name" shape="rect" />
-          </div>
-          <div style="padding:var(--space-5) var(--space-5) var(--space-6); display:grid; gap:6px">
-            <span class="eyebrow" style="letter-spacing:var(--tracking-label)">{{ m.role }}</span>
-            <span style="font-family:var(--font-display); font-weight:700; font-size:var(--text-md); letter-spacing:var(--tracking-heading); color:var(--text-strong)">{{ m.name }}</span>
-            <p v-if="m.intro" style="margin:var(--space-2) 0 0; font:var(--type-2xs); color:var(--text-muted)">{{ m.intro }}</p>
-          </div>
-        </Card>
+      <div class="committee-grid" :data-cols="committeeColumns">
+        <div
+          v-for="group in committeeRows"
+          :key="group.row"
+          class="committee-row"
+        >
+          <Card v-for="m in group.members" :key="m.cid" variant="default" :padded="false">
+            <div style="aspect-ratio:1/1; background:var(--surface-sunken); border-bottom:1px solid var(--border-hairline); position:relative">
+              <img
+                v-if="m.photoUrl"
+                :src="m.photoUrl"
+                :alt="m.name"
+                style="width:100%; height:100%; object-fit:cover"
+              />
+              <ImageSlot v-else :placeholder="m.name" shape="rect" />
+            </div>
+            <div style="padding:var(--space-5) var(--space-5) var(--space-6); display:grid; gap:6px">
+              <span class="eyebrow" style="letter-spacing:var(--tracking-label)">{{ m.role }}</span>
+              <span style="font-family:var(--font-display); font-weight:700; font-size:var(--text-md); letter-spacing:var(--tracking-heading); color:var(--text-strong)">{{ m.name }}</span>
+              <p v-if="m.intro" style="margin:var(--space-2) 0 0; font:var(--type-2xs); color:var(--text-muted)">{{ m.intro }}</p>
+            </div>
+          </Card>
+        </div>
       </div>
     </section>
 
@@ -197,21 +203,55 @@ function scrollBy(dir) {
 </template>
 
 <style scoped>
+.committee-grid {
+  width: 75%;
+  margin: 0 auto;
+}
 .committee-row {
-  display: grid;
-  grid-template-columns: repeat(var(--members, 4), minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: var(--space-6);
   margin-bottom: var(--space-6);
 }
-/* Past five across, cards get too narrow to read, so wrap instead of shrinking. */
+/* Every card is --card-w wide, set once per grid off the widest row, so a short
+   row centres at the same card size instead of stretching to fill. */
+.committee-row > * {
+  flex: 0 0 auto;
+  width: var(--card-w, 100%);
+}
+.committee-grid[data-cols='1'] { --card-w: 100%; }
+.committee-grid[data-cols='2'] { --card-w: calc((100% - 1 * var(--space-6)) / 2); }
+.committee-grid[data-cols='3'] { --card-w: calc((100% - 2 * var(--space-6)) / 3); }
+.committee-grid[data-cols='4'] { --card-w: calc((100% - 3 * var(--space-6)) / 4); }
+.committee-grid[data-cols='5'] { --card-w: calc((100% - 4 * var(--space-6)) / 5); }
+.committee-grid[data-cols='6'] { --card-w: calc((100% - 5 * var(--space-6)) / 6); }
+/* Past three across, cards get too narrow to read, so cap the columns and let
+   the extra members wrap. */
 @media (max-width: 1200px) {
-  .committee-row {
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  .committee-grid {
+    width: 90%;
+  }
+  .committee-grid[data-cols='4'],
+  .committee-grid[data-cols='5'],
+  .committee-grid[data-cols='6'] {
+    --card-w: calc((100% - 2 * var(--space-6)) / 3);
+  }
+}
+@media (max-width: 900px) {
+  .committee-grid[data-cols='3'],
+  .committee-grid[data-cols='4'],
+  .committee-grid[data-cols='5'],
+  .committee-grid[data-cols='6'] {
+    --card-w: calc((100% - 1 * var(--space-6)) / 2);
   }
 }
 @media (max-width: 720px) {
-  .committee-row {
-    grid-template-columns: minmax(0, 1fr);
+  .committee-grid {
+    width: 100%;
+  }
+  .committee-grid[data-cols] {
+    --card-w: 100%;
   }
 }
 .eyebrow {

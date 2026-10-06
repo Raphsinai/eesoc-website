@@ -21,6 +21,7 @@ import PinStrip from '@/components/ds/PinStrip.vue'
         <router-link to="/resources" class="site-footer__link">Resources</router-link>
         <router-link to="/lockers" class="site-footer__link">Lockers</router-link>
         <router-link to="/sponsors" class="site-footer__link">Sponsors</router-link>
+        <router-link to="/email" class="site-footer__link">Email preferences</router-link>
       </div>
 
       <div class="site-footer__col">

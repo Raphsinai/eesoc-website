@@ -1,0 +1,61 @@
+# ArgoCD watches the staging overlay — eesoc.raphsinai.dev, namespace
+# eesoc-staging.
+#
+# This is the one that moves on its own: every push to main pins a new image
+# tag in deploy/k8s/overlays/staging and Argo syncs it. Production is a
+# separate Application watching a separate overlay and only moves when somebody
+# runs the promote workflow.
+#
+# Same repo, same branch, same read-only deploy key — the two environments are
+# separated by directory, not by branch. A staging branch would mean promotion
+# was a merge, and a merge can carry changes that were never on staging.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: eesoc-website-staging
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    # SSH, matching the read-only deploy key registered in argocd as the
+    # `eesoc-website-repo` secret. HTTPS would need a token with repo scope;
+    # a deploy key is scoped to this one repository and cannot write.
+    repoURL: git@github.com:Raphsinai/eesoc-website.git
+    targetRevision: main
+    path: deploy/k8s/overlays/staging
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: eesoc-staging
+  syncPolicy:
+    automated:
+      prune: true # a resource deleted from git is deleted from the cluster
+      selfHeal: true # manual kubectl edits get reverted
+    syncOptions:
+      - CreateNamespace=true
+      # PVCs are pruned last, so a manifest change cannot delete the media
+      # volume before its replacement exists.
+      - PruneLast=true
+      # Honour the ignoreDifferences below during sync, not just in the diff
+      # view — otherwise selfHeal reverts the operator's own writes to the
+      # Cluster resource.
+      - RespectIgnoreDifferences=true
+      # Ordering comes from argocd.argoproj.io/sync-wave annotations on the
+      # resources themselves: CNPG Cluster (-1), adapter migrations (1), api (2).
+    retry:
+      limit: 3
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 3m
+  ignoreDifferences:
+    # CloudNativePG writes extensively to its own Cluster resource — status,
+    # instance names, the current primary. All of it would read as permanent
+    # drift and, with selfHeal on, Argo would fight the operator over it.
+    - group: postgresql.cnpg.io
+      kind: Cluster
+      name: eesoc-db
+      jsonPointers:
+        - /status
+        - /spec/instances # the operator adjusts this during failover

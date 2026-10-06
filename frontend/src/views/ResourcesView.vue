@@ -131,7 +131,7 @@ const matchCount = computed(() => {
       </p>
 
       <router-link
-        v-if="session.isAdmin"
+        v-if="session.capabilities.includes('site')"
         to="/admin?tab=resources"
         style="display:block; margin-top:var(--space-6); font:var(--type-2xs); color:var(--text-faint)"
       >

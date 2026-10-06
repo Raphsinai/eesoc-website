@@ -1,8 +1,13 @@
-# ArgoCD watches the production overlay.
+# ArgoCD watches the production overlay — eesoc.com, namespace eesoc.
 #
 # CI never runs kubectl — it commits an image tag and Argo reconciles, so the
 # repository is the only statement of what is deployed and a rollback is
 # `git revert`.
+#
+# Nothing commits here on a push. A push to main pins its image tag in the
+# STAGING overlay (application-staging.yaml); the tag only reaches this one
+# when somebody runs .github/workflows/promote.yml, which copies the SHA
+# staging is already running.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

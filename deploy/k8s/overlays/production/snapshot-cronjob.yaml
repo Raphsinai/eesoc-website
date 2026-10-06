@@ -1,0 +1,109 @@
+# Produce a scrubbed snapshot of production for staging to restore.
+#
+# PRODUCTION ONLY, and it is the only half of the refresh pipeline that can read
+# real data. It writes one object to a private bucket and stops; it has no
+# credential for staging and no network path to it. Staging reads that object
+# with a key that can do nothing else. There is deliberately no code path from
+# staging back to here.
+#
+# Every 6 hours rather than on demand: a staging deploy restores whatever the
+# newest snapshot is, so the only thing a shorter interval buys is fresher test
+# data, and the only thing it costs is reading the whole database more often.
+# Change the schedule here if staging needs to be closer to live. To take one
+# right now:
+#
+#   kubectl -n eesoc create job --from=cronjob/snapshot snapshot-now
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: snapshot
+spec:
+  schedule: "17 */6 * * *" # :17 so it never starts on the hour with everything else
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # A failed snapshot is not an emergency — the next one is in six hours and
+      # staging keeps the previous one. Retrying forever would just hammer the
+      # database.
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          imagePullSecrets:
+            - name: ghcr-pull
+          securityContext:
+            # The postgres image's own uid. initdb refuses to run as root.
+            runAsUser: 999
+            runAsGroup: 999
+            fsGroup: 999
+          volumes:
+            - name: scratch
+              emptyDir: {}
+            - name: scripts
+              configMap:
+                name: snapshot-scripts
+                defaultMode: 0755
+
+          # ---------------------------------------------------------------
+          # 1. Dump, scrub, verify. Nothing leaves the pod until this passes.
+          # ---------------------------------------------------------------
+          initContainers:
+            - name: dump
+              image: ghcr.io/cloudnative-pg/postgresql:16.4
+              command: ["bash", "/snapshot/snapshot.sh"]
+              env:
+                - name: SCRATCH
+                  value: /scratch
+                # CNPG generates these and keeps them current through failover,
+                # so the job always follows the live primary without anything
+                # here holding a password.
+                - name: PGHOST
+                  valueFrom: { secretKeyRef: { name: eesoc-db-app, key: host } }
+                - name: PGUSER
+                  valueFrom: { secretKeyRef: { name: eesoc-db-app, key: username } }
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: eesoc-db-app, key: password } }
+                - name: PGDATABASE
+                  valueFrom: { secretKeyRef: { name: eesoc-db-app, key: dbname } }
+              volumeMounts:
+                - { name: scratch, mountPath: /scratch }
+                - { name: scripts, mountPath: /snapshot, readOnly: true }
+              resources:
+                requests: { cpu: 100m, memory: 256Mi }
+                limits:   { memory: 1Gi }
+
+          # ---------------------------------------------------------------
+          # 2. Upload. Only reached if the init container exited 0, which it
+          #    does not do unless verify.sql passed.
+          # ---------------------------------------------------------------
+          containers:
+            - name: upload
+              image: rclone/rclone:1.68
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  # The marker is written as the last line of snapshot.sh, so
+                  # its absence means the snapshot was not verified clean.
+                  [ -f /scratch/.ready ] || { echo "no .ready marker — refusing to upload"; exit 1; }
+                  rclone copyto /scratch/snapshot.sql.gz \
+                    "prod:${SNAPSHOT_BUCKET}/latest.sql.gz" --s3-no-check-bucket
+                  echo "uploaded $(wc -c < /scratch/snapshot.sql.gz) bytes to ${SNAPSHOT_BUCKET}/latest.sql.gz"
+              env:
+                - name: SNAPSHOT_BUCKET
+                  value: eesoc-snapshots
+                - { name: RCLONE_CONFIG_PROD_TYPE,     value: s3 }
+                - { name: RCLONE_CONFIG_PROD_PROVIDER, value: Other }
+                - { name: RCLONE_CONFIG_PROD_ENDPOINT, value: "http://garage:3900" }
+                - { name: RCLONE_CONFIG_PROD_REGION,   value: garage }
+                - name: RCLONE_CONFIG_PROD_ACCESS_KEY_ID
+                  valueFrom: { secretKeyRef: { name: eesoc-secrets, key: S3_ACCESS_KEY_ID } }
+                - name: RCLONE_CONFIG_PROD_SECRET_ACCESS_KEY
+                  valueFrom: { secretKeyRef: { name: eesoc-secrets, key: S3_SECRET_ACCESS_KEY } }
+              volumeMounts:
+                - { name: scratch, mountPath: /scratch }
+              resources:
+                requests: { cpu: 25m, memory: 64Mi }
+                limits:   { memory: 256Mi }

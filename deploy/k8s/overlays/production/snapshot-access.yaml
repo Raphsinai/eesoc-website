@@ -1,0 +1,69 @@
+# Let staging reach production's S3 API, and give Garage the names it needs to
+# create the snapshot bucket and the read-only key.
+#
+# Production only. Staging has no equivalent — nothing in production ever
+# connects to staging, which is what makes the refresh one-way.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: garage-ingress }
+spec:
+  podSelector: { matchLabels: { app: garage } }
+  policyTypes: [Ingress]
+  # A strategic merge patch replaces this list rather than appending, so the
+  # two base rules are restated here. Splitting them across files would mean
+  # reading three files to answer "who can reach Garage".
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: api } }
+      ports: [{ port: 3900 }]
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+      ports: [{ port: 3902 }]
+    # The staging refresh job, reading the snapshot and the media bucket.
+    #
+    # Namespace only, no podSelector — deliberately, and for the reason spelled
+    # out in the base: kustomize's commonLabels rewrites selectors too, so a
+    # podSelector here quietly gains a label the target may not carry and the
+    # rule matches nothing. A NetworkPolicy drops rather than rejects, so that
+    # failure looks like a hang, not an error.
+    #
+    # The width costs little. Reachability is not permission: the only
+    # credential staging holds for this endpoint is read-only on two buckets,
+    # enforced by Garage itself. This rule is the second lock, not the first.
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: eesoc-staging }
+      ports: [{ port: 3900 }]
+---
+# Garage's init sidecar creates the snapshot bucket and imports the read-only
+# key staging authenticates with. Both are skipped when SNAPSHOT_BUCKET is
+# unset, which is how staging's own Garage avoids growing a snapshot bucket it
+# has nothing to put in.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: garage
+spec:
+  template:
+    spec:
+      # `containers`, not `initContainers`: garage-init is a long-lived sidecar
+      # that idles after setting up, because the Garage CLI needs the node key
+      # from the pod's own volume.
+      containers:
+        - name: init
+          env:
+            - name: SNAPSHOT_BUCKET
+              value: eesoc-snapshots
+            - name: STAGING_RO_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: eesoc-secrets
+                  key: STAGING_RO_ACCESS_KEY_ID
+                  optional: true
+            - name: STAGING_RO_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eesoc-secrets
+                  key: STAGING_RO_SECRET_ACCESS_KEY
+                  optional: true

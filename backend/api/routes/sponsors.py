@@ -31,16 +31,19 @@ async def list_sponsors(
 ) -> dict:
     """Public. Feeds both the home carousel and the Sponsors page.
 
-    Admins additionally see unpublished drafts, the same preview events and
-    resource pages give, so a card can be checked in place before it goes live.
+    Committee with sponsors access additionally see unpublished drafts, the
+    same preview events and resource pages give, so a card can be checked in
+    place before it goes live. Narrower than `is_admin` on purpose: the 26-27
+    pipeline is a list of companies that have not signed, and an events officer
+    has no more business seeing it than a visitor does.
 
     Explicitly field-by-field: `amount_pence` and `internal_note` are committee
     information and must never reach this response. Returning the row wholesale
     is how that leaks the first time somebody adds a column.
     """
-    is_admin = bool(session and session.is_admin)
+    may_preview = bool(session and session.can("sponsors"))
     sponsors = await database.get(
-        "/sponsors", {"active_only": not is_admin}
+        "/sponsors", {"active_only": not may_preview}
     ) or []
     return {
         "sponsors": [
@@ -132,6 +135,15 @@ async def dashboard(
     sponsor_id: int | None = None, session: AuthSession = Depends(require_sponsor)
 ) -> dict:
     sid = await _scoped_sponsor(session, sponsor_id)
+    # Who the page is acting for. The view used to guess this from the public
+    # list and picked whichever sponsor happened to come back first, so the
+    # heading named the wrong company.
+    acting = await database.get(f"/sponsors/{sid}")
+    # Committee may name any sponsor, so an id that does not exist reaches here.
+    # Without this it renders as a dashboard of zeros for a company that is not
+    # there, which reads as data rather than as a mistake.
+    if acting is None:
+        raise HTTPException(404, "No such sponsor")
     stats = await database.get(f"/sponsors/{sid}/stats") or {}
     listings = await database.get(f"/sponsors/{sid}/listings") or []
     claimable = await database.get("/sponsors/claims/claimable") or []
@@ -186,6 +198,14 @@ async def dashboard(
         ],
         "yourEvents": mine,
         "listings": [_listing_row(r) for r in listings],
+        "sponsor": {
+            "id": sid,
+            "name": acting.get("name"),
+            "sector": acting.get("sector"),
+            # Committee-only money stays out of this: the year is just which
+            # agreement the portal is showing.
+            "agreementYear": acting.get("agreement_year"),
+        },
     }
 
 
@@ -390,7 +410,7 @@ async def edit_job(
 
 async def _own_listing(listing_id: int, session: AuthSession) -> None:
     """A listing id alone says nothing about who owns it, so check before write."""
-    if session.is_admin:
+    if session.can("sponsors"):
         return
     for sid in session.sponsor_ids:
         listings = await database.get(f"/sponsors/{sid}/listings") or []

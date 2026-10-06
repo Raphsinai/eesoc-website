@@ -16,6 +16,12 @@ silently if forgotten:
     locks. When it changes, update SMTP_PASS.
   * Exchange Online only accepts `From` addresses the authenticated mailbox is
     allowed to send as, so SMTP_FROM is not freely choosable.
+
+Two mailboxes, not one. Transactional mail (sign-in codes, your own booking)
+goes from the webmaster address; anything sent to a list goes from the publicity
+officer's. That separation is for deliverability as much as tone: a newsletter
+that earns spam complaints must not be able to take sign-in codes down with it,
+and the two mailboxes are rate limited independently.
 """
 
 from __future__ import annotations
@@ -24,8 +30,10 @@ import asyncio
 import base64
 import logging
 import smtplib
+from dataclasses import dataclass, replace
+from email import policy
 from email.message import EmailMessage
-from email.utils import formatdate, make_msgid
+from email.utils import formatdate, make_msgid, parseaddr
 
 from config import settings
 
@@ -154,20 +162,154 @@ def _code_block(code: str) -> str:
     )
 
 
-def configured() -> bool:
-    """Whether we can actually send.
+# ------------------------------------------------------------------- profiles
+#
+# Two mailboxes with different jobs, described once so no caller has to know
+# which settings belong to which.
 
-    A host must be set, and if a username is set then a password is required.
-    Keying on the host alone would report "configured" on a fresh install — the
-    default is smtp.office365.com — and every send would fail on authentication.
-    Keying on the password alone would rule out an unauthenticated local relay
-    like Mailpit, which is exactly what development uses.
+
+@dataclass(frozen=True)
+class Profile:
+    """One SMTP identity: where to connect, who to log in as, who it is from."""
+
+    key: str
+    host: str
+    port: int
+    user: str
+    password: str
+    sender: str
+    reply_to: str
+    starttls: bool
+    # Bulk mail carries List-Unsubscribe and Precedence headers and is paced;
+    # transactional mail carries Auto-Submitted and goes out immediately.
+    bulk: bool = False
+
+    @property
+    def sender_address(self) -> str:
+        return parseaddr(self.sender)[1].lower()
+
+    def usable(self) -> bool:
+        """A host, and a password if a username is set.
+
+        Keying on the host alone would report "configured" on a fresh install —
+        the default is smtp.office365.com — and every send would fail on
+        authentication. Keying on the password alone would rule out an
+        unauthenticated local relay like Mailpit, which is what development
+        uses.
+        """
+        if not self.host:
+            return False
+        if self.user and not self.password:
+            return False
+        return True
+
+
+def transactional() -> Profile:
+    """The webmaster mailbox. Sign-in codes, your own booking, your own locker."""
+    return Profile(
+        key="transactional",
+        host=settings.smtp_host,
+        port=settings.smtp_port,
+        user=settings.smtp_user,
+        password=settings.smtp_pass,
+        sender=settings.smtp_from,
+        reply_to=settings.smtp_reply_to,
+        starttls=settings.smtp_starttls,
+    )
+
+
+def publicity() -> Profile:
+    """The publicity officer's mailbox. Newsletters and announcements.
+
+    Every field falls back to the transactional one, so a blank PUB_SMTP_* block
+    means "send bulk from the webmaster mailbox" rather than "bulk is broken".
+
+    The credentials are the interesting case. A shared Exchange mailbox has a
+    *disabled* sign-in account and therefore no password of its own, so the
+    normal arrangement is to authenticate as a real account that holds Send As
+    on it and leave From as the shared address. With no PUB_SMTP_PASS set that
+    is exactly what happens: webmaster credentials, publicity From.
     """
-    if not settings.smtp_host:
-        return False
-    if settings.smtp_user and not settings.smtp_pass:
-        return False
-    return True
+    base = transactional()
+    has_own_credentials = bool(settings.pub_smtp_user and settings.pub_smtp_pass)
+    return Profile(
+        key="publicity",
+        host=settings.pub_smtp_host or base.host,
+        port=settings.pub_smtp_port or base.port,
+        user=settings.pub_smtp_user if has_own_credentials else base.user,
+        password=settings.pub_smtp_pass if has_own_credentials else base.password,
+        sender=settings.pub_smtp_from or base.sender,
+        reply_to=settings.pub_smtp_reply_to or base.reply_to,
+        starttls=(
+            settings.pub_smtp_starttls.strip().lower() not in ("false", "0", "no")
+            if settings.pub_smtp_starttls.strip()
+            else base.starttls
+        ),
+        bulk=True,
+    )
+
+
+def profile_for(name: str | None) -> Profile:
+    return publicity() if name == "publicity" else transactional()
+
+
+def _note(text: str) -> str:
+    """A quieter aside — the line about what happens if they do nothing."""
+    return (
+        f'<p style="margin:0 0 14px;font-family:{SANS};font-size:13px;'
+        f'line-height:1.6;color:{MUTED};">{text}</p>'
+    )
+
+
+def _footer_link(label: str, url: str) -> str:
+    """The unsubscribe line. Deliberately a plain link in the body as well as a
+    List-Unsubscribe header: the header is honoured by Gmail and Outlook but
+    invisible in most clients, and somebody who cannot find the way out reports
+    the message as spam instead."""
+    return (
+        f'<p style="margin:18px 0 0;font-family:{SANS};font-size:12px;'
+        f'line-height:1.5;color:{FAINT};">'
+        f'<a href="{url}" style="color:{FAINT};">{label}</a></p>'
+    )
+
+
+def escape(text: str) -> str:
+    """Escape anything that came from a person before it goes in the HTML part.
+
+    Event titles and ticket names are typed by the committee; a stray `&` in
+    "Drinks & Dinner" would otherwise produce invalid markup, and a `<` would
+    swallow the rest of the paragraph.
+    """
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def configured(name: str | None = None) -> bool:
+    """Whether we can actually send on this profile."""
+    return profile_for(name).usable()
+
+
+def describe() -> dict:
+    """What the admin screen shows about mail, without revealing a password."""
+    out = {}
+    for prof in (transactional(), publicity()):
+        out[prof.key] = {
+            "host": prof.host,
+            "port": prof.port,
+            "login": prof.user or None,
+            "from": prof.sender,
+            "replyTo": prof.reply_to,
+            "configured": prof.usable(),
+            # The case worth seeing at a glance: sending as an address we are
+            # not logged in as only works with Send As granted on the mailbox.
+            "sendsAs": prof.sender_address != (prof.user or "").lower(),
+        }
+    return out
 
 
 def _login(smtp: smtplib.SMTP, user: str, password: str) -> None:
@@ -199,21 +341,51 @@ def _login(smtp: smtplib.SMTP, user: str, password: str) -> None:
     smtp.login(user, password)
 
 
-def _build(to: str, subject: str, body: str, html: str | None = None) -> EmailMessage:
-    message = EmailMessage()
-    message["From"] = settings.smtp_from
+# Header folding off, deliberately.
+#
+# `List-Unsubscribe` carries URLs and is longer than the default 78-column
+# limit, which makes Python fold it — and because there is no foldable
+# whitespace inside a `<...>` target, it folds by RFC 2047 encoded-word. That
+# is invalid for a structured header, and Gmail and Outlook simply ignore a
+# List-Unsubscribe they cannot parse, so one-click unsubscribe silently stops
+# working while the header looks present. Turning folding off emits it intact.
+#
+# Non-ASCII subjects are unaffected: encoding a subject is required by the
+# charset, not by the line length, and still happens.
+_POLICY = policy.SMTP.clone(max_line_length=0)
+
+
+def _build(
+    to: str,
+    subject: str,
+    body: str,
+    html: str | None = None,
+    prof: Profile | None = None,
+    headers: dict[str, str] | None = None,
+) -> EmailMessage:
+    prof = prof or transactional()
+    message = EmailMessage(policy=_POLICY)
+    message["From"] = prof.sender
     message["To"] = to
     message["Subject"] = subject
-    if settings.smtp_reply_to:
+    if prof.reply_to:
         # The webmaster mailbox is checked irregularly; a reply should reach a
         # person who can answer.
-        message["Reply-To"] = settings.smtp_reply_to
+        message["Reply-To"] = prof.reply_to
     # Set explicitly: some relays reject or down-rank messages without them.
     message["Date"] = formatdate(localtime=True)
     message["Message-ID"] = make_msgid(domain="eesoc.com")
-    # These are transactional, not marketing — keep them out of bulk filters and
-    # stop mailing-list software auto-replying.
-    message["Auto-Submitted"] = "auto-generated"
+    if prof.bulk:
+        # Bulk mail must be unsubscribable and must not trigger out-of-office
+        # storms. `Precedence: bulk` is what stops vacation auto-responders.
+        message["Precedence"] = "bulk"
+    else:
+        # Transactional, not marketing — keep it out of bulk filters and stop
+        # mailing-list software auto-replying.
+        message["Auto-Submitted"] = "auto-generated"
+    for name, value in (headers or {}).items():
+        if value:
+            message[name] = value
     # Plain text first, HTML as the alternative. Order matters: a client
     # that cannot render HTML takes the first part, and the text version is a
     # real message rather than "view this in a browser".
@@ -223,19 +395,28 @@ def _build(to: str, subject: str, body: str, html: str | None = None) -> EmailMe
     return message
 
 
-def _send_sync(message: EmailMessage) -> None:
-    with smtplib.SMTP(
-        settings.smtp_host, settings.smtp_port, timeout=settings.smtp_timeout_seconds
-    ) as smtp:
+def _send_sync(message: EmailMessage, prof: Profile) -> None:
+    with smtplib.SMTP(prof.host, prof.port, timeout=settings.smtp_timeout_seconds) as smtp:
         smtp.ehlo()
-        if settings.smtp_starttls:
+        if prof.starttls:
             # Port 587 is STARTTLS, not implicit TLS. Without this the LOGIN
             # credentials go out in the clear.
             smtp.starttls()
             smtp.ehlo()
-        if settings.smtp_user:
-            _login(smtp, settings.smtp_user, settings.smtp_pass)
+        if prof.user:
+            _login(smtp, prof.user, prof.password)
         smtp.send_message(message)
+
+
+# Logged once per profile rather than per message: a newsletter to 400 people
+# would otherwise write 400 identical lines about the same misconfiguration.
+_warned: set[str] = set()
+
+
+def _warn_once(key: str, message: str, *args) -> None:
+    if key not in _warned:
+        _warned.add(key)
+        log.error(message, *args)
 
 
 async def send(
@@ -244,29 +425,28 @@ async def send(
     body: str,
     html: str | None = None,
     attempts: int = 2,
+    profile: str | None = None,
+    headers: dict[str, str] | None = None,
 ) -> bool:
     """Send a message. Returns whether it actually went out.
 
     Never raises. A login must not 500 because Exchange is having a moment, and
     the caller already returns an indistinguishable 202 either way.
     """
-    if not configured():
+    prof = profile_for(profile)
+    if not prof.usable():
         if settings.log_codes_when_unconfigured:
-            reason = (
-                "no SMTP_HOST" if not settings.smtp_host else "no SMTP_PASS"
-            )
+            reason = "no host" if not prof.host else "no password"
             log.warning(
-                "SMTP not configured (%s) — would have sent to %s:\n%s",
-                reason,
-                to,
-                body,
+                "SMTP profile %s not configured (%s) — would have sent to %s:\n%s",
+                prof.key, reason, to, body,
             )
         return False
 
-    message = _build(to, subject, body, html)
+    message = _build(to, subject, body, html, prof, headers)
     for attempt in range(1, attempts + 1):
         try:
-            await asyncio.to_thread(_send_sync, message)
+            await asyncio.to_thread(_send_sync, message, prof)
             return True
         except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, TimeoutError):
             # Transient: Exchange drops idle connections and rate-limits bursts.
@@ -274,15 +454,46 @@ async def send(
                 await asyncio.sleep(2 * attempt)
                 continue
             log.exception("Giving up sending to %s after %d attempts", to, attempts)
+        except smtplib.SMTPSenderRefused:
+            # Exchange refuses a From the authenticated mailbox has no Send As
+            # right for. That is a configuration problem nobody can fix from
+            # here, and the message itself is usually worth delivering — so it
+            # goes out from the mailbox we *are* logged into, once, loudly.
+            fallback = transactional()
+            if prof.sender_address == fallback.sender_address:
+                log.exception("Sender %s refused sending to %s", prof.sender, to)
+                return False
+            _warn_once(
+                f"sendas:{prof.key}",
+                "%s is not permitted to send as %s, so bulk mail is going out "
+                "from %s instead. Imperial ICT must grant Send As on the "
+                "mailbox, or set PUB_SMTP_USER/PUB_SMTP_PASS to an account that "
+                "already has it.",
+                prof.user, prof.sender, fallback.sender,
+            )
+            retry = _build(
+                to, subject, body, html,
+                # Keep the bulk headers and the publicity Reply-To; swap only
+                # the From, which is the part Exchange objected to.
+                replace(prof, sender=fallback.sender),
+                headers,
+            )
+            try:
+                await asyncio.to_thread(_send_sync, retry, fallback)
+                return True
+            except Exception:
+                log.exception("Fallback send to %s failed as well", to)
+                return False
         except smtplib.SMTPAuthenticationError:
             # Almost always the annual password reset, or Microsoft disabling
             # basic auth on the tenant. Logged loudly because no amount of
             # retrying fixes it.
-            log.error(
-                "SMTP authentication failed for %s. The webmaster password is "
-                "reset yearly — check SMTP_PASS, and whether the tenant still "
-                "permits SMTP AUTH.",
-                settings.smtp_user,
+            _warn_once(
+                f"auth:{prof.key}",
+                "SMTP authentication failed for %s (profile %s). The mailbox "
+                "password is reset yearly — check the credentials, and whether "
+                "the tenant still permits SMTP AUTH.",
+                prof.user, prof.key,
             )
             return False
         except Exception:
@@ -293,8 +504,10 @@ async def send(
 
 # --------------------------------------------------------------------- templates
 #
-# Plain text on purpose. These are short, transactional, and HTML would only add
-# ways for them to render badly or land in spam.
+# Every one of these sends both parts: a plain-text body that reads as a real
+# message, and the branded HTML alternative. The text part is not a fallback
+# afterthought — it is what lands in a terminal mail client, a screen reader,
+# and the preview pane of anything that blocks HTML.
 
 
 async def send_login_code(to: str, code: str, minutes: int) -> bool:
@@ -335,34 +548,42 @@ async def send_login_code(to: str, code: str, minutes: int) -> bool:
 
 
 async def send_waitlist_offer(
-    to: str, event_title: str, ticket_type: str, expires: str, url: str
+    to: str,
+    event_title: str,
+    ticket_type: str,
+    expires: str,
+    url: str,
+    purchase_url: str | None = None,
 ) -> bool:
     """A place has come free and is being held for them.
 
     The deadline is the point of this email: the hold expires, and saying so
     plainly is the difference between them buying and losing the seat.
     """
+    title, ticket = escape(event_title), escape(ticket_type)
     body = (
         f"Good news — a place has opened up for {event_title}.\n\n"
         f"Ticket:      {ticket_type}\n"
         f"Held until:  {expires}\n\n"
         "Buy it on the Union shop and we'll confirm your booking automatically "
         "once the purchase reaches us.\n\n"
-        f"Your booking: {url}\n\n"
+        + (f"Buy your ticket: {purchase_url}\n" if purchase_url else "")
+        + f"Your booking:    {url}\n\n"
         "If you no longer want it, ignore this email and the place goes to the "
         "next person on the list.\n"
     )
     html = _shell(
-        f"A place has come free for {event_title}",
-        f"Held until {expires} — buy on the Union shop to confirm.",
-        _p(f"A place has opened up for <strong>{event_title}</strong>.")
-        + _detail_rows([("Ticket", ticket_type), ("Held until", expires)])
+        f"A place has come free for {title}",
+        f"Held until {escape(expires)} — buy on the Union shop to confirm.",
+        _p(f"A place has opened up for <strong>{title}</strong>.")
+        + _detail_rows([("Ticket", ticket), ("Held until", escape(expires))])
         + _p(
             "Buy it on the Union shop and we'll confirm your booking "
             "automatically once the purchase reaches us."
         )
-        + _button("View your booking", url)
-        + _p(
+        + _button("Buy your ticket", purchase_url or url)
+        + _note(
+            f'<a href="{url}" style="color:{MUTED};">View your booking</a>. '
             "If you no longer want it, ignore this email and the place goes to "
             "the next person on the list."
         ),
@@ -371,25 +592,33 @@ async def send_waitlist_offer(
 
 
 async def send_purchase_reminder(
-    to: str, event_title: str, quantity: int, url: str
+    to: str,
+    event_title: str,
+    quantity: int,
+    url: str,
+    purchase_url: str | None = None,
 ) -> bool:
+    """The committee's manual nudge, from the unpaid-bookings screen."""
+    title = escape(event_title)
     body = (
         f"We're holding {quantity} ticket(s) for {event_title}, but we can't see "
         "a purchase against your name on the Union shop yet.\n\n"
         "Buy it there and we'll confirm your place automatically. If you already "
         "have, reply with your order number and we'll match it up.\n\n"
-        f"Your booking: {url}\n"
+        + (f"Buy your ticket: {purchase_url}\n" if purchase_url else "")
+        + f"Your booking:    {url}\n"
     )
     html = _shell(
-        f"Your {event_title} ticket is still unpaid",
+        f"Your {title} ticket is still unpaid",
         "We can't see a purchase against your name yet.",
         _p(
             f"We're holding <strong>{quantity} ticket(s)</strong> for "
-            f"<strong>{event_title}</strong>, but we can't see a purchase "
+            f"<strong>{title}</strong>, but we can't see a purchase "
             "against your name on the Union shop yet."
         )
-        + _button("View your booking", url)
-        + _p(
+        + _button("Buy your ticket", purchase_url or url)
+        + _note(
+            f'<a href="{url}" style="color:{MUTED};">View your booking</a>. '
             "If you have already bought it, reply with your order number and "
             "we'll match it up."
         ),
@@ -407,10 +636,10 @@ async def send_booking_confirmed(
         "See you there.\n"
     )
     html = _shell(
-        f"You're confirmed for {event_title}",
-        f"{ticket_type} · {starts}",
-        _p(f"Your place at <strong>{event_title}</strong> is confirmed.")
-        + _detail_rows([("Ticket", ticket_type), ("When", starts)])
+        f"You're confirmed for {escape(event_title)}",
+        f"{escape(ticket_type)} · {escape(starts)}",
+        _p(f"Your place at <strong>{escape(event_title)}</strong> is confirmed.")
+        + _detail_rows([("Ticket", escape(ticket_type)), ("When", escape(starts))])
         + _p("See you there."),
     )
     return await send(to, f"You're confirmed for {event_title}", body, html)
@@ -430,11 +659,11 @@ async def send_locker_clearout(to: str, locker: str, deadline: str) -> bool:
         "the new allocation opens.\n"
     )
     html = _shell(
-        f"Empty locker {locker} before {deadline}",
-        f"Locker allocations reset for the new academic year.",
-        _p(f"You're holding EESoc locker <strong>{locker}</strong>.")
+        f"Empty locker {escape(locker)} before {escape(deadline)}",
+        "Locker allocations reset for the new academic year.",
+        _p(f"You're holding EESoc locker <strong>{escape(locker)}</strong>.")
         + _p(
-            f"Please empty it before <strong>{deadline}</strong>. Locker "
+            f"Please empty it before <strong>{escape(deadline)}</strong>. Locker "
             "allocations reset for the new academic year, and anything left in "
             "it after that is removed."
         )
@@ -444,3 +673,320 @@ async def send_locker_clearout(to: str, locker: str, deadline: str) -> bool:
         ),
     )
     return await send(to, f"Empty locker {locker} before {deadline}", body, html)
+
+
+# ------------------------------------------------------- booking lifecycle
+
+
+async def send_booking_held(
+    to: str,
+    event_title: str,
+    ticket_type: str,
+    quantity: int,
+    price: str,
+    starts: str,
+    expires: str,
+    booking_url: str,
+    purchase_url: str | None = None,
+    needs_order_number: bool = False,
+) -> bool:
+    """Sent the moment a hold is taken. The one email this flow was missing.
+
+    A reservation here is not a ticket: the money changes hands on the Union
+    shop and the sales feed only refreshes at 06:00. So the job of this message
+    is to say, in order, what they have, what they must still do, and by when —
+    with the link to pay as the only button on the page.
+
+    `purchase_url` is optional because it genuinely can be missing: the Union's
+    product feed often carries no URL for our centre, and the committee may not
+    have pasted one in. Saying "find it on the Union shop" is poor but honest;
+    inventing a URL would send people to a 404 and lose them the ticket.
+    """
+    title, ticket = escape(event_title), escape(ticket_type)
+
+    if needs_order_number:
+        what_next = (
+            "Buy the ticket on the Union shop, then come back and enter your "
+            "order number so we can match it to this booking."
+        )
+    else:
+        what_next = (
+            "Buy the ticket on the Union shop with the same Imperial account. "
+            "We check purchases each morning and confirm your place "
+            "automatically — there is nothing to send us."
+        )
+
+    lines = [
+        f"We're holding {quantity} × {ticket_type} for {event_title}.",
+        "",
+        f"Ticket:      {ticket_type} ({price})",
+        f"How many:    {quantity}",
+        f"Event:       {starts}",
+        f"Pay by:      {expires}",
+        "",
+        what_next,
+        "",
+    ]
+    if purchase_url:
+        lines += [f"Buy your ticket: {purchase_url}", ""]
+    else:
+        lines += [
+            "You'll find it on the Union shop under Electrical Engineering "
+            "Society.",
+            "",
+        ]
+    lines += [
+        f"Your booking:    {booking_url}",
+        "",
+        "If you don't buy it by the deadline the hold lapses and the place goes "
+        "back on sale. You can cancel any time from the booking page.",
+    ]
+
+    rows = [
+        ("Ticket", f"{ticket} ({escape(price)})"),
+        ("How many", str(quantity)),
+        ("Event", escape(starts)),
+        ("Pay by", escape(expires)),
+    ]
+    html = _shell(
+        f"We're holding your {title} ticket",
+        f"Pay by {escape(expires)} to keep it.",
+        _p(f"We're holding <strong>{quantity} × {ticket}</strong> for <strong>{title}</strong>.")
+        + _detail_rows(rows)
+        + _p(what_next)
+        + (
+            _button("Buy your ticket", purchase_url)
+            if purchase_url
+            else _p(
+                "You'll find it on the Union shop under Electrical Engineering "
+                "Society."
+            )
+        )
+        + _note(
+            f'Not bought it yet? Your place is held until {escape(expires)}. '
+            f'After that it goes back on sale. '
+            f'<a href="{booking_url}" style="color:{MUTED};">View or cancel your booking</a>.'
+        ),
+    )
+    return await send(to, f"We're holding your {event_title} ticket", "\n".join(lines), html)
+
+
+async def send_last_chance(
+    to: str,
+    event_title: str,
+    ticket_type: str,
+    quantity: int,
+    expires: str,
+    booking_url: str,
+    purchase_url: str | None = None,
+) -> bool:
+    """The one automated chase, sent shortly before a hold lapses.
+
+    Separate from `send_purchase_reminder` (the committee's manual nudge)
+    because the deadline is the whole message: this one is read by somebody who
+    still has time to act, and it must say exactly how much.
+    """
+    title, ticket = escape(event_title), escape(ticket_type)
+    body = (
+        f"Your {event_title} ticket is still unpaid, and we can only hold it "
+        f"until {expires}.\n\n"
+        f"Ticket:   {quantity} × {ticket_type}\n"
+        f"Hold ends: {expires}\n\n"
+        "Buy it on the Union shop and we'll confirm your place automatically.\n\n"
+        + (f"Buy your ticket: {purchase_url}\n\n" if purchase_url else "")
+        + f"Your booking:    {booking_url}\n\n"
+        "If you've already bought it, you can ignore this — a purchase can take "
+        "until the next morning to reach us. If you no longer want the ticket, "
+        "cancel on the booking page so somebody else can have it.\n"
+    )
+    html = _shell(
+        f"Last chance for your {title} ticket",
+        f"The hold ends {escape(expires)}.",
+        _p(
+            f"Your <strong>{title}</strong> ticket is still unpaid, and we can "
+            f"only hold it until <strong>{escape(expires)}</strong>."
+        )
+        + _detail_rows(
+            [("Ticket", f"{quantity} × {ticket}"), ("Hold ends", escape(expires))]
+        )
+        + (
+            _button("Buy your ticket", purchase_url)
+            if purchase_url
+            else _p(
+                "You'll find it on the Union shop under Electrical Engineering "
+                "Society."
+            )
+        )
+        + _note(
+            "Already bought it? You can ignore this — a purchase can take until "
+            "the next morning to reach us. Changed your mind? "
+            f'<a href="{booking_url}" style="color:{MUTED};">Cancel the booking</a> '
+            "so somebody else can have the place."
+        ),
+    )
+    return await send(to, f"Last chance: your {event_title} ticket", body, html)
+
+
+# ------------------------------------------------------------ announcements
+
+
+async def send_tickets_on_sale(
+    to: str,
+    event_title: str,
+    when: str,
+    venue: str,
+    event_url: str,
+    unsubscribe_url: str,
+    tickets: list[tuple[str, str]] | None = None,
+    purchase_url: str | None = None,
+) -> bool:
+    """Tickets have just opened for an event somebody asked to hear about.
+
+    Goes from the publicity mailbox and carries an unsubscribe, because it is
+    the one email in the booking flow the recipient did not trigger themselves.
+    """
+    title = escape(event_title)
+    ticket_lines = "\n".join(f"  {name} — {price}" for name, price in (tickets or []))
+    body = (
+        f"Tickets for {event_title} are on sale now.\n\n"
+        f"When:   {when}\n"
+        + (f"Where:  {venue}\n" if venue else "")
+        + (f"\nTickets:\n{ticket_lines}\n" if ticket_lines else "")
+        + f"\nReserve your place: {event_url}\n"
+        + (f"Buy on the Union shop: {purchase_url}\n" if purchase_url else "")
+        + "\nYou asked us to tell you when this went on sale. "
+        f"To stop these: {unsubscribe_url}\n"
+    )
+
+    rows = [("When", escape(when))]
+    if venue:
+        rows.append(("Where", escape(venue)))
+    for name, price in tickets or []:
+        rows.append((escape(name), escape(price)))
+
+    html = _shell(
+        f"Tickets for {title} are on sale",
+        f"{escape(when)}{' · ' + escape(venue) if venue else ''}",
+        _p(f"Tickets for <strong>{title}</strong> are on sale now.")
+        + _detail_rows(rows)
+        + _button("Reserve your place", event_url)
+        + _note("You asked us to tell you when this went on sale.")
+        + _footer_link("Stop these alerts", unsubscribe_url),
+    )
+    return await send(
+        to,
+        f"Tickets for {event_title} are on sale",
+        body,
+        html,
+        profile="publicity",
+        headers=_bulk_headers(unsubscribe_url),
+    )
+
+
+def _bulk_headers(unsubscribe_url: str) -> dict[str, str]:
+    """One-click unsubscribe, as Gmail and Outlook want it.
+
+    Both headers are needed and neither works alone: `List-Unsubscribe` alone
+    makes the client show a confirmation page, and `List-Unsubscribe-Post`
+    without the URL list is ignored. The mailto is the fallback for clients that
+    only understand that form.
+    """
+    reply_to = publicity().reply_to or settings.smtp_reply_to
+    targets = [f"<{unsubscribe_url}>"]
+    if reply_to:
+        targets.append(f"<mailto:{reply_to}?subject=unsubscribe>")
+    return {
+        "List-Unsubscribe": ", ".join(targets),
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    }
+
+
+async def send_campaign(
+    to: str,
+    subject: str,
+    heading: str,
+    body_text: str,
+    body_html: str,
+    unsubscribe_url: str,
+) -> bool:
+    """A committee-written newsletter.
+
+    The body arrives already rendered — markdown is turned into the site's own
+    typography by `services/emailing.py`, not here, so the admin preview and the
+    delivered message are produced by the same code and cannot drift.
+    """
+    text = f"{body_text.rstrip()}\n\n—\nEESoc · eesoc.com\nUnsubscribe: {unsubscribe_url}\n"
+    html = _shell(
+        escape(heading or subject),
+        # First line of the body, which is what an inbox preview would show
+        # anyway — better to choose it than to let the client pick the wordmark.
+        escape(" ".join(body_text.split())[:140]),
+        body_html + _footer_link("Unsubscribe from EESoc email", unsubscribe_url),
+    )
+    return await send(
+        to, subject, text, html,
+        profile="publicity",
+        headers=_bulk_headers(unsubscribe_url),
+    )
+
+
+async def send_event_announcement(
+    to: str,
+    subject: str,
+    event_title: str,
+    when: str,
+    venue: str,
+    event_url: str,
+    unsubscribe_url: str,
+    body_text: str = "",
+    body_html: str = "",
+    tickets: list[tuple[str, str]] | None = None,
+    heading: str | None = None,
+) -> bool:
+    """A committee-written message *about one event* — an announcement, a
+    reminder, a change of room.
+
+    Deliberately the same machinery as a newsletter (publicity mailbox, bulk
+    headers, unsubscribe) with the event's own details rendered underneath the
+    committee's words. Writing it as free text alone would mean every reminder
+    re-typed the date and venue, and sooner or later one of them would be wrong.
+    """
+    title = escape(event_title)
+    rows = [("When", escape(when))]
+    if venue:
+        rows.append(("Where", escape(venue)))
+    for name, price in tickets or []:
+        rows.append((escape(name), escape(price)))
+
+    text_parts = [body_text.rstrip()] if body_text.strip() else []
+    text_parts += [
+        "",
+        f"{event_title}",
+        f"When:   {when}",
+    ]
+    if venue:
+        text_parts.append(f"Where:  {venue}")
+    if tickets:
+        text_parts += ["", "Tickets:"] + [f"  {n} — {p}" for n, p in tickets]
+    text_parts += [
+        "",
+        f"Full details and booking: {event_url}",
+        "",
+        "—",
+        "EESoc · eesoc.com",
+        f"Unsubscribe: {unsubscribe_url}",
+    ]
+
+    html = _shell(
+        escape(heading or subject),
+        f"{title} · {escape(when)}",
+        (body_html or "")
+        + _detail_rows(rows)
+        + _button("Full details and booking", event_url)
+        + _footer_link("Unsubscribe from EESoc email", unsubscribe_url),
+    )
+    return await send(
+        to, subject, "\n".join(text_parts), html,
+        profile="publicity",
+        headers=_bulk_headers(unsubscribe_url),
+    )

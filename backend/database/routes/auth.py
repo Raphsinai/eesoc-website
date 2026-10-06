@@ -7,7 +7,7 @@ client, and the api service is what enforces authorisation.
 
 from datetime import datetime, timedelta, timezone
 
-from asyncpg.exceptions import UniqueViolationError
+from asyncpg.exceptions import CheckViolationError, UniqueViolationError
 from fastapi import APIRouter
 from fastapi.exceptions import HTTPException
 
@@ -203,13 +203,15 @@ async def create_session(session: Session) -> None:
         try:
             await conn.execute(
                 """
-                INSERT INTO public.sessions (token_hash, csrf_token, user_id, expires_at)
-                VALUES ($1, $2, $3, $4);
+                INSERT INTO public.sessions
+                    (token_hash, csrf_token, user_id, expires_at, impersonator_id)
+                VALUES ($1, $2, $3, $4, $5);
                 """,
                 session.token_hash,
                 session.csrf_token,
                 session.user_id,
                 session.expires_at,
+                session.impersonator_id,
             )
         except UniqueViolationError:
             # 256 bits of entropy: a "cosmic ray" branch, not a reason to retry.
@@ -233,7 +235,7 @@ async def get_user_session(token_hash: str) -> AuthSession:
              WHERE s.token_hash = $1
                AND s.expires_at > NOW()
             RETURNING s.token_hash, s.csrf_token, s.user_id, s.expires_at,
-                      s.created_at, s.last_seen_at;
+                      s.created_at, s.last_seen_at, s.impersonator_id;
             """,
             token_hash,
         )
@@ -253,10 +255,18 @@ async def get_user_session(token_hash: str) -> AuthSession:
                 user_row["member_id"],
             )
 
-        is_admin = await conn.fetchval(
-            "SELECT EXISTS (SELECT 1 FROM public.admins WHERE user_id = $1);",
-            row["user_id"],
+        role = await conn.fetchval(
+            "SELECT role FROM public.admins WHERE user_id = $1;", row["user_id"]
         )
+
+        # Who opened this session, when it is an impersonation. Returned in full
+        # so the api can name them in the banner without a second round trip.
+        impersonator_row = None
+        if row["impersonator_id"] is not None:
+            impersonator_row = await conn.fetchrow(
+                f"SELECT {USER_COLUMNS} FROM public.users WHERE id = $1;",
+                row["impersonator_id"],
+            )
         sponsor_ids = [
             r["sponsor_id"]
             for r in await conn.fetch(
@@ -268,9 +278,11 @@ async def get_user_session(token_hash: str) -> AuthSession:
     return AuthSession(
         session=Session(**dict(row)),
         user=User(**dict(user_row)),
-        is_admin=bool(is_admin),
+        role=role,
+        is_admin=role is not None,
         member=Member(**dict(member_row)) if member_row else None,
         sponsor_ids=sponsor_ids,
+        impersonator=User(**dict(impersonator_row)) if impersonator_row else None,
     )
 
 
@@ -396,7 +408,7 @@ async def list_admins() -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT a.user_id, a.granted_at, a.note,
+            SELECT a.user_id, a.role, a.granted_at, a.note,
                    u.email, u.first_name, u.last_name
               FROM public.admins a
               JOIN public.users u ON u.id = a.user_id
@@ -408,19 +420,37 @@ async def list_admins() -> list[dict]:
 
 @router.post("/admins/{user_id}", status_code=204)
 async def add_admin(
-    user_id: int, granted_by: int | None = None, note: str | None = None
+    user_id: int,
+    role: str = "admin",
+    granted_by: int | None = None,
+    note: str | None = None,
 ) -> None:
+    """Grant a role, or change the one already held.
+
+    ON CONFLICT updates rather than doing nothing: changing somebody's role is
+    the same gesture as granting it, and a DO NOTHING here would silently leave
+    an events officer on their old role when the committee promoted them.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO public.admins (user_id, granted_by, note) VALUES ($1, $2, $3)
-            ON CONFLICT (user_id) DO NOTHING;
-            """,
-            user_id,
-            granted_by,
-            note,
-        )
+        try:
+            await conn.execute(
+                """
+                INSERT INTO public.admins (user_id, role, granted_by, note)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    role       = EXCLUDED.role,
+                    granted_by = EXCLUDED.granted_by,
+                    granted_at = NOW(),
+                    note       = COALESCE(EXCLUDED.note, public.admins.note);
+                """,
+                user_id,
+                role,
+                granted_by,
+                note,
+            )
+        except CheckViolationError:
+            raise HTTPException(400, f"'{role}' is not a role")
 
 
 @router.delete("/admins/{user_id}", status_code=204)

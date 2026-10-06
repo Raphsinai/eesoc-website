@@ -319,7 +319,7 @@ async def claimable_events(sponsor_id: int | None = None) -> list[dict]:
               FROM public.events e
              WHERE e.published
                AND e.sponsorship_claimable
-               AND e.starts_at >= NOW()
+               AND e.starts_at >= (NOW() AT TIME ZONE 'Europe/London')
                AND e.requested_by_sponsor_id IS NULL
                AND NOT EXISTS (
                      SELECT 1 FROM public.event_sponsorships es
@@ -451,7 +451,7 @@ async def sponsor_stats(sponsor_id: int) -> dict:
               (SELECT COUNT(*) FROM public.event_sponsorships
                 WHERE sponsor_id = $1 AND status IN ('claimed','confirmed')) AS events_claimed,
               (SELECT COUNT(*) FROM public.events e
-                WHERE e.published AND e.starts_at >= NOW()
+                WHERE e.published AND e.starts_at >= (NOW() AT TIME ZONE 'Europe/London')
                   AND NOT EXISTS (SELECT 1 FROM public.event_sponsorships es
                                    WHERE es.event_id = e.id AND es.status <> 'declined')
               )                                                             AS events_open,

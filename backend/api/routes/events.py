@@ -16,10 +16,16 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from clients import database
 from config import settings
 from models.auth import AuthSession, GuestDetails
+from services import purchase
 from services import sync as sync_service
 from services.identity import is_imperial, resolve_or_create_user
 from utils import email as mailer
-from utils.auth import generate_login_code, generate_token, hash_token
+from utils.auth import (
+    generate_login_code,
+    generate_token,
+    hash_token,
+    normalise_email,
+)
 from utils.deps import (
     current_session,
     require_feature,
@@ -273,6 +279,14 @@ async def reserve(
     if as_guest:
         await _send_guest_code(str(guest.email))
 
+    # "We're holding your ticket, here's where to pay." Until this existed the
+    # only record of a booking was a line on a web page the person had to
+    # remember to come back to — and the deadline for paying lived there too.
+    address = str(guest.email) if as_guest else str(session.user.email)
+    await _send_held_confirmation(
+        address, event, ticket, reservation, is_member, as_guest
+    )
+
     return {
         "ok": True,
         "guest": as_guest,
@@ -285,6 +299,67 @@ async def reserve(
         "next": _next_step(ticket, is_member, as_guest),
         "membershipWarning": membership_warning,
     }
+
+
+async def _send_held_confirmation(
+    address: str,
+    event: dict,
+    ticket: dict,
+    reservation: dict,
+    is_member: bool,
+    as_guest: bool,
+) -> None:
+    """Tell somebody what they are holding and how to pay for it.
+
+    Failures are swallowed, as with the guest code: the hold is the thing that
+    mattered and it already exists, so a mail outage must not turn a successful
+    booking into a 500. It is logged, and the committee can re-send from the
+    unpaid-bookings screen.
+
+    A free ticket gets nothing — there is no deadline and nothing to buy, and an
+    email saying "pay by Thursday" for a £0 ticket is how people learn to ignore
+    the ones that matter.
+    """
+    if not ticket.get("requires_purchase", True):
+        return
+
+    try:
+        link = await purchase.link_for(event, ticket["id"])
+        starts = _parse_dt(event.get("starts_at"))
+        await mailer.send_booking_held(
+            address,
+            event["title"],
+            ticket["name"],
+            reservation["quantity"],
+            format_price(ticket.get("price_pence", 0)),
+            f"{format_date(starts)} at {format_time_range(starts, None)}" if starts else "TBC",
+            _readable_deadline(reservation.get("expires_at")),
+            f"{settings.site_origin}/events/{event['slug']}",
+            purchase_url=link,
+            # A member's Union purchase is matched on their login; everybody
+            # else has to tell us the order number, and the email is where they
+            # find that out.
+            needs_order_number=not is_member,
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("Could not send booking confirmation to %s", address)
+
+
+def _parse_dt(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def _readable_deadline(iso: str | None) -> str:
+    """A deadline somebody can act on, not an ISO timestamp."""
+    when = _parse_dt(iso)
+    if when is None:
+        return "soon"
+    return f"{format_date(when)} at {when.strftime('%H:%M')}"
 
 
 async def _send_guest_code(address: str) -> None:
@@ -599,3 +674,78 @@ async def my_waitlist(session: AuthSession = Depends(require_session)) -> dict:
             for e in rows
         ]
     }
+
+
+# ------------------------------------------------- "tell me when it's on sale"
+
+
+@router.post("/events/{slug}/notify-me")
+async def notify_when_on_sale(
+    slug: str,
+    email: str | None = Body(default=None, embed=True),
+    session: AuthSession | None = Depends(current_session),
+) -> dict:
+    """Ask to be emailed the moment this event's tickets open.
+
+    Open to the signed-out on purpose: this is the one thing somebody can do on
+    an event that is not yet bookable, and making them create an account first
+    would lose most of them. No account is created either — the address is held
+    against the alert and nothing else.
+
+    Deliberately NOT gated on `_require_sales_open`: the whole point is that
+    tickets are not on sale yet.
+    """
+    event = await database.get(f"/events/by-slug/{slug}")
+    if event is None or not event["published"]:
+        raise HTTPException(404, "No such event")
+
+    address = normalise_email(str(email or (session.user.email if session else "")))
+    if "@" not in address:
+        raise HTTPException(400, "Tell us where to email you.")
+
+    state, _ = sales_state(event)
+    if state == "open":
+        # Not an error: they can book right now, and saying so is more use than
+        # a promise to email them about something that has already happened.
+        return {
+            "ok": True,
+            "alreadyOpen": True,
+            "message": "Tickets are on sale now — you can book straight away.",
+        }
+
+    alert = await database.post(
+        "/email/sale-alerts",
+        {
+            "event_id": event["id"],
+            "email": address,
+            "user_id": session.user.id if session else None,
+        },
+    )
+    return {
+        "ok": True,
+        "id": alert["id"],
+        "email": address,
+        "message": (
+            f"We'll email {address} the moment tickets go on sale. "
+            "Every alert has a one-click way out."
+        ),
+    }
+
+
+@router.delete("/events/{slug}/notify-me", dependencies=[Depends(verify_csrf)])
+async def cancel_sale_alert(
+    slug: str, session: AuthSession = Depends(require_session)
+) -> dict:
+    """Signed-in cancellation. Somebody without an account uses the link in the
+    email, which carries its own token."""
+    event = await database.get(f"/events/by-slug/{slug}")
+    if event is None:
+        raise HTTPException(404, "No such event")
+
+    alerts = await database.get(
+        "/email/sale-alerts",
+        {"event_id": event["id"], "email": str(session.user.email)},
+    ) or []
+    for alert in alerts:
+        await database.post(f"/email/sale-alerts/{alert['id']}/cancel")
+    return {"ok": True, "cancelled": len(alerts)}

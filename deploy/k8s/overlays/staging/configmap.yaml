@@ -1,0 +1,37 @@
+# Only the keys that differ from production. A strategic merge patch on a
+# ConfigMap merges `data` key by key, so everything not named here — SMTP host,
+# S3 wiring, sync times, maintenance flags — is inherited from the base.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: eesoc-config
+data:
+  # A real value in the Literal the api validates, so this is not just cosmetic:
+  # it is what the code will key off if anything ever needs to behave
+  # differently here.
+  ENVIRONMENT: "staging"
+
+  # Still false. `environment: staging` is NOT `development`, so the api would
+  # refuse to start with the bypass on — which is the correct outcome. Staging
+  # is reachable from the internet; an auth bypass on it is an auth bypass.
+  DEV_LOGIN_ENABLED: "false"
+
+  # Goes into sign-in links in email. Pointing at eesoc.com would send anyone
+  # testing staging to production, where the code they were emailed does not
+  # exist — the single most confusing failure this split can produce.
+  #
+  # Changing this needs `kubectl -n eesoc-staging rollout restart deploy/api`:
+  # the pod reads its environment once at startup and nothing here triggers a
+  # new one, so ArgoCD will report Synced while the old value is still live.
+  SITE_ORIGIN: "https://eesoc.raphsinai.dev"
+
+  # Sign-in codes are written to the api log when no mail server is configured.
+  # In production that would put a working credential in `kubectl logs`; here
+  # it is what makes staging usable without SMTP_PASS, and the only accounts
+  # are ones you typed in yourself.
+  LOG_CODES_WHEN_UNCONFIGURED: "true"
+
+  # Nothing here is paid for, so the production pause is lifted — locker
+  # booking is one of the things worth exercising before a release.
+  MAINTENANCE_FEATURES: ""
+  MAINTENANCE_MESSAGE: ""

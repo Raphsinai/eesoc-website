@@ -1,0 +1,59 @@
+# Production hostnames. `spec.rules` has no patchMergeKey, so a strategic merge
+# patch replaces the whole list rather than appending to it — which is what we
+# want: the overlay states the complete set of hosts for this environment.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: eesoc
+spec:
+  rules:
+    - host: eesoc.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+    # www is redirected to the apex at the edge proxy, but the rule has to exist
+    # here too: anything that reaches the cluster with Host: www.eesoc.com and
+    # no matching rule gets the controller's default-backend 404.
+    - host: www.eesoc.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: eesoc-media
+spec:
+  rules:
+    - host: eesoc.com
+      http:
+        paths:
+          - path: /media/(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: garage
+                port:
+                  number: 3902
+    - host: www.eesoc.com
+      http:
+        paths:
+          - path: /media/(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: garage
+                port:
+                  number: 3902

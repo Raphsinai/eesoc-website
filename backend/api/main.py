@@ -19,6 +19,7 @@ from config import settings
 from routes.admin import router as admin_router
 from routes.auth import router as auth_router
 from routes.committee import router as committee_router
+from routes.email import router as email_router
 from routes.events import router as events_router
 from routes.lockers import router as lockers_router
 from routes.resources import import_seed
@@ -26,9 +27,11 @@ from routes.resources import router as resources_router
 from routes.search import router as search_router
 from routes.seo import router as seo_router
 from routes.sponsors import router as sponsors_router
+from services import announce as announce_service
 from services import maintenance
 from services import storage
 from services import sync as sync_service
+from utils import email as mailer
 from utils.year import academic_year
 
 logging.basicConfig(level=logging.INFO)
@@ -96,13 +99,30 @@ async def lifespan(app: FastAPI):
     else:
         log.warning("UNION_API_URL not set — ICU sync disabled")
 
+    # Separate from the daily ICU sync, and on a much shorter cycle. These two
+    # jobs only read our own database, so they cost nothing upstream — and both
+    # are time-critical in a way the nightly pass cannot serve: "tickets are on
+    # sale" is worthless the morning after, and a last-chance warning that
+    # arrives once the hold has already lapsed is worse than none.
+    announce_task: asyncio.Task | None = None
+    if mailer.configured():
+        announce_task = asyncio.create_task(announce_service.scheduler())
+        log.info(
+            "On-sale announcements and purchase reminders every %d minutes",
+            settings.announce_interval_minutes,
+        )
+    else:
+        log.warning("No SMTP credentials — on-sale and reminder emails disabled")
+
     yield
 
     seed_task.cancel()
-    if task is not None:
-        task.cancel()
+    for background in (task, announce_task):
+        if background is None:
+            continue
+        background.cancel()
         try:
-            await task
+            await background
         except asyncio.CancelledError:
             pass
     await database.close()
@@ -119,6 +139,7 @@ app.include_router(auth_router)
 app.include_router(events_router)
 app.include_router(lockers_router)
 app.include_router(committee_router)
+app.include_router(email_router)
 app.include_router(resources_router)
 app.include_router(sponsors_router)
 app.include_router(search_router)

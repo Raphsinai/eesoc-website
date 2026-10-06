@@ -13,26 +13,56 @@ import Badge from '@/components/ds/Badge.vue'
 import Field from '@/components/ds/Field.vue'
 import Input from '@/components/ds/Input.vue'
 import StatBlock from '@/components/ds/StatBlock.vue'
+import Dialog from '@/components/ds/Dialog.vue'
 import TraceRule from '@/components/ds/TraceRule.vue'
-import session from '@/stores/session'
+import session, { can, hasAdminArea } from '@/stores/session'
 
 const route = useRoute()
 const router = useRouter()
 
+// Each tab names the capability that makes it useful. 'card' is the one tab
+// that needs no role at all — a committee member's own entry — so it is keyed
+// on owning a card instead.
 const TABS = [
-  ['overview', 'Overview'],
-  ['events', 'Events'],
-  ['overdue', 'Unpaid bookings'],
-  ['resources', 'Resources'],
-  ['files', 'Files'],
-  ['committee', 'Committee'],
-  ['links', 'Union products'],
-  ['people', 'People'],
-  ['sponsors', 'Sponsors'],
+  ['overview', 'Overview', 'any'],
+  ['card', 'My card', 'card'],
+  ['events', 'Events', 'eventish'],
+  ['overdue', 'Unpaid bookings', 'eventish'],
+  ['resources', 'Resources', 'site'],
+  ['files', 'Files', 'site'],
+  ['committee', 'Committee', 'site'],
+  ['links', 'Union products', 'site'],
+  ['email', 'Email', 'site'],
+  ['people', 'People', 'any'],
+  ['sponsors', 'Sponsors', 'sponsors'],
 ]
 
-const tab = ref(route.query.tab || 'overview')
+function allowed(need) {
+  if (need === 'any') return session.isAdmin
+  if (need === 'card') return Boolean(session.committeeLogin)
+  // Events and the bookings that go with them: the events officers see all of
+  // it, the industry officers see it for their own events.
+  if (need === 'eventish') return can('events') || can('industry')
+  return can(need)
+}
+
+const visibleTabs = computed(() => TABS.filter(([, , need]) => allowed(need)))
+
+const tab = ref(route.query.tab || '')
 watch(tab, (t) => router.replace({ query: { ...route.query, tab: t } }))
+
+// Land on the first tab this person can actually use. Somebody with only
+// their own card has no Overview to open, and an events officer sent a link
+// to ?tab=sponsors should not get an empty page.
+watch(
+  visibleTabs,
+  (tabs) => {
+    if (!tabs.length) return
+    const ids = tabs.map(([id]) => id)
+    if (!ids.includes(tab.value)) tab.value = ids[0]
+  },
+  { immediate: true },
+)
 
 const dash = ref(null)
 const events = ref([])
@@ -44,9 +74,28 @@ const uploads = ref(null)
 const overdue = ref(null)
 const orderNumbers = reactive({})
 const admins = ref([])
+const roleOptions = ref([])
+const canManageUsers = ref(false)
 const sponsors = ref([])
 const sponsorTotals = ref(null)
 const committee = ref([])
+// This person's own committee entry, for the "My card" tab.
+const myCard = ref(null)
+const newRole = ref('admin')
+const impersonateEmail = ref('')
+
+// ------------------------------------------------------------------ email ---
+const audiences = ref([])
+const mailStatus = ref(null)
+const campaigns = ref([])
+const compose = reactive({ subject: '', heading: '', body: '', audiences: [] })
+const previewHtml = ref('')
+const previewCount = ref(null)
+const previewSample = ref([])
+// Non-null while the "email people about this event" dialog is open; holds the
+// event it is about, so the same composer serves both.
+const announcing = ref(null)
+
 const busy = ref(false)
 const error = ref('')
 const notice = ref('')
@@ -56,28 +105,44 @@ function flash(message) {
   setTimeout(() => (notice.value = ''), 6000)
 }
 
+/** Fetch only what this role is allowed to see.
+ *
+ *  `Promise.all` rejects on the first failure, so asking for everything and
+ *  letting the 403s land would leave an events officer staring at "Not your
+ *  area of the site" with none of their own data loaded. Each request is
+ *  therefore gated on the same capability that gates its tab, and `null` for
+ *  anything they cannot have. */
+function maybe(allow, request) {
+  return allow ? request : Promise.resolve(null)
+}
+
 async function load() {
   error.value = ''
+  const eventish = can('events') || can('industry')
   try {
-    const [d, ev, pr, ln, pg, ad, sp, cm] = await Promise.all([
-      api.get('/admin/dashboard'),
-      api.get('/admin/events'),
-      api.get('/admin/union/products'),
-      api.get('/admin/product-links'),
-      api.get('/resources'),
-      api.get('/admin/admins'),
-      api.get('/admin/sponsors'),
-      api.get('/admin/committee'),
+    const [d, ev, pr, ln, pg, ad, sp, cm, mine] = await Promise.all([
+      maybe(session.isAdmin, api.get('/admin/dashboard')),
+      maybe(eventish, api.get('/admin/events')),
+      maybe(session.isAdmin, api.get('/admin/union/products')),
+      maybe(session.isAdmin, api.get('/admin/product-links')),
+      maybe(can('site'), api.get('/resources')),
+      maybe(session.isAdmin, api.get('/admin/admins')),
+      maybe(can('sponsors'), api.get('/admin/sponsors')),
+      maybe(can('site'), api.get('/admin/committee')),
+      maybe(Boolean(session.committeeLogin), api.get('/committee/me')),
     ])
     dash.value = d
-    events.value = ev
-    products.value = pr
-    links.value = ln
-    pages.value = pg.pages
-    admins.value = ad
-    sponsors.value = sp.sponsors ?? sp
-    sponsorTotals.value = sp.totals ?? null
-    committee.value = cm.committee
+    events.value = ev ?? []
+    products.value = pr ?? []
+    links.value = ln ?? []
+    pages.value = pg?.pages ?? []
+    admins.value = ad?.admins ?? []
+    roleOptions.value = ad?.roles ?? []
+    canManageUsers.value = Boolean(ad?.canManage)
+    sponsors.value = sp?.sponsors ?? sp ?? []
+    sponsorTotals.value = sp?.totals ?? null
+    committee.value = cm?.committee ?? []
+    myCard.value = mine?.card ?? null
   } catch (e) {
     error.value = e.message
   }
@@ -129,7 +194,18 @@ const blank = () => ({
   // soon and refuses bookings until someone chooses a date.
   sales_scheduled: false,
   sales_open_at: '',
+  // Where to buy, for the emails. Only needed when the Union's own product
+  // feed carries no URL — which, for our centre, is most of the time.
+  purchase_url: '',
+  // A sign-up form of somebody else's — usually a sponsor's. When set, the
+  // event page links there instead of offering our booking.
+  signup_url: '',
   sponsorship_claimable: false,
+  // An industry event — careers fair, sponsor talk, site visit. It is what
+  // decides whether the industry officers can edit it, so it is ticked
+  // deliberately rather than guessed from the category. Somebody who may only
+  // edit industry events gets it set for them, server-side.
+  industry: !can('events'),
   // Empty by default. An event with no ticket types is a drop-in event: no
   // booking, no "on sale" state, just a listing. Adding a type is the
   // deliberate act, not removing the one that was there.
@@ -146,6 +222,7 @@ function editEvent(e) {
     ends_at: (e.ends_at || '').slice(0, 16),
     sales_scheduled: Boolean(e.sales_open_at),
     sales_open_at: (e.sales_open_at || '').slice(0, 16),
+    signup_url: e.signup_url ?? '',
     ticket_types: e.ticket_types ?? [],
   })
   // Prefill the product and per-ticket line selects from existing links.
@@ -174,13 +251,15 @@ async function saveEvent() {
     const payload = {
       ...draft,
       capacity: draft.capacity || null,
-      starts_at: new Date(draft.starts_at).toISOString(),
-      ends_at: draft.ends_at ? new Date(draft.ends_at).toISOString() : null,
+      // Sent exactly as typed ("2026-10-14T18:00"). Event times are London
+      // wall-clock times with no offset; converting to UTC here is what used
+      // to move every event by an hour during BST.
+      starts_at: draft.starts_at,
+      ends_at: draft.ends_at || null,
       // The radio decides, not whether the field happens to be empty.
       sales_open_at:
-        draft.sales_scheduled && draft.sales_open_at
-          ? new Date(draft.sales_open_at).toISOString()
-          : null,
+        draft.sales_scheduled && draft.sales_open_at ? draft.sales_open_at : null,
+      signup_url: draft.signup_url.trim() || null,
       ticket_types: draft.ticket_types.filter((t) => t.name.trim())
         .map((t) => ({ ...t, capacity: t.capacity || null })),
     }
@@ -389,10 +468,184 @@ async function cancelBooking(row) {
 watch(tab, (t) => {
   if (t === 'files' && !uploads.value) loadUploads()
   if (t === 'overdue') loadOverdue()
+  // Reloaded every visit rather than cached: a send in progress updates its
+  // counts as it goes, and a stale "0 sent" is exactly what makes somebody
+  // press send a second time.
+  if (t === 'email') loadEmail()
 })
+
+// --------------------------------------------------------------- email -----
+async function loadEmail() {
+  const [a, c] = await Promise.all([
+    api.get('/admin/email/audiences'),
+    api.get('/admin/email/campaigns'),
+  ])
+  audiences.value = a.audiences
+  mailStatus.value = a.mail
+  campaigns.value = c
+}
+
+/** Audiences arrive flat with a `group` on each; the picker shows them grouped
+ *  because "EESoc members" and "EEE Year 2" are different kinds of thing and
+ *  mixing them in one list is how the wrong one gets ticked. */
+const audienceGroups = computed(() => {
+  const out = new Map()
+  for (const a of audiences.value) {
+    if (!out.has(a.group)) out.set(a.group, [])
+    out.get(a.group).push(a)
+  }
+  return [...out.entries()]
+})
+
+function toggleAudience(key) {
+  const at = compose.audiences.indexOf(key)
+  if (at === -1) compose.audiences.push(key)
+  else compose.audiences.splice(at, 1)
+  // The count on screen must never describe a different audience from the one
+  // ticked, so it is cleared the moment the selection changes.
+  previewCount.value = null
+}
+
+async function preview() {
+  busy.value = true
+  error.value = ''
+  try {
+    const res = await api.post('/admin/email/preview', {
+      body: compose.body,
+      audiences: compose.audiences,
+    })
+    previewHtml.value = res.html
+    previewCount.value = res.recipients
+    previewSample.value = res.sample
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
+}
+
+async function sendEmail() {
+  const count = previewCount.value
+  const what = announcing.value ? `about ${announcing.value.title}` : 'newsletter'
+  if (count === null) {
+    error.value = 'Press Preview first, so you can see who this goes to.'
+    return
+  }
+  if (!confirm(`Send this ${what} to ${count} recipient(s)? This cannot be undone.`)) return
+
+  busy.value = true
+  error.value = ''
+  try {
+    const path = announcing.value
+      ? `/admin/events/${announcing.value.id}/announce`
+      : '/admin/email/send'
+    const res = await api.post(path, {
+      subject: compose.subject,
+      heading: compose.heading || null,
+      body: compose.body,
+      audiences: compose.audiences,
+    })
+    flash(res.message)
+    closeCompose()
+    await loadEmail()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
+}
+
+/** Open the composer for one event, pre-filled with a sensible subject. */
+function announceEvent(e) {
+  announcing.value = e
+  compose.subject = `${e.title} — ${new Date(e.starts_at).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}`
+  compose.heading = ''
+  compose.body = ''
+  compose.audiences = []
+  previewHtml.value = ''
+  previewCount.value = null
+  if (!audiences.value.length) loadEmail()
+}
+
+function closeCompose() {
+  announcing.value = null
+  compose.subject = ''
+  compose.heading = ''
+  compose.body = ''
+  compose.audiences = []
+  previewHtml.value = ''
+  previewCount.value = null
+  previewSample.value = []
+}
+
+async function runAnnouncePass() {
+  busy.value = true
+  try {
+    const res = await api.post('/admin/email/announce-now')
+    const announced = res.announced?.events ?? 0
+    const chased = res.chased?.sent ?? 0
+    flash(`${announced} event(s) announced, ${chased} purchase reminder(s) sent.`)
+    await loadEmail()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
+}
+
+const campaignTone = {
+  sent: 'success', sending: 'accent', failed: 'danger', draft: 'neutral',
+}
 
 // -------------------------------------------------------------- people -----
 const newAdminEmail = ref('')
+
+// ------------------------------------------------------------ my card -----
+async function saveMyCard() {
+  if (!myCard.value) return
+  busy.value = true
+  error.value = ''
+  try {
+    const res = await api.put('/committee/me', {
+      intro: myCard.value.intro ?? '',
+      photo_url: myCard.value.photoUrl ?? null,
+    })
+    myCard.value = res.card
+    flash('Your card is updated. It is live on the committee page.')
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
+}
+
+async function uploadMyPhoto(event) {
+  const file = event.target.files?.[0]
+  if (!file) return
+  busy.value = true
+  error.value = ''
+  try {
+    const form = new FormData()
+    form.append('file', file)
+    // Its own endpoint, not /admin/uploads: a committee member with no role
+    // can put a face on their card without being handed the file manager.
+    const res = await fetch('/api/committee/me/photo', {
+      method: 'POST',
+      body: form,
+      credentials: 'same-origin',
+      headers: { 'X-CSRF-Token': document.cookie.match(/(^|;\s*)csrf=([^;]*)/)?.[2] ?? '' },
+    })
+    const row = await res.json()
+    if (!res.ok) throw new Error(row?.detail || 'Upload failed')
+    myCard.value.photoUrl = row.url
+    await saveMyCard()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+    event.target.value = ''
+  }
+}
 
 // ----------------------------------------------------------- committee -----
 async function syncCommittee() {
@@ -424,6 +677,8 @@ async function saveMember(m) {
       display_role: (m.displayRole || '').trim() || null,
       row_number: Math.max(1, Number(m.row) || 1),
       sort_order: Number(m.sortOrder) || 100,
+      hidden: Boolean(m.hidden),
+      user_email: (m.linkedEmail || '').trim() || null,
     })
     flash(`${m.name} saved.`)
     await load()
@@ -459,6 +714,11 @@ async function persist(person) {
     display_role: (person.displayRole || '').trim() || null,
     row_number: Math.max(1, Number(person.row) || 1),
     sort_order: Number(person.sortOrder) || 100,
+    // Both carried explicitly. They are not on this form, and omitting them
+    // would send the defaults — quietly un-hiding somebody, or dropping the
+    // linked email, on a reorder that was only meant to move a card left.
+    hidden: Boolean(person.hidden),
+    user_email: (person.linkedEmail || '').trim() || null,
   })
 }
 
@@ -602,12 +862,28 @@ async function moveSponsor(sp, delta) {
 
 async function addAdmin() {
   try {
-    await api.post('/admin/admins', { email: newAdminEmail.value.trim() })
+    const res = await api.post('/admin/admins', {
+      email: newAdminEmail.value.trim(),
+      role: newRole.value,
+    })
     newAdminEmail.value = ''
-    flash('Admin added.')
+    flash(`${res.role} access granted.`)
     await load()
   } catch (e) {
     error.value = e.message
+  }
+}
+
+/** Changing a role is the same call as granting one — the server upserts. */
+async function setRole(a, role) {
+  if (role === a.role) return
+  try {
+    await api.post('/admin/admins', { email: a.email, role })
+    flash(`${a.email} is now ${role}.`)
+    await load()
+  } catch (e) {
+    error.value = e.message
+    await load()
   }
 }
 
@@ -618,6 +894,26 @@ async function removeAdmin(a) {
     await load()
   } catch (e) {
     error.value = e.message
+  }
+}
+
+/** Sign in as somebody else. A full reload: every panel on screen was built
+ *  for the superuser, and the next page must be rendered as the other person
+ *  from the ground up. */
+async function impersonate() {
+  const email = impersonateEmail.value.trim()
+  if (!email) return
+  if (!confirm(
+    `Sign in as ${email}?\n\nYou will be them until you press Stop in the `
+    + 'red banner. Anything you do is recorded as them.',
+  )) return
+  busy.value = true
+  try {
+    await api.post('/admin/impersonate', { email })
+    window.location.assign('/')
+  } catch (e) {
+    error.value = e.message
+    busy.value = false
   }
 }
 
@@ -783,14 +1079,14 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
       </span>
     </div>
 
-    <p v-if="!session.isAdmin" style="font:var(--type-small); color:var(--danger)">
+    <p v-if="!hasAdminArea" style="font:var(--type-small); color:var(--danger)">
       You need committee access for this page.
     </p>
 
     <template v-else>
       <nav class="admin-tabs">
         <Button
-          v-for="[id, label] in TABS"
+          v-for="[id, label] in visibleTabs"
           :key="id"
           :variant="tab === id ? 'primary' : 'ghost'"
           size="sm"
@@ -802,6 +1098,56 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
       <p v-if="error" style="font:var(--type-small); color:var(--danger)">{{ error }}</p>
 
       <!-- ============================ OVERVIEW ============================ -->
+      <!-- ============================= MY CARD ============================ -->
+      <template v-if="tab === 'card'">
+        <p style="margin:0 0 var(--space-5); font:var(--type-small); color:var(--text-muted); max-width:72ch">
+          Your entry on the committee page. The name and the Union role come
+          from ICU's records and are not editable here — a change made on this
+          page would be reverted by the next roster sync anyway. Where you sit
+          on the grid is set by an admin, so the rows stay even.
+        </p>
+
+        <Card v-if="myCard" variant="offset" style="max-width:62ch">
+          <div style="display:grid; grid-template-columns:112px minmax(0,1fr); gap:var(--space-5); align-items:start">
+            <div>
+              <img
+                v-if="myCard.photoUrl"
+                :src="myCard.photoUrl"
+                :alt="myCard.name"
+                style="width:112px; height:112px; object-fit:cover; border-radius:var(--radius-sm)"
+              />
+              <div v-else style="width:112px; height:112px; background:var(--surface-sunken); border-radius:var(--radius-sm)" />
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                :disabled="busy"
+                style="margin-top:var(--space-2); font-size:10px; width:112px"
+                @change="uploadMyPhoto"
+              />
+            </div>
+
+            <div style="display:grid; gap:var(--space-4); min-width:0">
+              <div>
+                <strong style="font:var(--type-h4)">{{ myCard.name }}</strong>
+                <div style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">
+                  {{ myCard.displayRole || myCard.unionRole }} · {{ myCard.login }}
+                </div>
+              </div>
+
+              <Field label="Intro" help="A sentence or two. This is what shows under your photo.">
+                <textarea v-model="myCard.intro" rows="4" class="ees-textarea" />
+              </Field>
+
+              <div>
+                <Button :disabled="busy" @click="saveMyCard">
+                  {{ busy ? 'Saving…' : 'Save my card' }}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </Card>
+      </template>
+
       <template v-if="tab === 'overview' && dash">
         <div v-if="dash.warnings.length" style="display:grid; gap:var(--space-3); margin-bottom:var(--space-8)">
           <Card v-for="(w, i) in dash.warnings" :key="i" variant="outline">
@@ -890,6 +1236,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                   <div style="display:flex; gap:var(--space-2); align-items:center">
                     <strong style="font:var(--type-h5)">{{ e.title }}</strong>
                     <Badge :tone="e.published ? 'success' : 'neutral'">{{ e.published ? 'Live' : 'Draft' }}</Badge>
+                    <Badge v-if="e.industry" tone="accent">Industry</Badge>
                     <Badge v-if="e.sponsorship_claimable" tone="brand">Sponsorable</Badge>
                   </div>
                   <p style="margin:var(--space-2) 0 0; font:var(--type-2xs); color:var(--text-faint)">
@@ -898,9 +1245,13 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                     {{ (e.ticket_types || []).map((t) => t.name).join(', ') || 'no ticket types' }}
                   </p>
                 </div>
-                <div style="display:flex; gap:var(--space-2)">
+                <div v-if="e.can_edit === false" style="font:var(--type-2xs); color:var(--text-faint); text-align:right; max-width:28ch">
+                  Not an industry event — the events officers look after this one.
+                </div>
+                <div v-else style="display:flex; gap:var(--space-2)">
                   <Button size="sm" variant="ghost" @click="togglePublished(e)">{{ e.published ? 'Unpublish' : 'Publish' }}</Button>
                   <Button size="sm" variant="ghost" @click="editEvent(e)">Edit</Button>
+                  <Button v-if="can('site')" size="sm" variant="secondary" @click="announceEvent(e)">Email about this</Button>
                   <Button size="sm" variant="danger" @click="removeEvent(e)">Delete</Button>
                 </div>
               </div>
@@ -984,6 +1335,20 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 </p>
               </fieldset>
 
+              <Field
+                label="External sign-up form (optional)"
+                help="For events that take sign-ups on their own form, e.g. a sponsor's. The event page shows a Sign up button linking here instead of booking."
+              >
+                <Input v-model="draft.signup_url" type="url" placeholder="https://forms.office.com/…" />
+              </Field>
+
+              <Field
+                label="Where to buy (Union shop link)"
+                help="Goes in every email about an unpaid ticket. Leave blank to use the URL on the linked Union product — which is often empty for our centre."
+              >
+                <Input v-model="draft.purchase_url" placeholder="https://www.imperialcollegeunion.org/shop/…" />
+              </Field>
+
               <TraceRule />
               <h3 style="margin:0; font:var(--type-h5)">Union product (optional)</h3>
               <p style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
@@ -1020,6 +1385,14 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                   <input v-model="t.members_only" type="checkbox" /> Members only
                   <input v-model="t.requires_purchase" type="checkbox" style="margin-left:var(--space-4)" /> Needs a Union purchase
                 </label>
+
+                <Field
+                  v-if="t.requires_purchase"
+                  label="Where to buy this one"
+                  help="Overrides the event's link. Only needed when each ticket type is a separate shop page."
+                >
+                  <Input v-model="t.purchase_url" placeholder="Leave blank to use the event's link" />
+                </Field>
 
                 <!-- Each ticket type is sold as its own Union product, so the
                      product is chosen here rather than once for the event. It is
@@ -1067,11 +1440,29 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 No ticket types — this is a drop-in event. The page will say
                 “No booking needed” and nobody has to reserve a place.
               </p>
-              <Button size="sm" variant="ghost" @click="draft.ticket_types.push({ name: '', price_pence: 0, capacity: null, max_per_user: 1, members_only: false, requires_purchase: true })">
+              <Button size="sm" variant="ghost" @click="draft.ticket_types.push({ name: '', price_pence: 0, capacity: null, max_per_user: 1, members_only: false, requires_purchase: true, purchase_url: '' })">
                 Add ticket type
               </Button>
 
               <label style="font:var(--type-small)"><input v-model="draft.published" type="checkbox" /> Published</label>
+              <label style="font:var(--type-small)">
+                <input
+                  v-model="draft.industry"
+                  type="checkbox"
+                  :disabled="!can('events')"
+                />
+                Industry event
+              </label>
+              <p style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
+                <template v-if="can('events')">
+                  A careers fair, a sponsor's talk, a site visit. Ticking this
+                  hands it to the industry officers as well as the events team.
+                </template>
+                <template v-else>
+                  Your role covers industry events, so anything you create here
+                  is one.
+                </template>
+              </p>
               <label style="font:var(--type-small)">
                 <input v-model="draft.sponsorship_claimable" type="checkbox" />
                 Open to sponsorship
@@ -1307,6 +1698,12 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                       rows="2" class="ees-textarea"
                     />
                   </Field>
+                  <Field
+                    label="Linked email"
+                    help="Only needed when the account they sign in with is not their college address — then this is what lets them edit their own card."
+                  >
+                    <Input v-model="m.linkedEmail" :placeholder="m.email || 'none'" />
+                  </Field>
                 </div>
 
                 <div style="display:grid; gap:4px; justify-items:end">
@@ -1386,22 +1783,218 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
       </template>
 
       <!-- ============================= PEOPLE ============================= -->
+      <!-- ============================== EMAIL ============================= -->
+      <template v-if="tab === 'email'">
+        <!-- Mail is the one thing on this page that fails silently: a mailbox
+             that cannot authenticate produces a campaign where every message
+             fails, hours after somebody pressed send. So the state of both
+             mailboxes is the first thing on the screen. -->
+        <div v-if="mailStatus" style="display:grid; gap:var(--space-3); margin-bottom:var(--space-6)">
+          <Card v-for="(m, key) in mailStatus" :key="key" variant="outline">
+            <div style="display:flex; align-items:center; gap:var(--space-3); flex-wrap:wrap">
+              <Badge :tone="m.configured ? 'success' : 'danger'">
+                {{ m.configured ? 'ready' : 'not configured' }}
+              </Badge>
+              <span style="font:var(--type-small)">
+                <strong>{{ key === 'publicity' ? 'Newsletters' : 'Transactional' }}</strong>
+                — from {{ m.from }}
+              </span>
+              <span style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">
+                login {{ m.login || 'none' }}
+              </span>
+              <Badge v-if="m.sendsAs" tone="accent">sends as</Badge>
+            </div>
+            <p v-if="m.sendsAs" style="margin:var(--space-2) 0 0; font:var(--type-2xs); color:var(--text-muted)">
+              Logged in as one mailbox, sending from another. Exchange only allows
+              this with Send As granted on {{ m.from }} — if these bounce, that is
+              the first thing to check.
+            </p>
+          </Card>
+        </div>
+
+        <div class="admin-cols admin-cols--split">
+          <Card variant="offset">
+            <h2 style="margin:0 0 var(--space-2); font:var(--type-h4)">Write a newsletter</h2>
+            <p style="margin:0 0 var(--space-5); font:var(--type-small); color:var(--text-muted)">
+              Goes from the publicity address. Everyone gets a working
+              unsubscribe except the department lists, which the department owns.
+            </p>
+
+            <div style="display:grid; gap:var(--space-4)">
+              <Field label="Subject" help="What lands in the inbox. Say the thing, don't tease it.">
+                <Input v-model="compose.subject" placeholder="Careers Fair, lockers and the hack" />
+              </Field>
+              <Field label="Heading" help="The big line inside the email. Blank uses the subject.">
+                <Input v-model="compose.heading" placeholder="" />
+              </Field>
+              <Field
+                label="Body"
+                help="Blank line between paragraphs. **bold**, - bullets, ## heading, [link](https://…)."
+              >
+                <textarea v-model="compose.body" rows="12" class="ees-textarea" />
+              </Field>
+            </div>
+
+            <TraceRule style="margin:var(--space-6) 0" />
+            <h3 style="margin:0 0 var(--space-4); font:var(--type-h5)">Who gets it</h3>
+
+            <div v-for="[group, items] in audienceGroups" :key="group" style="margin-bottom:var(--space-5)">
+              <span style="font:var(--type-label); color:var(--text-muted)">{{ group }}</span>
+              <label v-for="a in items" :key="a.key" class="aud">
+                <input
+                  type="checkbox"
+                  :checked="compose.audiences.includes(a.key)"
+                  @change="toggleAudience(a.key)"
+                />
+                <span>
+                  <strong class="aud__label">{{ a.label }}</strong>
+                  <span class="aud__desc">{{ a.description }}</span>
+                </span>
+                <span class="aud__count">
+                  {{ a.list ? 'list' : (a.count ?? '—') }}
+                </span>
+              </label>
+            </div>
+
+            <div style="display:flex; gap:var(--space-3); flex-wrap:wrap; align-items:center">
+              <Button variant="secondary" :disabled="busy || !compose.audiences.length" @click="preview">
+                Preview
+              </Button>
+              <Button :disabled="busy || previewCount === null || !compose.subject.trim()" @click="sendEmail">
+                {{ busy ? 'Working…' : 'Send' }}
+              </Button>
+              <span v-if="previewCount !== null" style="font:var(--type-small); color:var(--text-muted)">
+                {{ previewCount }} recipient(s) after removing duplicates and unsubscribes
+              </span>
+            </div>
+            <p v-if="previewSample.length" style="margin:var(--space-3) 0 0; font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">
+              e.g. {{ previewSample.join(', ') }}…
+            </p>
+          </Card>
+
+          <div style="display:grid; gap:var(--space-6); align-content:start">
+            <Card v-if="previewHtml" variant="outline">
+              <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">Preview</h2>
+              <!-- Rendered by the same code that builds the real message, so
+                   what is approved here is what arrives. The HTML is produced
+                   server-side from an escape-first renderer — nothing a
+                   committee member types reaches this as markup. -->
+              <div class="mail-preview" v-html="previewHtml" />
+            </Card>
+
+            <Card variant="outline">
+              <div style="display:flex; align-items:baseline; justify-content:space-between; gap:var(--space-3); flex-wrap:wrap">
+                <h2 style="margin:0; font:var(--type-h4)">Sent</h2>
+                <Button size="sm" variant="ghost" :disabled="busy" @click="runAnnouncePass">
+                  Run on-sale &amp; reminder pass
+                </Button>
+              </div>
+              <p v-if="!campaigns.length" style="margin:var(--space-4) 0 0; font:var(--type-small); color:var(--text-faint)">
+                Nothing sent yet.
+              </p>
+              <div
+                v-for="c in campaigns"
+                :key="c.id"
+                style="display:grid; gap:var(--space-2); padding:var(--space-3) 0; border-top:1px solid var(--border-faint)"
+              >
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:var(--space-3)">
+                  <span style="font:var(--type-small)">{{ c.subject }}</span>
+                  <Badge :tone="campaignTone[c.status] || 'neutral'">{{ c.status }}</Badge>
+                </div>
+                <span style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">
+                  {{ c.sent }}/{{ c.recipients }} sent<template v-if="c.failed"> · {{ c.failed }} failed</template>
+                  · {{ new Date(c.created_at).toLocaleString() }}
+                </span>
+                <span v-if="c.error" style="font:var(--type-2xs); color:var(--danger)">{{ c.error }}</span>
+              </div>
+            </Card>
+          </div>
+        </div>
+      </template>
+
       <template v-if="tab === 'people'">
         <div class="admin-cols">
           <Card variant="offset">
-            <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">Committee access</h2>
-            <div v-for="a in admins" :key="a.user_id" style="display:flex; justify-content:space-between; align-items:center; padding:var(--space-3) 0; border-top:1px solid var(--border-hairline)">
-              <div style="display:grid; gap:2px">
-                <span style="font:var(--type-small)">{{ [a.first_name, a.last_name].filter(Boolean).join(' ') || a.email }}</span>
-                <span style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">{{ a.email }}</span>
+            <h2 style="margin:0 0 var(--space-2); font:var(--type-h4)">Committee access</h2>
+            <p style="margin:0 0 var(--space-4); font:var(--type-small); color:var(--text-muted)">
+              <template v-if="canManageUsers">
+                One role each. Everyone also edits their own committee card,
+                whatever role they hold.
+              </template>
+              <template v-else>
+                Who has access, and who to ask. Only a superuser can change it.
+              </template>
+            </p>
+
+            <div
+              v-for="a in admins"
+              :key="a.email"
+              style="display:flex; justify-content:space-between; align-items:center; gap:var(--space-3); padding:var(--space-3) 0; border-top:1px solid var(--border-hairline)"
+            >
+              <div style="display:grid; gap:2px; min-width:0">
+                <span style="font:var(--type-small)">
+                  {{ [a.first_name, a.last_name].filter(Boolean).join(' ') || a.email }}
+                  <Badge v-if="a.standing" tone="accent">standing</Badge>
+                </span>
+                <span style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint); overflow-wrap:anywhere">
+                  {{ a.email }}
+                </span>
               </div>
-              <Button size="sm" variant="ghost" @click="removeAdmin(a)">Remove</Button>
+
+              <div style="display:flex; gap:var(--space-2); align-items:center; flex-shrink:0">
+                <select
+                  v-if="canManageUsers && !a.standing && a.user_id"
+                  :value="a.role"
+                  class="ees-select"
+                  @change="(e) => setRole(a, e.target.value)"
+                >
+                  <option v-for="r in roleOptions" :key="r.id" :value="r.id">{{ r.label }}</option>
+                </select>
+                <Badge v-else tone="neutral">{{ a.role }}</Badge>
+
+                <Button
+                  v-if="canManageUsers && !a.standing && a.user_id"
+                  size="sm"
+                  variant="ghost"
+                  @click="removeAdmin(a)"
+                >Remove</Button>
+              </div>
             </div>
-            <TraceRule style="margin:var(--space-5) 0" />
-            <Field label="Add an admin" help="They must have signed in at least once.">
-              <Input v-model="newAdminEmail" placeholder="name@imperial.ac.uk" />
+
+            <template v-if="canManageUsers">
+              <TraceRule style="margin:var(--space-5) 0" />
+              <Field label="Give somebody access" help="They must have signed in at least once.">
+                <Input v-model="newAdminEmail" placeholder="name@imperial.ac.uk" />
+              </Field>
+              <Field label="As" style="margin-top:var(--space-3)">
+                <select v-model="newRole" class="ees-select">
+                  <option v-for="r in roleOptions" :key="r.id" :value="r.id">{{ r.label }}</option>
+                </select>
+              </Field>
+              <p v-if="roleOptions.length" style="margin:var(--space-2) 0 0; font:var(--type-2xs); color:var(--text-faint)">
+                {{ roleOptions.find((r) => r.id === newRole)?.blurb }}
+              </p>
+              <Button size="sm" style="margin-top:var(--space-3)" @click="addAdmin">Grant access</Button>
+            </template>
+          </Card>
+
+          <Card v-if="canManageUsers" variant="outline">
+            <h2 style="margin:0 0 var(--space-2); font:var(--type-h4)">Sign in as somebody</h2>
+            <p style="margin:0 0 var(--space-4); font:var(--type-small); color:var(--text-muted)">
+              Opens a real session as that account, so you see exactly what they
+              see. A red banner stays on every page until you stop, and both
+              names go in the log.
+            </p>
+            <Field label="Email" help="Any account on the site — member, guest or sponsor.">
+              <Input v-model="impersonateEmail" placeholder="name@imperial.ac.uk" />
             </Field>
-            <Button size="sm" style="margin-top:var(--space-3)" @click="addAdmin">Grant access</Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              style="margin-top:var(--space-3)"
+              :disabled="busy || !impersonateEmail.trim()"
+              @click="impersonate"
+            >Sign in as them</Button>
           </Card>
 
           <Card variant="outline">
@@ -1521,10 +2114,120 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
       </template>
 
     </template>
+    <!-- Opened from the Events tab. Same audiences, same preview, same send
+         path — the only difference is that the event's date, venue, tickets
+         and booking link are rendered into the message from the database, so a
+         reminder cannot advertise last week's room. -->
+    <Dialog
+      :open="Boolean(announcing)"
+      :title="announcing ? `Email people about ${announcing.title}` : ''"
+      width="720px"
+      @close="closeCompose"
+    >
+      <div v-if="announcing" style="display:grid; gap:var(--space-4)">
+        <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
+          Write what you want to say. The date, venue, ticket prices and a link
+          to the event page are added underneath automatically.
+        </p>
+
+        <Field label="Subject"><Input v-model="compose.subject" /></Field>
+        <Field label="Heading" help="Blank uses the subject.">
+          <Input v-model="compose.heading" />
+        </Field>
+        <Field label="Message" help="**bold**, - bullets, ## heading, [link](https://…).">
+          <textarea v-model="compose.body" rows="7" class="ees-textarea" />
+        </Field>
+
+        <TraceRule />
+        <span style="font:var(--type-label); color:var(--text-muted)">Who gets it</span>
+        <div v-for="[group, items] in audienceGroups" :key="group">
+          <span style="font:var(--type-2xs); color:var(--text-faint)">{{ group }}</span>
+          <label v-for="a in items" :key="a.key" class="aud">
+            <input
+              type="checkbox"
+              :checked="compose.audiences.includes(a.key)"
+              @change="toggleAudience(a.key)"
+            />
+            <span>
+              <strong class="aud__label">{{ a.label }}</strong>
+              <span class="aud__desc">{{ a.description }}</span>
+            </span>
+            <span class="aud__count">{{ a.list ? 'list' : (a.count ?? '—') }}</span>
+          </label>
+        </div>
+
+        <div v-if="previewHtml" class="mail-preview" v-html="previewHtml" />
+        <p v-if="error" style="margin:0; font:var(--type-small); color:var(--danger)">{{ error }}</p>
+      </div>
+
+      <template #footer>
+        <span v-if="previewCount !== null" style="font:var(--type-small); color:var(--text-muted); margin-right:auto">
+          {{ previewCount }} recipient(s)
+        </span>
+        <Button variant="ghost" @click="closeCompose">Cancel</Button>
+        <Button variant="secondary" :disabled="busy || !compose.audiences.length" @click="preview">
+          Preview
+        </Button>
+        <Button :disabled="busy || previewCount === null || !compose.subject.trim()" @click="sendEmail">
+          {{ busy ? 'Sending…' : 'Send' }}
+        </Button>
+      </template>
+    </Dialog>
   </main>
 </template>
 
 <style scoped>
+/* One audience row: tickbox, name + what it is, and the live count. The count
+   is right-aligned and tabular so a column of them can be scanned — the
+   difference between 42 and 420 recipients is the whole decision. */
+.aud {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: var(--space-3);
+  align-items: start;
+  padding: var(--space-2) 0;
+  cursor: pointer;
+}
+
+.aud input {
+  margin-top: 3px;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--action-primary);
+}
+
+.aud__label {
+  display: block;
+  font: var(--type-small);
+  color: var(--text-strong);
+}
+
+.aud__desc {
+  display: block;
+  font: var(--type-2xs);
+  color: var(--text-muted);
+}
+
+.aud__count {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The preview is a fragment of an HTML email: it carries its own inline styles
+   and must not inherit the admin page's. Contain it and let it scroll rather
+   than letting a long newsletter stretch the panel. */
+.mail-preview {
+  max-height: 460px;
+  overflow: auto;
+  padding: var(--space-4);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-md);
+  background: var(--white, #fff);
+}
+
 /* Fixed page frame. Everything inside must be able to shrink, or a wide tab
    (the event editor, the product tables) pushes the container past its
    max-width and the tab bar visibly slides as you switch tabs. */

@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     database_adapter_url: str
     union_api_url: str = ""
 
+    # --- access ---
+    # The standing superuser. Whoever holds this address is a superuser on every
+    # request, whatever the admins table says — so the one account that can hand
+    # out access cannot be locked out, demoted by somebody they promoted, or
+    # lost to a database restored from before they existed. Changing it is a
+    # deploy, which is the point.
+    superuser_email: str = "ras124@ic.ac.uk"
+
     # --- sessions ---
     session_ttl_days: int = 7
     session_cookie: str = "session"
@@ -57,6 +65,57 @@ class Settings(BaseSettings):
     # With no SMTP host configured, codes are logged instead of sent so the flow
     # is testable before credentials exist. Never leave this on in production.
     log_codes_when_unconfigured: bool = True
+
+    # --- publicity mailbox (bulk) ---
+    # Anything sent to a list rather than to one person goes from the publicity
+    # officer's address, not the webmaster's: a newsletter that invites replies
+    # should reach the people who write it, and keeping bulk traffic off the
+    # mailbox that carries sign-in codes protects the deliverability of the one
+    # that must never be filtered.
+    #
+    # Each field falls back to its transactional counterpart when blank, so a
+    # half-configured publicity profile sends from the webmaster mailbox rather
+    # than failing. The one that matters is pub_smtp_pass: with no password of
+    # its own we authenticate as the webmaster account and still send *from*
+    # the publicity address, which is the normal Exchange arrangement for a
+    # shared mailbox (it needs Send As).
+    pub_smtp_host: str = ""
+    pub_smtp_port: int = 0
+    pub_smtp_user: str = ""
+    pub_smtp_pass: str = ""
+    pub_smtp_from: str = ""
+    pub_smtp_reply_to: str = ""
+    # Tri-state by hand: "" inherits, "true"/"false" override. A bool could not
+    # express "not set" and would silently turn STARTTLS off.
+    pub_smtp_starttls: str = ""
+
+    # --- bulk sending ---
+    # Exchange Online throttles a mailbox at roughly 30 messages a minute and
+    # 10,000 recipients a day. 2 seconds between messages keeps us comfortably
+    # under the rate limit; a newsletter to 400 people takes about 13 minutes,
+    # which is fine for something that runs in the background.
+    bulk_send_interval_seconds: float = 2.0
+    # Refuse a send larger than this without it being split. A society
+    # newsletter is in the hundreds; four figures means an audience was picked
+    # by accident.
+    bulk_max_recipients: int = 5000
+
+    # Signs unsubscribe links, so one works from a mail client with no session
+    # and cannot be forged for somebody else's address. Falls back to the SMTP
+    # password, which is a stable secret this process must already hold — if
+    # there is no mail credential there is no mail, so there are no links to
+    # sign. Set it explicitly to keep links working across a password reset.
+    email_token_secret: str = ""
+
+    # --- automated reminders ---
+    # How long before a hold expires the "last chance" email goes out. 24h by
+    # default against a 48h hold: late enough that most people have already
+    # paid and will never see it, early enough to still act on.
+    purchase_reminder_hours_before: int = 24
+    # How often the announcer looks for events that have just gone on sale and
+    # holds that are about to lapse. Both are database-only, so this is cheap:
+    # it never touches eActivities.
+    announce_interval_minutes: int = 10
 
     # --- guest booking ---
     # Guests have not proved they control the address, so their hold is short:

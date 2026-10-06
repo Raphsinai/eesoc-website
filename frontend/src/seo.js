@@ -13,9 +13,20 @@ const DEFAULT_DESCRIPTION =
   "Welcome to Imperial's Electrical Engineering society! Here you can find " +
   'upcoming events, our latest sponsors, and resources to assist with your studies.'
 
-// Public origin, used for canonical and og:url. Overridable at build time
-// because staging must not advertise production URLs to crawlers.
-const ORIGIN = import.meta.env.VITE_SITE_ORIGIN || 'https://eesoc.com'
+// Public origin, used for canonical and og:url.
+//
+// Read from the browser, not baked in at build time. One image is built per
+// commit and promoted from staging to production unchanged (see
+// deploy/README.md), so a compiled-in origin would make staging advertise
+// eesoc.com as the canonical URL of every page it serves — telling crawlers to
+// index production copies of pages that may not exist there yet.
+//
+// The build-time variable is still honoured if something sets it, and the
+// literal is the last resort for a non-browser context (a test, a prerender).
+const ORIGIN =
+  import.meta.env.VITE_SITE_ORIGIN ||
+  (typeof window !== 'undefined' && window.location?.origin) ||
+  'https://eesoc.com'
 
 function setMeta(selector, attribute, value) {
   if (!value) return

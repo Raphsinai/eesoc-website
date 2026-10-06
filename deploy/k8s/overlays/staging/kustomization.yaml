@@ -1,0 +1,75 @@
+# Staging — eesoc.raphsinai.dev. Namespace `eesoc-staging`.
+#
+# Every push to main lands here automatically (.github/workflows/deploy.yml);
+# production only moves when someone runs the promote workflow. So this is what
+# "the next release" looks like, and the thing that gets promoted is the exact
+# image staging has been running — not a rebuild.
+#
+# It is a FULL copy of the stack: its own Postgres, its own Garage bucket, its
+# own secrets. Sharing either with production would mean a bad migration tested
+# here was a bad migration applied there, which is the one thing staging exists
+# to prevent.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: eesoc-staging
+resources:
+  - ../../base
+  # Refreshes staging from the latest production snapshot after every deploy.
+  - refresh-job.yaml
+  # The scrub/restore scripts, shared with the other environment.
+  - ../../../snapshot
+
+# The same scripts as production, from the same files — restore.sh has to be
+# the one that was tested, not a copy that drifted.
+
+# Pinned by the `release-staging` job on every push to main.
+images:
+- name: ghcr.io/OWNER/eesoc-api
+  newName: ghcr.io/raphsinai/eesoc-api
+  newTag: 2fe7b8d88ca69c18b2f77b2a79a637f91f1b4e58
+- name: ghcr.io/OWNER/eesoc-database
+  newName: ghcr.io/raphsinai/eesoc-database
+  newTag: 2fe7b8d88ca69c18b2f77b2a79a637f91f1b4e58
+- name: ghcr.io/OWNER/eesoc-frontend
+  newName: ghcr.io/raphsinai/eesoc-frontend
+  newTag: 2fe7b8d88ca69c18b2f77b2a79a637f91f1b4e58
+- name: ghcr.io/OWNER/eesoc-garage-init
+  newName: ghcr.io/raphsinai/eesoc-garage-init
+  newTag: 2fe7b8d88ca69c18b2f77b2a79a637f91f1b4e58
+- name: ghcr.io/OWNER/eesoc-union
+  newName: ghcr.io/raphsinai/eesoc-union
+  newTag: 2fe7b8d88ca69c18b2f77b2a79a637f91f1b4e58
+
+# Both environments share one node. Staging is the one that should give way, so
+# it runs one of everything.
+replicas:
+  - name: database
+    count: 1
+
+patches:
+  - path: ingress-hosts.yaml
+  - path: configmap.yaml
+
+  # One Postgres instance, a fifth of the disk, half the memory ceiling.
+  # Production's 10Gi is sized for years of real bookings; staging's data is
+  # thrown away and recreated. The memory *request* is left alone — that is what
+  # the scheduler reserves, and the limit is what decides who is killed first
+  # when the node is squeezed.
+  - target: { group: postgresql.cnpg.io, kind: Cluster, name: eesoc-db }
+    patch: |
+      - op: replace
+        path: /spec/instances
+        value: 1
+      - op: replace
+        path: /spec/storage/size
+        value: 2Gi
+      - op: replace
+        path: /spec/resources/limits/memory
+        value: 1Gi
+
+  # Same for the object store: test uploads, not four years of event posters.
+  - target: { kind: PersistentVolumeClaim, name: garage-data }
+    patch: |
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 5Gi

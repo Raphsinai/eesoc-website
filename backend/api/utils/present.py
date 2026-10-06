@@ -5,7 +5,12 @@ because that is what the mockup renders. ISO timestamps are sent alongside them
 so the client can regroup or re-localise without re-parsing the display text.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+# Event times are stored as London wall-clock times with no offset (migration
+# 031), so "has it happened yet" is a question about the time in London.
+LONDON = ZoneInfo("Europe/London")
 
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -55,9 +60,8 @@ def sales_state(event: dict) -> tuple[str, str | None]:
     opens = _parse(event.get("sales_open_at"))
     if opens is None:
         return "soon", None
-    if opens.tzinfo is None:
-        opens = opens.replace(tzinfo=timezone.utc)
-    if opens <= datetime.now(timezone.utc):
+    opens = opens.replace(tzinfo=None)
+    if opens <= london_now():
         return "open", opens.isoformat()
     return "scheduled", opens.isoformat()
 
@@ -80,6 +84,10 @@ def event_status(event: dict) -> tuple[str, str]:
     # No ticket types at all = nothing to book. A drop-in event is not
     # "on sale soon", it is simply free to turn up to, and saying otherwise
     # makes people wait for tickets that are never coming.
+    # Sign-ups happen on somebody else's form, so our ticket state says
+    # nothing about whether there is room.
+    if event.get("signup_url"):
+        return "Sign up", "accent"
     if not types:
         return "Free · just turn up", "success"
 
@@ -123,6 +131,7 @@ def event_card(event: dict) -> dict:
         "status": status,
         "statusTone": tone,
         "imageUrl": event.get("image_url"),
+        "signupUrl": event.get("signup_url"),
         "startsAt": event.get("starts_at"),
         "endsAt": event.get("ends_at"),
         "soldOut": bool(event.get("sold_out")),
@@ -130,6 +139,11 @@ def event_card(event: dict) -> dict:
         "salesState": sales_state(event)[0],
         "salesOpenAt": sales_state(event)[1],
     }
+
+
+def london_now() -> datetime:
+    """Now, as a naive London wall-clock time — comparable with event times."""
+    return datetime.now(LONDON).replace(tzinfo=None)
 
 
 def _parse(value) -> datetime | None:

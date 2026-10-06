@@ -16,7 +16,6 @@ apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: eesoc-db
-  namespace: eesoc
   annotations:
     # Created before the workloads that depend on it. Without this the adapter
     # crash-loops on its first sync while the cluster is still bootstrapping —

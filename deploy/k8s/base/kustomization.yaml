@@ -18,21 +18,11 @@ resources:
 commonLabels:
   app.kubernetes.io/part-of: eesoc-website
 
-# Image tags are patched by CI (kustomize edit set image), which is what makes
-# the GitOps loop work: the workflow commits a new tag and ArgoCD syncs it.
-images:
-- name: ghcr.io/OWNER/eesoc-api
-  newName: ghcr.io/raphsinai/eesoc-api
-  newTag: 8efca7df15b2a7a60442ea07d85bc95d9fbe1a10
-- name: ghcr.io/OWNER/eesoc-database
-  newName: ghcr.io/raphsinai/eesoc-database
-  newTag: 8efca7df15b2a7a60442ea07d85bc95d9fbe1a10
-- name: ghcr.io/OWNER/eesoc-frontend
-  newName: ghcr.io/raphsinai/eesoc-frontend
-  newTag: 8efca7df15b2a7a60442ea07d85bc95d9fbe1a10
-- name: ghcr.io/OWNER/eesoc-garage-init
-  newName: ghcr.io/raphsinai/eesoc-garage-init
-  newTag: 8efca7df15b2a7a60442ea07d85bc95d9fbe1a10
-- name: ghcr.io/OWNER/eesoc-union
-  newName: ghcr.io/raphsinai/eesoc-union
-  newTag: 8efca7df15b2a7a60442ea07d85bc95d9fbe1a10
+# No `images:` block here, deliberately.
+#
+# Image tags are pinned per overlay, because that is the whole of the promotion
+# model: CI pins a new SHA in overlays/staging on every push to main, and the
+# promote workflow copies whatever SHA staging is running into
+# overlays/production. A tag here would be shared by both environments and
+# there would be nothing left to promote — every push would go straight to
+# eesoc.com.

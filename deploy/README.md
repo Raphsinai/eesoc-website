@@ -1,27 +1,94 @@
 # Deployment
 
+Two environments, one cluster, one branch.
+
+| | Staging | Production |
+|---|---|---|
+| URL | <https://eesoc.raphsinai.dev> | <https://eesoc.com> |
+| Namespace | `eesoc-staging` | `eesoc` |
+| Overlay | `deploy/k8s/overlays/staging` | `deploy/k8s/overlays/production` |
+| ArgoCD app | `eesoc-website-staging` | `eesoc-website` |
+| Edge vhost | `deploy/nginx/eesoc.raphsinai.dev.conf` | `deploy/nginx/eesoc.com.conf` |
+| Moves when | every push to `main` | somebody runs **promote** |
+| Database | its own, disposable | the real one |
+| Indexed by Google | no (`X-Robots-Tag` at the edge) | yes |
+
 GitOps: GitHub Actions builds and publishes images, then commits the new tag to
-`deploy/k8s/base/kustomization.yaml`. ArgoCD watches
-`deploy/k8s/overlays/production` and reconciles. **CI never runs `kubectl`** —
-the repository is the only statement of what is deployed, and a rollback is
-`git revert`.
+the **staging** overlay. ArgoCD watches each overlay and reconciles. **CI never
+runs `kubectl`** — the repository is the only statement of what is deployed, and
+a rollback is `git revert`.
 
 ```
-push to main ──> test ──> build & push images ──> commit image tag
+push to main ─> test ─> build & push images ─> pin tag in overlays/staging
                                                         │
-                                              ArgoCD sync ──> cluster
+                                          ArgoCD ─> eesoc-staging ns
+                                                        │
+                                                   ( you look at it )
+                                                        │
+                        run `promote` workflow ─> copy that same tag
+                                                   into overlays/production
+                                                        │
+                                          ArgoCD ─> eesoc ns ─> eesoc.com
 ```
+
+## Releasing
+
+1. Merge to `main`. CI tests, builds five images tagged with the commit SHA,
+   and pins them in `overlays/staging`. Within a minute or two
+   <https://eesoc.raphsinai.dev> is running the new code.
+2. Look at it. This is the only step a machine cannot do.
+3. Actions → **promote to production** → *Run workflow*. Leave the SHA blank to
+   promote whatever staging is running.
+
+**Promotion moves the image, not the source.** The tag staging has been running
+is copied across verbatim; nothing is rebuilt. A rebuild of the same commit can
+still differ — a base image moves, a transitive dependency publishes a patch —
+and then what is on eesoc.com is not what anyone looked at.
+
+The workflow refuses to run when it would be unsafe:
+
+| It stops if | Because |
+|---|---|
+| staging's five services are on different SHAs | a half-finished deploy; that combination has never run anywhere |
+| production is already on the requested SHA | nothing to do, and the empty commit is noise |
+| the SHA is not an ancestor of `main` | a typo'd SHA commits an image reference that does not exist, and production sits in `ImagePullBackOff` |
+| either overlay fails to render | ArgoCD would otherwise find out mid-sync, with production part-applied |
+
+To **roll back**, `git revert` the promote commit, or run promote again with an
+older SHA typed into the input — any commit on `main` whose images are still in
+GHCR.
+
+To require a second pair of eyes before production, add required reviewers to
+the `production` environment in the repository settings. The workflow already
+declares it; with no reviewers configured it simply runs.
+
+### Why one branch and not a `staging` branch
+
+Promotion is a copy of an image tag, not a merge. A `staging` branch would make
+promotion a merge, and a merge can carry commits that were never on staging —
+which is the exact thing this is supposed to prevent. The two environments are
+separated by directory.
 
 ## First-time setup
 
-**One line to change:** `repoURL` in `deploy/argocd/application.yaml`.
+**One line to change, twice:** `repoURL` in
+`deploy/argocd/application-production.yaml` and
+`deploy/argocd/application-staging.yaml`.
 
-The `ghcr.io/OWNER/...` entries in `deploy/k8s/base/kustomization.yaml` are
+The `ghcr.io/OWNER/...` entries in each overlay's `kustomization.yaml` are
 *match keys*, not real image names — CI rewrites them to
 `ghcr.io/<your-user>/eesoc-<svc>:<sha>` using `${{ github.repository_owner }}`,
 so they can be left exactly as they are. Verified by running the rewrite:
 `kustomize edit set image` fills in `newName`/`newTag` and the render comes out
 as `ghcr.io/<user>/eesoc-api:<sha>`.
+
+The base carries **no** `images:` block and **no** Ingress hosts: both are
+per-environment, and a shared value for either is how staging ends up on
+eesoc.com. The base also carries no `namespace:` — the overlay sets it, which is
+what lets the same manifests run twice in one cluster.
+
+Everything below is per-environment. Do it once for `eesoc` and once for
+`eesoc-staging`.
 
 ### 1. Secrets
 
@@ -79,10 +146,12 @@ A **private repository publishes private images**, so the cluster also needs a
 registry credential. The four deployments reference `ghcr-pull`:
 
 ```bash
-kubectl -n eesoc create secret docker-registry ghcr-pull \
-  --docker-server=ghcr.io \
-  --docker-username=<github-user> \
-  --docker-password=<token with read:packages>
+for ns in eesoc eesoc-staging; do
+  kubectl -n "$ns" create secret docker-registry ghcr-pull \
+    --docker-server=ghcr.io \
+    --docker-username=<github-user> \
+    --docker-password=<token with read:packages>
+done
 ```
 
 Without it every pod sits in `ImagePullBackOff` with `denied`, which reads like
@@ -92,6 +161,43 @@ a missing image rather than a missing credential.
 using it — the one currently in `backend.env` matches neither key seen in the
 HTTPie screenshots, and repeated auth failures get the cluster's IP **banned for
 an hour**.
+
+#### The staging secret is deliberately smaller
+
+```bash
+kubectl create namespace eesoc-staging
+kubectl -n eesoc-staging create secret generic eesoc-secrets \
+  --from-literal=S3_ACCESS_KEY_ID="GK$(openssl rand -hex 12)" \
+  --from-literal=S3_SECRET_ACCESS_KEY="$(openssl rand -hex 32)"
+```
+
+Note what is **not** there.
+
+**`ICU_API_KEY` must stay out.** eActivities rate-limits per source IP and bans
+the whole society on breach — and both environments leave the cluster from the
+same address. A staging `union` pod with a working key doubles the request rate
+against that limit, and the ban that follows takes production's membership sync
+down with it. With no key the bridge answers `503 ICU bridge is not configured`
+and makes no upstream calls at all, which is exactly the behaviour staging
+wants. Its own S3 keys, generated fresh, so staging cannot write into
+production's bucket.
+
+**`SMTP_PASS` is optional, and leaving it out is the safe default.** Without it
+sign-in and event booking put themselves under maintenance (see *Maintenance
+mode*), and sign-in codes are written to the api log instead —
+`LOG_CODES_WHEN_UNCONFIGURED` is `true` in the staging overlay, so:
+
+```bash
+kubectl -n eesoc-staging logs deploy/api | grep -i code
+```
+
+is how you sign in to staging. That is a working credential in a log, which is
+why production has it off.
+
+Add the password only when testing the mail path itself, and remember it sends
+as `eesocweb@ic.ac.uk` for real. Staging's database is separate and starts
+empty, so the only addresses it can reach are ones typed in by hand — but a
+waitlist promotion on test data will still email whoever is on it.
 
 ### 2. Uploads (self-hosted Garage)
 
@@ -160,26 +266,151 @@ safe.
 > hold the same ReadWriteOnce volume, and a rolling update would deadlock.
 > Uploads are briefly unavailable during a restart.
 
-### 2a. Temporary test domain
+### 2a. Keeping the two environments apart
 
-`eesoc.raphsinai.dev` is served while eesoc.com still points at the old site.
-Three things had to move together, and all are marked TEMPORARY:
+Three values differ per environment and all three are in the overlays, not the
+base:
 
-- both Ingresses list the host (without a matching rule the controller answers
-  404 from its default backend, whatever the proxy sends);
-- `SITE_ORIGIN`, which is what goes into sign-in links in email;
-- `S3_PUBLIC_BASE_URL`, which is the absolute URL browsers fetch uploads from.
+| Value | Where | Why it must differ |
+|---|---|---|
+| Ingress `spec.rules[].host` | `overlays/*/ingress-hosts.yaml` | the only thing routing a request to one namespace rather than the other |
+| `SITE_ORIGIN` | `overlays/staging/configmap.yaml` | goes into sign-in links in email; pointing at eesoc.com sends a staging tester to production with a code that does not exist there |
+| `ENVIRONMENT` | same | `staging`, which the api validates as a real value |
 
-The vhost on the proxy VM is `deploy/nginx/eesoc.raphsinai.dev.conf`, installed
-at `/etc/nginx/sites-available/eesoc.raphsinai.dev`.
+`S3_PUBLIC_BASE_URL` is deliberately **not** on that list. It is `/media` —
+relative, so it follows whatever host served the page. The URL it produces is
+stored in the database on upload (`committee_profiles.photo_url`,
+`events.image_url`), so an absolute one would bake a hostname into every row and
+the rows would outlive it. That mistake has already been made once here, with
+the old test domain.
 
 **A ConfigMap change does not restart anything.** The pods read their
 environment once at startup and there is no checksum annotation on the pod
-template, so ArgoCD will show Synced while the api still holds the old values.
-`kubectl -n eesoc rollout restart deploy/api` after changing it.
+template, so ArgoCD will show Synced while the api still holds the old values:
 
-To cut over to the real domain: point DNS at the proxy, drop the extra host
-from both Ingresses, reset the two ConfigMap values, and restart the api.
+```bash
+kubectl -n eesoc-staging rollout restart deploy/api
+```
+
+**Staging is not indexed.** `X-Robots-Tag: noindex, nofollow, noarchive` is set
+by the edge vhost rather than by the app, so it covers HTML, `sitemap.xml` and
+uploaded media alike and cannot be forgotten in a new route. Without it staging
+competes with eesoc.com in search results for the society's own name. If you
+want it closed off entirely rather than merely unindexed, add HTTP basic auth to
+`deploy/nginx/eesoc.raphsinai.dev.conf` — nothing in the app depends on being
+publicly reachable.
+
+### 2c. Staging's data: a scrubbed copy of production
+
+Staging restores a snapshot of production after **every deploy**, so it looks
+like the real site — the same events, sponsors, resources, committee and
+lockers — while anything edited in the staging dashboard is discarded on the
+next push. A staging edit can never become a production change.
+
+```
+PRODUCTION (ns eesoc)                         STAGING (ns eesoc-staging)
+  CronJob snapshot, every 6h
+    1 pg_dump the live database
+    2 restore into a throwaway
+      postgres INSIDE the job pod
+    3 scrub.sql   — anonymise
+    4 verify.sql  — prove it
+    5 upload ─────────────────> eesoc-snapshots/latest.sql.gz
+                                         │  read-only key
+                                         v
+                                 PostSync hook, every deploy
+                                   1 fetch snapshot + media
+                                   2 DROP SCHEMA, restore
+```
+
+**The copy is anonymised before it leaves production.** The database holds real
+Imperial student data — CIDs, names, college shortcodes, emails, phone numbers,
+purchase records. Staging is a second internet-facing host; putting a live copy
+of that there would be a data-protection problem, not a convenience. So:
+
+| Kept | Removed |
+|---|---|
+| Events, sponsors, resources, lockers, site content | Every member and user email, name and shortcode |
+| Committee **names and roles** — already published on eesoc.com | Committee CIDs, logins, emails, phone numbers |
+| Row counts and shapes, so bookings and waitlists behave realistically | Session tokens and sign-in codes (**deleted**, not rewritten) |
+| `order_number`, so reservation matching still works | Purchaser names, CIDs and emails on Union sales |
+
+Addresses become `user<id>@staging.invalid`. `.invalid` is reserved by RFC 2606
+and never resolves, so even a staging instance given a working SMTP password
+cannot reach a real person — mail fails at DNS. That is the backstop behind
+leaving `SMTP_PASS` out of the staging secret, not a replacement for it.
+
+**Sessions are deleted rather than anonymised.** A session row is a working
+credential whatever name is attached to it; copied to staging, a leak there
+would be a leak of live production logins.
+
+#### Why it cannot run backwards
+
+The failure that matters is not "staging has stale data", it is "the refresh ran
+the wrong way and production was overwritten". Four independent things prevent
+it, and no single mistake defeats them:
+
+1. **Production never connects to staging.** The snapshot job writes one object
+   to a bucket and stops. It holds no staging credential.
+2. **Staging's production credential is read-only** — a Garage key with `read`
+   on two buckets and nothing else, enforced by Garage.
+3. **The NetworkPolicy** only lets staging reach production's S3 port at all.
+4. **`restore.sh` refuses to run** unless `ENVIRONMENT=staging`, the pod's
+   namespace (from the Downward API, not a manifest string) is `eesoc-staging`,
+   and `PGHOST` resolves inside that namespace. Verified against all four
+   refusal cases.
+
+And `verify.sql` walks **every text column of every table** in
+`information_schema` rather than a list someone maintains — so a future
+migration that adds an email column is caught even though nobody remembered to
+add it to `scrub.sql`, and the job fails instead of shipping it. Tested: adding
+an unscrubbed column to `events` fails the snapshot and publishes nothing.
+
+#### Extra secrets this needs
+
+One key pair, generated once, stored in both namespaces — written in production,
+read in staging:
+
+```bash
+RO_ID="GK$(openssl rand -hex 12)"
+RO_SECRET="$(openssl rand -hex 32)"
+
+kubectl -n eesoc patch secret eesoc-secrets --type merge -p "{\"stringData\":{
+  \"STAGING_RO_ACCESS_KEY_ID\":\"$RO_ID\",
+  \"STAGING_RO_SECRET_ACCESS_KEY\":\"$RO_SECRET\"}}"
+
+kubectl -n eesoc-staging patch secret eesoc-secrets --type merge -p "{\"stringData\":{
+  \"PROD_RO_ACCESS_KEY_ID\":\"$RO_ID\",
+  \"PROD_RO_SECRET_ACCESS_KEY\":\"$RO_SECRET\"}}"
+
+kubectl -n eesoc rollout restart deploy/garage   # imports the key
+```
+
+Garage requires the `GK` + 24 hex / 64 hex shape; `key import` rejects anything
+else.
+
+#### Running one now
+
+A deploy restores the newest snapshot, which may be up to six hours old. To take
+a fresh one first:
+
+```bash
+kubectl -n eesoc create job --from=cronjob/snapshot snapshot-now
+kubectl -n eesoc logs -f job/snapshot-now -c dump
+```
+
+Then re-sync staging in ArgoCD, or delete the refresh job to make the hook run
+again. Change `schedule:` in `overlays/production/snapshot-cronjob.yaml` if
+staging needs to track production more closely; the only cost is reading the
+database more often.
+
+#### Media
+
+Uploaded images are copied with `rclone copy`, never `sync` — sync would delete
+anything uploaded through the staging dashboard, which is the exact workflow
+staging exists to test. The copy is incremental, so after the first run only
+genuinely new objects transfer. These objects are already public: they are
+served anonymously from eesoc.com.
 
 ### 2b. TLS and the edge proxy
 
@@ -187,15 +418,26 @@ from both Ingresses, reset the two ConfigMap values, and restart the api.
 Ingress carries no certificate and no cert-manager annotation; the hop from the
 VM into the cluster is plain HTTP.
 
-`deploy/nginx/eesoc.conf` is the vhost for that VM. Point `upstream
-eesoc_cluster` at the cluster's ingress address, then:
+`deploy/nginx/` holds one vhost per environment, both pointing at the same
+cluster ingress and separated only by `server_name`. Point each `upstream` at
+the cluster's ingress address, then:
 
 ```bash
-cp deploy/nginx/eesoc.conf /etc/nginx/sites-available/eesoc.conf
-ln -s /etc/nginx/sites-available/eesoc.conf /etc/nginx/sites-enabled/
+cp deploy/nginx/eesoc.com.conf /etc/nginx/sites-available/eesoc.com
+ln -s /etc/nginx/sites-available/eesoc.com /etc/nginx/sites-enabled/
 certbot --nginx -d eesoc.com -d www.eesoc.com
+
+cp deploy/nginx/eesoc.raphsinai.dev.conf \
+   /etc/nginx/sites-available/eesoc.raphsinai.dev
+ln -s /etc/nginx/sites-available/eesoc.raphsinai.dev /etc/nginx/sites-enabled/
+certbot --nginx -d eesoc.raphsinai.dev
+
 nginx -t && systemctl reload nginx
 ```
+
+**Neither vhost may rewrite `Host`.** The cluster matches on it, and that match
+is the entire separation between the two environments at this hop — a rewritten
+Host sends staging traffic to production's Ingress.
 
 Two things that are easy to get wrong:
 
@@ -232,7 +474,8 @@ care about.
 ### 4. ArgoCD
 
 ```bash
-kubectl apply -f deploy/argocd/application.yaml
+kubectl apply -f deploy/argocd/application-production.yaml
+kubectl apply -f deploy/argocd/application-staging.yaml
 ```
 
 ## Maintenance mode

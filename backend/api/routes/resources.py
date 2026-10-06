@@ -15,7 +15,7 @@ from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadF
 from clients import database
 from models.auth import AuthSession
 from services import storage
-from utils.deps import current_session, require_admin, verify_csrf
+from utils.deps import current_session, require_site, verify_csrf
 
 log = logging.getLogger("api.resources")
 
@@ -90,7 +90,7 @@ async def get_page(
 
 @router.post("/admin/resources", dependencies=[Depends(verify_csrf)])
 async def create_page(
-    body: dict = Body(...), session: AuthSession = Depends(require_admin)
+    body: dict = Body(...), session: AuthSession = Depends(require_site)
 ) -> dict:
     if not (body.get("slug") or "").strip():
         raise HTTPException(400, "A page needs a slug")
@@ -101,7 +101,7 @@ async def create_page(
 
 @router.put("/admin/resources/{page_id}", dependencies=[Depends(verify_csrf)])
 async def update_page(
-    page_id: int, body: dict = Body(...), session: AuthSession = Depends(require_admin)
+    page_id: int, body: dict = Body(...), session: AuthSession = Depends(require_site)
 ) -> dict:
     return await database.put(
         f"/resource-pages/{page_id}", body, params={"updated_by": session.user.id}
@@ -109,7 +109,7 @@ async def update_page(
 
 
 @router.delete("/admin/resources/{page_id}", dependencies=[Depends(verify_csrf)])
-async def delete_page(page_id: int, _: AuthSession = Depends(require_admin)) -> dict:
+async def delete_page(page_id: int, _: AuthSession = Depends(require_site)) -> dict:
     await database.delete(f"/resource-pages/{page_id}")
     return {"ok": True}
 
@@ -119,7 +119,7 @@ async def delete_page(page_id: int, _: AuthSession = Depends(require_admin)) -> 
 
 @router.post("/admin/resource-entries", dependencies=[Depends(verify_csrf)])
 async def create_entry(
-    body: dict = Body(...), _: AuthSession = Depends(require_admin)
+    body: dict = Body(...), _: AuthSession = Depends(require_site)
 ) -> dict:
     if not body.get("page_id"):
         raise HTTPException(400, "An entry must belong to a page")
@@ -128,13 +128,13 @@ async def create_entry(
 
 @router.put("/admin/resource-entries/{entry_id}", dependencies=[Depends(verify_csrf)])
 async def update_entry(
-    entry_id: int, body: dict = Body(...), _: AuthSession = Depends(require_admin)
+    entry_id: int, body: dict = Body(...), _: AuthSession = Depends(require_site)
 ) -> dict:
     return await database.put(f"/resource-entries/{entry_id}", body)
 
 
 @router.delete("/admin/resource-entries/{entry_id}", dependencies=[Depends(verify_csrf)])
-async def delete_entry(entry_id: int, _: AuthSession = Depends(require_admin)) -> dict:
+async def delete_entry(entry_id: int, _: AuthSession = Depends(require_site)) -> dict:
     await database.delete(f"/resource-entries/{entry_id}")
     return {"ok": True}
 
@@ -143,7 +143,7 @@ async def delete_entry(entry_id: int, _: AuthSession = Depends(require_admin)) -
 async def move_entry(
     entry_id: int,
     direction: int = Body(embed=True, default=-1),
-    _: AuthSession = Depends(require_admin),
+    _: AuthSession = Depends(require_site),
 ) -> dict:
     await database.post(
         f"/resource-entries/{entry_id}/move", params={"direction": direction}
@@ -178,7 +178,7 @@ async def import_seed(force: bool = False) -> dict:
 
 @router.post("/admin/resources/import", dependencies=[Depends(verify_csrf)])
 async def trigger_import(
-    force: bool = False, _: AuthSession = Depends(require_admin)
+    force: bool = False, _: AuthSession = Depends(require_site)
 ) -> dict:
     """Re-import from the bundled snapshot of eesoc.com.
 
@@ -194,7 +194,7 @@ async def trigger_import(
 async def upload_file(
     file: UploadFile = File(...),
     purpose: str = Form("general"),
-    session: AuthSession = Depends(require_admin),
+    session: AuthSession = Depends(require_site),
 ) -> dict:
     """Store a file on the media volume and record it.
 
@@ -210,7 +210,7 @@ async def upload_file(
 
 @router.get("/admin/uploads")
 async def list_uploads(
-    purpose: str | None = None, _: AuthSession = Depends(require_admin)
+    purpose: str | None = None, _: AuthSession = Depends(require_site)
 ) -> dict:
     rows = await database.get("/uploads", {"purpose": purpose}) or []
     # Totals come from the recorded byte_size, not from the store: listing an
@@ -228,7 +228,7 @@ async def list_uploads(
 
 
 @router.delete("/admin/uploads/{upload_id}", dependencies=[Depends(verify_csrf)])
-async def delete_upload(upload_id: int, _: AuthSession = Depends(require_admin)) -> dict:
+async def delete_upload(upload_id: int, _: AuthSession = Depends(require_site)) -> dict:
     """Remove the row first, then the bytes.
 
     In that order a crash between the two leaves an orphaned file (harmless,

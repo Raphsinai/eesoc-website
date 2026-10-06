@@ -1,0 +1,20 @@
+# The refresh scripts, packaged as a ConfigMap both environments include.
+#
+# A base of its own because kustomize will not read files from outside the
+# directory holding the kustomization that names them — and because production
+# and staging must run the SAME scripts. Two copies would drift, and the half
+# that drifted would be the scrub.
+#
+# The generated name carries a content hash, so editing scrub.sql changes the
+# ConfigMap name, which changes the pod template, which is what makes the next
+# run actually pick the change up instead of quietly using the old one.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+configMapGenerator:
+  - name: snapshot-scripts
+    files:
+      - scrub.sql
+      - verify.sql
+      - snapshot.sh
+      - restore.sh

@@ -1,8 +1,13 @@
 # Build, test, publish — then hand over to ArgoCD.
 #
 # The workflow never touches the cluster. It commits a new image tag to the
-# production overlay and Argo reconciles, so the repository always states what
-# is running and a rollback is `git revert`.
+# STAGING overlay and Argo reconciles, so the repository always states what is
+# running and a rollback is `git revert`.
+#
+# A push to main reaches eesoc.raphsinai.dev and stops there. eesoc.com moves
+# only when somebody runs promote.yml, which copies the SHA staging is already
+# running into the production overlay — the same image, not a rebuild, so what
+# goes live is the artifact that was actually tested.
 
 name: build and deploy
 
@@ -98,8 +103,108 @@ jobs:
         if: failure()
         run: docker compose logs --tail 200
 
+  # Renders both overlays and checks they stay separate. Without this a broken
+  # patch target or a hostname in the wrong overlay is only discovered by
+  # ArgoCD, mid-sync, against a live environment.
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kustomize
+        run: |
+          curl -sfLo kustomize.tar.gz \
+            https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz
+          tar xzf kustomize.tar.gz
+          sudo mv kustomize /usr/local/bin/
+          rm kustomize.tar.gz
+
+      - name: Render both overlays
+        run: |
+          kustomize build deploy/k8s/overlays/production > production.yaml
+          kustomize build deploy/k8s/overlays/staging    > staging.yaml
+
+      - name: The two environments must not overlap
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys, yaml
+
+          def load(path):
+              return [d for d in yaml.safe_load_all(open(path)) if d]
+
+          def hosts(docs):
+              return {
+                  r.get("host")
+                  for d in docs if d["kind"] == "Ingress"
+                  for r in (d["spec"].get("rules") or [])
+              }
+
+          def namespaces(docs):
+              return {
+                  d["metadata"]["name"] if d["kind"] == "Namespace"
+                  else d["metadata"].get("namespace")
+                  for d in docs
+              } - {None}
+
+          prod, stage = load("production.yaml"), load("staging.yaml")
+          fail = []
+
+          # A host in both renders means both Ingresses claim the name and the
+          # controller picks one — a coin toss over which environment answers.
+          shared_hosts = hosts(prod) & hosts(stage)
+          if shared_hosts:
+              fail.append(f"host served by both environments: {shared_hosts}")
+
+          shared_ns = namespaces(prod) & namespaces(stage)
+          if shared_ns:
+              fail.append(f"namespace shared by both environments: {shared_ns}")
+
+          # Catches the overlay patch being dropped: staging would then inherit
+          # production's values and quietly send testers to eesoc.com.
+          for docs, name, expect in ((prod, "production", "https://eesoc.com"),
+                                     (stage, "staging", "https://eesoc.raphsinai.dev")):
+              cfg = next(d for d in docs
+                         if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "eesoc-config")
+              got = cfg["data"]["SITE_ORIGIN"]
+              if got != expect:
+                  fail.append(f"{name} SITE_ORIGIN is {got}, expected {expect}")
+              if cfg["data"]["DEV_LOGIN_ENABLED"] != "false":
+                  fail.append(f"{name} has the dev login bypass enabled")
+
+          # Empty rules in the base are the fail-safe; an overlay that renders
+          # with none of its own is an environment serving nothing.
+          for docs, name in ((prod, "production"), (stage, "staging")):
+              if not hosts(docs):
+                  fail.append(f"{name} renders no Ingress hosts")
+
+          # The refresh job issues DROP SCHEMA. It belongs in staging and
+          # nowhere else; rendered into production it would destroy the live
+          # database on the next sync. restore.sh refuses to run outside the
+          # staging namespace, but that is the last line of defence, not the
+          # first — this is the first.
+          def names(docs, kind):
+              return {d["metadata"]["name"] for d in docs if d["kind"] == kind}
+
+          if "refresh-from-production" in names(prod, "Job"):
+              fail.append("the staging refresh job renders into PRODUCTION — "
+                          "it would DROP SCHEMA on the live database")
+
+          # And the reverse: the snapshot reads real data, so it runs only
+          # where the real data is.
+          if "snapshot" in names(stage, "CronJob"):
+              fail.append("the production snapshot CronJob renders into staging")
+
+          if "refresh-from-production" not in names(stage, "Job"):
+              fail.append("staging has no refresh job; it will not track production")
+
+          for f in fail:
+              print(f"::error::{f}")
+          sys.exit(1 if fail else 0)
+          PY
+
   build:
-    needs: test
+    needs: [test, manifests]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
@@ -135,13 +240,18 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.OWNER_LC }}/eesoc-${{ matrix.name }}:${{ github.sha }}
             ${{ env.REGISTRY }}/${{ env.OWNER_LC }}/eesoc-${{ matrix.name }}:latest
+          # No VITE_SITE_ORIGIN. One image has to serve both environments
+          # for promotion to mean anything, so the public origin is read from
+          # the browser at runtime (frontend/src/seo.js) rather than baked in.
+          # It was never doing anything anyway: frontend/Dockerfile declares no
+          # such ARG, so buildx dropped it and the hardcoded fallback won.
           build-args: |
             VITE_API_BASE=/api
-            VITE_SITE_ORIGIN=https://eesoc.com
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  release:
+  # Deploy to staging. Production is promote.yml, by hand.
+  release-staging:
     needs: build
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -161,8 +271,11 @@ jobs:
       - name: Lowercase the owner for the registry
         run: echo "OWNER_LC=${OWNER,,}" >> "$GITHUB_ENV"
 
-      - name: Pin the new image tags
-        working-directory: deploy/k8s/base
+      # The staging overlay, never the base: the base is shared, so a tag there
+      # would reach production on the same sync and there would be nothing left
+      # to promote.
+      - name: Pin the new image tags in staging
+        working-directory: deploy/k8s/overlays/staging
         run: |
           for svc in api database union frontend garage-init; do
             kustomize edit set image \
@@ -173,8 +286,19 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add deploy/k8s/base/kustomization.yaml
+          git add deploy/k8s/overlays/staging/kustomization.yaml
           # [skip ci] stops this commit from triggering the workflow again.
           git diff --staged --quiet || \
-            git commit -m "deploy: ${{ github.sha }} [skip ci]"
+            git commit -m "staging: ${{ github.sha }} [skip ci]"
           git push
+
+      - name: Say what to do next
+        run: |
+          {
+            echo "### Deployed to staging"
+            echo
+            echo "<https://eesoc.raphsinai.dev> is now running \`${GITHUB_SHA:0:8}\`."
+            echo
+            echo "Check it, then run the **promote** workflow to put the same"
+            echo "images on <https://eesoc.com>."
+          } >> "$GITHUB_STEP_SUMMARY"

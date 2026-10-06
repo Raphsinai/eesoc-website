@@ -1,0 +1,128 @@
+# Refresh staging from the latest production snapshot.
+#
+# An ArgoCD PostSync hook, so it runs after every staging deploy — which is
+# every push to main. Staging therefore always comes up looking like
+# production, and anything edited in the staging dashboard since the last
+# deploy is discarded. That is the point: a staging edit must never be mistaken
+# for a change to the real site.
+#
+# Everything it can reach in production is read-only — a Garage key with read
+# permission on two buckets, and a NetworkPolicy that lets it reach nothing
+# else. It holds no production database credential at all; it only ever sees a
+# dump that was already scrubbed on the production side.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: refresh-from-production
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    # Replace the previous run rather than failing on a name clash — a Job's
+    # pod template is immutable, so without this the second deploy errors.
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 1
+  # Deleted an hour after it finishes, so `kubectl get pods` is not a wall of
+  # old refresh jobs, but the logs survive long enough to read after a deploy.
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: ghcr-pull
+      volumes:
+        - name: scratch
+          emptyDir: {}
+        - name: scripts
+          configMap:
+            name: snapshot-scripts
+            defaultMode: 0755
+
+      initContainers:
+        # ---------------------------------------------------------------
+        # 1. Fetch the snapshot, and the media it references.
+        # ---------------------------------------------------------------
+        - name: fetch
+          image: rclone/rclone:1.68
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              rclone copyto "prod:${SNAPSHOT_BUCKET}/latest.sql.gz" \
+                /scratch/snapshot.sql.gz --s3-no-check-bucket
+              echo "fetched $(wc -c < /scratch/snapshot.sql.gz) bytes"
+
+              # `copy`, never `sync`. sync deletes anything in the destination
+              # that is not in the source, which would wipe every file uploaded
+              # through the staging dashboard — the exact workflow staging
+              # exists to test. copy is also incremental, so after the first
+              # run this transfers only genuinely new objects.
+              #
+              # Object storage here is public either way: these are event
+              # posters, sponsor logos and committee photos, already served
+              # anonymously from eesoc.com. Nothing private is ever written to
+              # this bucket.
+              rclone copy "prod:${MEDIA_BUCKET}" "staging:${MEDIA_BUCKET}" \
+                --s3-no-check-bucket --transfers 4
+              echo "media copied"
+          env:
+            - { name: SNAPSHOT_BUCKET, value: eesoc-snapshots }
+            - { name: MEDIA_BUCKET,    value: eesoc-media }
+
+            # Production, read-only. This key cannot write to either bucket.
+            - { name: RCLONE_CONFIG_PROD_TYPE,     value: s3 }
+            - { name: RCLONE_CONFIG_PROD_PROVIDER, value: Other }
+            - { name: RCLONE_CONFIG_PROD_ENDPOINT, value: "http://garage.eesoc.svc.cluster.local:3900" }
+            - { name: RCLONE_CONFIG_PROD_REGION,   value: garage }
+            - name: RCLONE_CONFIG_PROD_ACCESS_KEY_ID
+              valueFrom: { secretKeyRef: { name: eesoc-secrets, key: PROD_RO_ACCESS_KEY_ID } }
+            - name: RCLONE_CONFIG_PROD_SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: eesoc-secrets, key: PROD_RO_SECRET_ACCESS_KEY } }
+
+            # Staging's own Garage, where the media lands.
+            - { name: RCLONE_CONFIG_STAGING_TYPE,     value: s3 }
+            - { name: RCLONE_CONFIG_STAGING_PROVIDER, value: Other }
+            - { name: RCLONE_CONFIG_STAGING_ENDPOINT, value: "http://garage:3900" }
+            - { name: RCLONE_CONFIG_STAGING_REGION,   value: garage }
+            - name: RCLONE_CONFIG_STAGING_ACCESS_KEY_ID
+              valueFrom: { secretKeyRef: { name: eesoc-secrets, key: S3_ACCESS_KEY_ID } }
+            - name: RCLONE_CONFIG_STAGING_SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: eesoc-secrets, key: S3_SECRET_ACCESS_KEY } }
+          volumeMounts:
+            - { name: scratch, mountPath: /scratch }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits:   { memory: 512Mi }
+
+      containers:
+        # ---------------------------------------------------------------
+        # 2. Replace staging's database with it.
+        # ---------------------------------------------------------------
+        - name: restore
+          image: ghcr.io/cloudnative-pg/postgresql:16.4
+          command: ["bash", "/snapshot/restore.sh"]
+          env:
+            - name: SNAPSHOT
+              value: /scratch/snapshot.sql.gz
+            # restore.sh refuses to run unless BOTH of these say staging. It
+            # issues a DROP SCHEMA, so the cost of it ever pointing at the
+            # wrong database is the live site.
+            - name: ENVIRONMENT
+              valueFrom: { configMapKeyRef: { name: eesoc-config, key: ENVIRONMENT } }
+            # From the Downward API: what Kubernetes says this pod is, which a
+            # copied manifest cannot lie about.
+            - name: POD_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            - name: PGHOST
+              valueFrom: { secretKeyRef: { name: eesoc-db-app, key: host } }
+            - name: PGUSER
+              valueFrom: { secretKeyRef: { name: eesoc-db-app, key: username } }
+            - name: PGPASSWORD
+              valueFrom: { secretKeyRef: { name: eesoc-db-app, key: password } }
+            - name: PGDATABASE
+              valueFrom: { secretKeyRef: { name: eesoc-db-app, key: dbname } }
+          volumeMounts:
+            - { name: scratch, mountPath: /scratch }
+            - { name: scripts, mountPath: /snapshot, readOnly: true }
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits:   { memory: 512Mi }

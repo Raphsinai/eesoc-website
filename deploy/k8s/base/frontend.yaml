@@ -5,7 +5,7 @@
 # without caring where it runs.
 apiVersion: v1
 kind: Service
-metadata: { name: frontend, namespace: eesoc }
+metadata: { name: frontend }
 spec:
   selector: { app: api }
   ports: [{ port: 80, targetPort: 80 }]

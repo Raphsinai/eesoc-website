@@ -17,6 +17,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from clients import database, union
+from services import announce, purchase
 from utils import email as mailer
 from config import settings
 from utils.present import format_date, format_time_range
@@ -113,6 +114,16 @@ async def sync_all(force: bool = False, year: str | None = None) -> dict:
         notified = await notify_waitlist_offers((promoted or {}).get("offered", []))
         swept = await database.post("/auth/sessions/sweep")
 
+    # Belt and braces. The announcer has its own ten-minute loop; running it
+    # here as well means a night when that loop was down still gets worked
+    # through, and the claim columns make the second run a no-op when it was
+    # not.
+    try:
+        announced = await announce.run_once()
+    except Exception:  # noqa: BLE001
+        log.exception("Announce pass inside the daily sync failed")
+        announced = {"error": True}
+
     return {
         "ok": all(r["ok"] for r in results),
         "academic_year": year,
@@ -123,6 +134,7 @@ async def sync_all(force: bool = False, year: str | None = None) -> dict:
         "waitlist_notified": notified,
         "committee_synced": sync_committee_today or force,
         "sessions_swept": swept,
+        "announced": announced,
     }
 
 
@@ -222,9 +234,11 @@ async def notify_waitlist_offers(offers: list[dict]) -> int:
 
             expires = _readable(reservation.get("expires_at"))
             url = f"{settings.site_origin}/events/{event['slug']}"
+            link = await purchase.link_for(event, reservation["ticket_type_id"])
 
             if await mailer.send_waitlist_offer(
-                str(user["email"]), event["title"], ticket_name, expires, url
+                str(user["email"]), event["title"], ticket_name, expires, url,
+                purchase_url=link,
             ):
                 sent += 1
             # Marked either way: an unsendable address must not cause a retry

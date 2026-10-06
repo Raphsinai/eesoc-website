@@ -1,0 +1,142 @@
+# Promote staging to production.
+#
+# This is the only thing that moves eesoc.com. It copies the image tags that
+# eesoc.raphsinai.dev is already running into the production overlay and commits
+# — the identical images, never a rebuild, so what goes live is the artifact
+# that was actually tested rather than a fresh build of the same source that
+# might resolve a dependency differently.
+#
+# Like the deploy workflow, it never touches the cluster: ArgoCD notices the
+# commit. A rollback is `git revert` of that commit, or running this again with
+# an older SHA.
+
+name: promote to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: >-
+          Commit SHA to promote. Leave blank to promote whatever staging is
+          currently running, which is almost always what you want.
+        required: false
+        type: string
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    # Attach required reviewers to this environment in repository settings if
+    # production should need a second pair of eyes. With none configured it
+    # simply runs, so the workflow works either way.
+    environment: production
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The whole history, so the ancestry check below can see the SHA.
+          fetch-depth: 0
+
+      - name: Work out what to promote
+        id: pick
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import os, sys, yaml
+
+          SERVICES = ["api", "database", "union", "frontend", "garage-init"]
+
+          def tags(path):
+              doc = yaml.safe_load(open(path)) or {}
+              pinned = {i["name"]: i.get("newTag") for i in doc.get("images", [])}
+              out = {}
+              for svc in SERVICES:
+                  tag = pinned.get(f"ghcr.io/OWNER/eesoc-{svc}")
+                  if not tag:
+                      sys.exit(f"::error::no pinned tag for eesoc-{svc} in {path}")
+                  out[svc] = tag
+              return out
+
+          staging = tags("deploy/k8s/overlays/staging/kustomization.yaml")
+          production = tags("deploy/k8s/overlays/production/kustomization.yaml")
+
+          # All five services are built from one commit and pinned together. A
+          # mismatch means a half-finished deploy, and promoting it would put a
+          # combination on eesoc.com that has never run anywhere.
+          if len(set(staging.values())) != 1:
+              sys.exit(f"::error::staging is on mixed tags, refusing: {staging}")
+
+          wanted = os.environ.get("INPUT_SHA", "").strip() or staging["api"]
+
+          if len(set(production.values())) == 1 and production["api"] == wanted:
+              sys.exit(f"::error::production is already on {wanted}; nothing to promote")
+
+          print(f"sha={wanted}")
+          print(f"from={production['api']}")
+          print(f"staging={staging['api']}")
+          PY
+        env:
+          INPUT_SHA: ${{ inputs.sha }}
+
+      # A tag that is not on main is a tag nobody can find their way back to.
+      # This also catches a typo in the manual SHA input, which would otherwise
+      # commit an image reference that does not exist and leave production in
+      # ImagePullBackOff.
+      - name: Check the commit is on main
+        run: |
+          git merge-base --is-ancestor "${{ steps.pick.outputs.sha }}" origin/main \
+            || { echo "::error::${{ steps.pick.outputs.sha }} is not an ancestor of main"; exit 1; }
+
+      - name: Install kustomize
+        run: |
+          curl -sfLo kustomize.tar.gz \
+            https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz
+          tar xzf kustomize.tar.gz
+          sudo mv kustomize /usr/local/bin/
+          rm kustomize.tar.gz
+
+      - name: Lowercase the owner for the registry
+        run: echo "OWNER_LC=${OWNER,,}" >> "$GITHUB_ENV"
+        env:
+          OWNER: ${{ github.repository_owner }}
+
+      - name: Pin the promoted tags in production
+        working-directory: deploy/k8s/overlays/production
+        run: |
+          for svc in api database union frontend garage-init; do
+            kustomize edit set image \
+              "ghcr.io/OWNER/eesoc-${svc}=ghcr.io/${{ env.OWNER_LC }}/eesoc-${svc}:${{ steps.pick.outputs.sha }}"
+          done
+
+      # Renders both overlays before committing. A manifest that does not build
+      # would otherwise be caught by ArgoCD mid-sync, with production already
+      # part-applied.
+      - name: Check both overlays still render
+        run: |
+          kustomize build deploy/k8s/overlays/production > /dev/null
+          kustomize build deploy/k8s/overlays/staging    > /dev/null
+
+      - name: Commit for ArgoCD to pick up
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add deploy/k8s/overlays/production/kustomization.yaml
+          # [skip ci] stops this commit from triggering the build workflow.
+          git diff --staged --quiet || \
+            git commit -m "promote: ${{ steps.pick.outputs.sha }} to production [skip ci]"
+          git push
+
+      - name: Say what happened
+        run: |
+          {
+            echo "### Promoted to production"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| was | \`${{ steps.pick.outputs.from }}\` |"
+            echo "| now | \`${{ steps.pick.outputs.sha }}\` |"
+            echo
+            echo "<https://eesoc.com> updates once ArgoCD syncs."
+            echo
+            echo "To roll back: \`git revert\` the commit this just pushed."
+          } >> "$GITHUB_STEP_SUMMARY"

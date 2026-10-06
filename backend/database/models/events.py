@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class TicketType(BaseModel):
@@ -16,6 +16,9 @@ class TicketType(BaseModel):
     members_only: bool = False
     max_per_user: int = 1
     sort_order: int = 100
+    # Overrides the event-level link for this type, for the common case where
+    # each ticket type is a separate Union product.
+    purchase_url: str | None = None
 
 
 class TicketTypeAvailability(TicketType):
@@ -43,10 +46,23 @@ class Event(BaseModel):
     # When tickets go on sale. None = not announced yet, which the site
     # shows as "On sale soon" and refuses to book.
     sales_open_at: datetime | None = None
+    # Set when the "tickets are on sale" emails went out. Read-only from the
+    # admin form: it is the announcer's own bookkeeping, and letting an edit
+    # clear it would re-announce the event.
+    sales_announced_at: datetime | None = None
+    # Where to buy, when the Union's product feed carries no URL of its own.
+    purchase_url: str | None = None
+    # An external sign-up form (often a sponsor's own). When set, the event
+    # page links there instead of offering a booking.
+    signup_url: str | None = None
     # Off by default: an event is only offered to sponsors when the committee
     # says so.
     sponsorship_claimable: bool = False
     requested_by_sponsor_id: int | None = None
+    # An industry event — careers fair, sponsor talk, site visit. It is what
+    # the industry role is allowed to edit, so it is a stored fact rather than
+    # a reading of the free-text category.
+    industry: bool = False
     academic_year: str
     created_by: int | None = None
     created_at: datetime | None = None
@@ -79,10 +95,23 @@ class EventWrite(BaseModel):
     # as "On sale soon" and refuses to book. Must be on THIS model, not just
     # on Event: create and update both read it off the write payload.
     sales_open_at: datetime | None = None
+    purchase_url: str | None = None
+    signup_url: str | None = None
     sponsorship_claimable: bool = False
     requested_by_sponsor_id: int | None = None
+    # Must be on the write model too, not just on Event: the api decides it
+    # from the caller's role and sends it with every create and update.
+    industry: bool = False
     academic_year: str | None = None
     ticket_types: list[TicketType] = []
+
+    @field_validator("starts_at", "ends_at", "sales_open_at")
+    @classmethod
+    def _wall_clock(cls, value: datetime | None) -> datetime | None:
+        """Event times are London wall-clock times, stored as typed (migration
+        031). An offset on the way in is dropped, not converted: converting is
+        exactly what used to move events by an hour."""
+        return value.replace(tzinfo=None) if value is not None else None
 
 
 class ProductLink(BaseModel):
@@ -112,6 +141,7 @@ class Reservation(BaseModel):
     matched_sale_id: int | None = None
     note: str | None = None
     booked_as_guest: bool = False
+    reminder_sent_at: datetime | None = None
 
 
 class ReservationDetail(Reservation):

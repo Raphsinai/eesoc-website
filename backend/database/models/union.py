@@ -30,6 +30,9 @@ class CommitteeEntry(CommitteeMember):
     row_number: int = 1
     sort_order: int = 100
     hidden: bool = False
+    # The account linked to this card by hand, when matching on login does not
+    # reach the right person.
+    user_email: str | None = None
 
 
 class CommitteeProfile(BaseModel):
@@ -49,6 +52,9 @@ class CommitteeProfile(BaseModel):
     display_role: str | None = None
     row_number: int = 1
     sort_order: int = 100
+    # Lets a named account edit this card. Only needed when the person's login
+    # does not match the account they sign in with — see 030_roles.sql.
+    user_email: str | None = None
 
 
 class UnionProduct(BaseModel):

@@ -1,8 +1,8 @@
 # Single entry point, plain HTTP.
 #
 # TLS is terminated by an nginx reverse proxy on a separate VM (see
-# deploy/nginx/eesoc.conf), so there is nothing to certificate here and no
-# cert-manager involvement. The hop from that VM into the cluster is HTTP.
+# deploy/nginx/), so there is nothing to certificate here and no cert-manager
+# involvement. The hop from that VM into the cluster is HTTP.
 #
 # Everything goes to the frontend, which proxies /api internally — the browser
 # only ever sees one origin, so session cookies work without SameSite=None.
@@ -12,11 +12,19 @@
 # at the firewall or with a LoadBalancer source range. An HTTP ingress exposed
 # to the internet would serve the site unencrypted and strip the protection the
 # Secure cookie flag assumes.
+#
+# ─── NO HOSTS HERE, DELIBERATELY ────────────────────────────────────────────
+# `spec.rules` is empty in the base and supplied by each overlay
+# (overlays/*/ingress-hosts.yaml). Both environments run in the same cluster
+# behind the same ingress controller, so a hostname is the one piece of config
+# that must never leak between them: a production host left in the base and
+# forgotten in an overlay patch would put staging's pods on eesoc.com, with
+# both Ingresses claiming the name and the controller picking one. Empty rules
+# serve nothing, so forgetting an overlay fails visibly instead.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: eesoc
-  namespace: eesoc
   annotations:
     # Uploads are capped at 10 MB in the application; leave headroom for
     # multipart overhead.
@@ -27,52 +35,18 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
 spec:
   ingressClassName: nginx
-  rules:
-    # Host-based so the proxy can pass `Host: eesoc.com` straight through, which
-    # keeps redirects and canonical URLs correct.
-    #
-    # eesoc.raphsinai.dev is TEMPORARY, for testing before eesoc.com is cut
-    # over. Remove it, and reset SITE_ORIGIN and S3_PUBLIC_BASE_URL in the
-    # ConfigMap, once the real domain points here.
-    - host: eesoc.com
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: frontend
-                port:
-                  number: 80
-    - host: www.eesoc.com
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: frontend
-                port:
-                  number: 80
-    - host: eesoc.raphsinai.dev
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: frontend
-                port:
-                  number: 80
+  # Host-based rules come from the overlay, so the proxy can pass the real
+  # `Host` straight through and redirects and canonical URLs stay correct.
+  rules: []
 ---
-# /media/<key> has to reach MinIO as /<bucket>/<key>, so the bucket name is added
-# on the way through. A separate Ingress because the rewrite annotation applies
-# to every path in an Ingress object, and rewriting "/" would break the SPA.
+# /media/<key> has to reach Garage as /<bucket>/<key>, so the bucket name is
+# added on the way through. A separate Ingress because the rewrite annotation
+# applies to every path in an Ingress object, and rewriting "/" would break the
+# SPA.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: eesoc-media
-  namespace: eesoc
   annotations:
     # Garage serves anonymous reads from its web endpoint, choosing the
     # bucket from the Host header against root_domain (.web.garage). So the
@@ -90,34 +64,5 @@ metadata:
     # which already terminates TLS in front of this.
 spec:
   ingressClassName: nginx
-  rules:
-    - host: eesoc.com
-      http:
-        paths:
-          - path: /media/(.*)
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: garage
-                port:
-                  number: 3902
-    - host: www.eesoc.com
-      http:
-        paths:
-          - path: /media/(.*)
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: garage
-                port:
-                  number: 3902
-    - host: eesoc.raphsinai.dev
-      http:
-        paths:
-          - path: /media/(.*)
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: garage
-                port:
-                  number: 3902
+  # Supplied by the overlay — see above.
+  rules: []

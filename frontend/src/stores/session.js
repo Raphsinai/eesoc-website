@@ -17,6 +17,16 @@ export const state = reactive({
   isAdmin: false,
   isSponsor: false,
   sponsorIds: [],
+  // The committee role held — superuser | admin | events | industry | null —
+  // and the capabilities it carries. Used to decide what to render; the server
+  // decides what is allowed.
+  role: null,
+  capabilities: [],
+  // The committee card this person may edit, by login. Set for ordinary
+  // committee members who hold no role at all.
+  committeeLogin: null,
+  impersonating: false,
+  impersonatorEmail: null,
   academicYear: null,
   devLogin: false,
   needsName: false,
@@ -30,11 +40,26 @@ function apply(data) {
   state.isAdmin = Boolean(data?.is_admin)
   state.isSponsor = Boolean(data?.is_sponsor)
   state.sponsorIds = data?.sponsor_ids ?? []
+  state.role = data?.role ?? null
+  state.capabilities = data?.capabilities ?? []
+  state.committeeLogin = data?.committee_login ?? null
+  state.impersonating = Boolean(data?.impersonating)
+  state.impersonatorEmail = data?.impersonator_email ?? null
   state.academicYear = data?.academic_year ?? null
   state.devLogin = Boolean(data?.dev_login)
   state.needsName = Boolean(data?.needs_name)
   state.loaded = true
 }
+
+/** Does this person's role carry a capability? */
+export function can(capability) {
+  return state.capabilities.includes(capability)
+}
+
+/** Anything to do in the admin area at all — a role, or a card of their own. */
+export const hasAdminArea = computed(
+  () => state.isAdmin || Boolean(state.committeeLogin),
+)
 
 /** Called once on boot, and again after any sign-in or sign-out. */
 export async function refresh() {
@@ -76,6 +101,16 @@ export default state
  *  in development mode, so this can never work against production. */
 export async function devLogin(email, makeAdmin = true) {
   const data = await api.post('/auth/dev-login', { email, make_admin: makeAdmin })
+  apply(data)
+  return data
+}
+
+
+/** Hand the browser back to the superuser who started impersonating.
+ *  Deliberately on /auth: the session calling it is the impersonated one and
+ *  has none of their access. */
+export async function stopImpersonating() {
+  const data = await api.post('/auth/stop-impersonating')
   apply(data)
   return data
 }

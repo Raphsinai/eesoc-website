@@ -7,16 +7,22 @@ import Input from '@/components/ds/Input.vue'
 import Button from '@/components/ds/Button.vue'
 import api from '@/api'
 import { nav } from '@/data/site'
-import session, { displayName, logout } from '@/stores/session'
+import session, { displayName, hasAdminArea, logout } from '@/stores/session'
 
 defineEmits(['open-login'])
 
 // The sponsor portal and committee admin are only navigable by the people who
-// can actually use them; both are enforced server-side as well.
+// can actually use them; both are enforced server-side as well. "Admin" shows
+// for a committee member with no role too — their own card lives in there.
 const visibleNav = computed(() =>
   nav
-    .filter((n) => n.id !== 'portal' || session.isSponsor || session.isAdmin)
-    .concat(session.isAdmin ? [{ id: 'admin', label: 'Admin', to: '/admin' }] : []),
+    .filter(
+      (n) =>
+        n.id !== 'portal'
+        || session.isSponsor
+        || session.capabilities.includes('sponsors'),
+    )
+    .concat(hasAdminArea.value ? [{ id: 'admin', label: 'Admin', to: '/admin' }] : []),
 )
 
 const route = useRoute()

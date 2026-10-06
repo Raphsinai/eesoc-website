@@ -31,12 +31,12 @@ EVENT_COLUMNS = """
     id, slug, title, category, description, image_url, venue, starts_at, ends_at,
     capacity, hold_hours, published, sponsorship_claimable,
     requested_by_sponsor_id, academic_year, created_by, created_at, updated_at,
-    sales_open_at
+    sales_open_at, sales_announced_at, purchase_url, industry, signup_url
 """
 
 TT_COLUMNS = """
     id, event_id, name, description, price_pence, capacity, requires_purchase,
-    members_only, max_per_user, sort_order
+    members_only, max_per_user, sort_order, purchase_url
 """
 
 # A reservation consumes stock while it is confirmed, or held/draft and not yet
@@ -53,7 +53,7 @@ WAITLIST_COLUMNS = """
 RESERVATION_COLUMNS = """
     id, event_id, ticket_type_id, user_id, quantity, status, created_at,
     expires_at, confirmed_at, cancelled_at, order_number, matched_sale_id, note,
-    booked_as_guest
+    booked_as_guest, reminder_sent_at
 """
 
 
@@ -123,7 +123,7 @@ async def list_events(
             f"""
             SELECT {EVENT_COLUMNS} FROM public.events
              WHERE ($1::bool IS NOT TRUE OR published)
-               AND ($2::bool IS NOT TRUE OR starts_at >= NOW())
+               AND ($2::bool IS NOT TRUE OR starts_at >= (NOW() AT TIME ZONE 'Europe/London'))
                AND ($3::varchar IS NULL OR academic_year = $3)
              ORDER BY starts_at
              LIMIT $4;
@@ -147,6 +147,51 @@ async def get_event_by_slug(slug: str) -> EventDetail:
             raise HTTPException(404, "No such event")
 
         return await _detail(conn, row)
+
+
+@router.get("/events/due-announcement")
+async def events_due_announcement() -> list[EventDetail]:
+    """Published events whose sale time has arrived and which nobody has been
+    told about yet.
+
+    Ordered oldest-first so a backlog (the process was down over the window) is
+    worked in the order the events actually opened, not newest first.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT {EVENT_COLUMNS} FROM public.events
+             WHERE published
+               AND sales_announced_at IS NULL
+               AND sales_open_at IS NOT NULL
+               AND sales_open_at <= (NOW() AT TIME ZONE 'Europe/London')
+             ORDER BY sales_open_at;
+            """
+        )
+        return [await _detail(conn, row) for row in rows]
+
+
+@router.post("/events/{event_id}/announced")
+async def mark_event_announced(event_id: int) -> dict:
+    """Claim an event for announcement.
+
+    Returns whether THIS call was the one that claimed it. The update is
+    conditional on the column still being null, so two workers racing cannot
+    both decide they are the ones sending — which is the difference between one
+    announcement and two.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE public.events SET sales_announced_at = NOW()
+             WHERE id = $1 AND sales_announced_at IS NULL
+            RETURNING id;
+            """,
+            event_id,
+        )
+    return {"claimed": row is not None}
 
 
 @router.get("/events/{event_id}")
@@ -173,8 +218,9 @@ async def create_event(event: EventWrite, created_by: int | None = None) -> Even
                 INSERT INTO public.events
                     (slug, title, category, description, image_url, venue, starts_at,
                      ends_at, capacity, hold_hours, published, sponsorship_claimable,
-                     requested_by_sponsor_id, academic_year, created_by, sales_open_at)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+                     requested_by_sponsor_id, academic_year, created_by, sales_open_at,
+                     purchase_url, industry, signup_url)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
                 RETURNING {EVENT_COLUMNS};
                 """,
                 event.slug, event.title, event.category, event.description,
@@ -182,6 +228,7 @@ async def create_event(event: EventWrite, created_by: int | None = None) -> Even
                 event.capacity, event.hold_hours, event.published,
                 event.sponsorship_claimable, event.requested_by_sponsor_id,
                 event.academic_year or "", created_by, event.sales_open_at,
+                event.purchase_url, event.industry, event.signup_url,
             )
         except UniqueViolationError:
             raise HTTPException(409, f"An event with slug '{event.slug}' already exists")
@@ -191,11 +238,13 @@ async def create_event(event: EventWrite, created_by: int | None = None) -> Even
                 """
                 INSERT INTO public.ticket_types
                     (event_id, name, description, price_pence, capacity,
-                     requires_purchase, members_only, max_per_user, sort_order)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9);
+                     requires_purchase, members_only, max_per_user, sort_order,
+                     purchase_url)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10);
                 """,
                 row["id"], tt.name, tt.description, tt.price_pence, tt.capacity,
                 tt.requires_purchase, tt.members_only, tt.max_per_user, tt.sort_order,
+                tt.purchase_url,
             )
         return await _detail(conn, row)
 
@@ -213,6 +262,9 @@ async def update_event(event_id: int, event: EventWrite) -> EventDetail:
                 requested_by_sponsor_id=$14,
                 academic_year=COALESCE($15, academic_year),
                 sales_open_at=$16,
+                purchase_url=$17,
+                industry=$18,
+                signup_url=$19,
                 updated_at=NOW()
              WHERE id=$1
             RETURNING {EVENT_COLUMNS};
@@ -221,7 +273,8 @@ async def update_event(event_id: int, event: EventWrite) -> EventDetail:
             event.image_url, event.venue, event.starts_at, event.ends_at,
             event.capacity, event.hold_hours, event.published,
             event.sponsorship_claimable, event.requested_by_sponsor_id,
-            event.academic_year, event.sales_open_at,
+            event.academic_year, event.sales_open_at, event.purchase_url,
+            event.industry, event.signup_url,
         )
         if row is None:
             raise HTTPException(404, "No such event")
@@ -245,24 +298,25 @@ async def update_event(event_id: int, event: EventWrite) -> EventDetail:
                     UPDATE public.ticket_types SET
                         name=$2, description=$3, price_pence=$4, capacity=$5,
                         requires_purchase=$6, members_only=$7, max_per_user=$8,
-                        sort_order=$9
+                        sort_order=$9, purchase_url=$10
                      WHERE id=$1;
                     """,
                     tt.id, tt.name, tt.description, tt.price_pence, tt.capacity,
                     tt.requires_purchase, tt.members_only, tt.max_per_user,
-                    tt.sort_order,
+                    tt.sort_order, tt.purchase_url,
                 )
             else:
                 await conn.execute(
                     """
                     INSERT INTO public.ticket_types
                         (event_id, name, description, price_pence, capacity,
-                         requires_purchase, members_only, max_per_user, sort_order)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9);
+                         requires_purchase, members_only, max_per_user, sort_order,
+                         purchase_url)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10);
                     """,
                     event_id, tt.name, tt.description, tt.price_pence, tt.capacity,
                     tt.requires_purchase, tt.members_only, tt.max_per_user,
-                    tt.sort_order,
+                    tt.sort_order, tt.purchase_url,
                 )
 
         # Anything the form no longer lists has been removed deliberately —
@@ -312,12 +366,14 @@ async def add_ticket_type(event_id: int, tt: TicketType) -> TicketType:
                 f"""
                 INSERT INTO public.ticket_types
                     (event_id, name, description, price_pence, capacity,
-                     requires_purchase, members_only, max_per_user, sort_order)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                     requires_purchase, members_only, max_per_user, sort_order,
+                     purchase_url)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
                 RETURNING {TT_COLUMNS};
                 """,
                 event_id, tt.name, tt.description, tt.price_pence, tt.capacity,
                 tt.requires_purchase, tt.members_only, tt.max_per_user, tt.sort_order,
+                tt.purchase_url,
             )
         except UniqueViolationError:
             raise HTTPException(409, f"'{tt.name}' already exists on this event")
@@ -344,12 +400,14 @@ async def update_ticket_type(ticket_type_id: int, tt: TicketType) -> TicketType:
             f"""
             UPDATE public.ticket_types SET
                 name=$2, description=$3, price_pence=$4, capacity=$5,
-                requires_purchase=$6, members_only=$7, max_per_user=$8, sort_order=$9
+                requires_purchase=$6, members_only=$7, max_per_user=$8, sort_order=$9,
+                purchase_url=$10
              WHERE id=$1
             RETURNING {TT_COLUMNS};
             """,
             ticket_type_id, tt.name, tt.description, tt.price_pence, tt.capacity,
             tt.requires_purchase, tt.members_only, tt.max_per_user, tt.sort_order,
+            tt.purchase_url,
         )
     if row is None:
         raise HTTPException(404, "No such ticket type")
@@ -508,6 +566,68 @@ async def overdue_reservations() -> list[ReservationDetail]:
             """
         )
     return [ReservationDetail(**dict(r)) for r in rows]
+
+
+@router.get("/reservations/needing-reminder")
+async def reservations_needing_reminder(within_hours: int = 24) -> list[ReservationDetail]:
+    """Unpaid holds about to run out, which have not been chased yet.
+
+    `requires_purchase` is the filter that matters: a free ticket has nothing to
+    pay for, and chasing somebody for money they do not owe is the kind of email
+    that makes people stop reading all of them.
+
+    Deliberately excludes anything already past `expires_at` — that is the
+    overdue list, which a human works through. This is the last chance BEFORE
+    the deadline, which is the only point at which it can still be acted on.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT r.id, r.event_id, r.ticket_type_id, r.user_id, r.quantity,
+                   r.status, r.created_at, r.expires_at, r.confirmed_at,
+                   r.cancelled_at, r.order_number, r.matched_sale_id, r.note,
+                   r.booked_as_guest, r.reminder_sent_at,
+                   e.title AS event_title, e.slug AS event_slug,
+                   e.starts_at AS event_starts_at,
+                   t.name AS ticket_type_name, t.price_pence, t.requires_purchase,
+                   t.members_only, u.email AS user_email,
+                   (m.id IS NOT NULL) AS has_member_record
+              FROM public.reservations r
+              JOIN public.events e       ON e.id = r.event_id
+              JOIN public.ticket_types t ON t.id = r.ticket_type_id
+              JOIN public.users u        ON u.id = r.user_id
+              LEFT JOIN public.members m ON m.id = u.member_id
+             WHERE r.status = 'held'
+               AND r.reminder_sent_at IS NULL
+               AND t.requires_purchase
+               AND r.expires_at > NOW()
+               AND r.expires_at <= NOW() + make_interval(hours => $1)
+             ORDER BY r.expires_at;
+            """,
+            within_hours,
+        )
+    return [ReservationDetail(**dict(r)) for r in rows]
+
+
+@router.post("/reservations/{reservation_id}/reminded")
+async def mark_reminded(reservation_id: int) -> dict:
+    """Claim a reservation for its one automated chase.
+
+    Conditional, like the event announcement, so a retry or a second worker
+    cannot send the same person the same warning twice.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE public.reservations SET reminder_sent_at = NOW()
+             WHERE id = $1 AND reminder_sent_at IS NULL
+            RETURNING id;
+            """,
+            reservation_id,
+        )
+    return {"claimed": row is not None}
 
 
 @router.get("/reservations/{reservation_id}")

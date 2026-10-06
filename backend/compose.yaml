@@ -81,6 +81,15 @@ services:
       SMTP_PORT: "1025"
       SMTP_USER: ""
       SMTP_STARTTLS: "false"
+      # The publicity mailbox (newsletters, announcements) is blanked for the
+      # same reason as the webmaster one above: a local catcher takes no
+      # credentials, and leaving the real ones in place from backend.env makes
+      # every bulk send fail on AUTH against a relay that does not offer it.
+      # Blank user/pass means the profile inherits the (also blank) webmaster
+      # login, while PUB_SMTP_FROM still proves the From is set correctly.
+      PUB_SMTP_USER: ""
+      PUB_SMTP_PASS: ""
+      PUB_SMTP_FROM: ${PUB_SMTP_FROM:-EESoc Publicity (local) <eesocpub@ic.ac.uk>}
       SITE_ORIGIN: http://localhost:8080
       # Force features off by hand. Anything whose dependencies are missing is
       # detected automatically — this is for breakage the process cannot see.

@@ -244,6 +244,38 @@ async function submitOrder(reservation) {
 }
 
 const statusTone = { confirmed: 'success', held: 'accent', expired: 'neutral', cancelled: 'neutral' }
+
+// "Tell me when this goes on sale".
+//
+// The only thing anybody can do on an event that is not yet bookable, so it
+// stands in for the booking panel rather than sitting beside it. Open to
+// visitors who are not signed in — requiring an account first would lose most
+// of the people it exists for.
+const alertEmail = ref('')
+const alertDone = ref('')
+const alertBusy = ref(false)
+
+const canAlert = computed(() =>
+  session.authenticated || alertEmail.value.trim().includes('@'),
+)
+
+async function notifyMe() {
+  alertBusy.value = true
+  error.value = ''
+  try {
+    const res = await api.post(`/events/${route.params.slug}/notify-me`, {
+      email: session.authenticated ? null : alertEmail.value.trim(),
+    })
+    alertDone.value = res.message
+    // Tickets turned out to be on sale after all — reload rather than leaving
+    // them looking at a form for something they could just book.
+    if (res.alreadyOpen) await load()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    alertBusy.value = false
+  }
+}
 </script>
 
 
@@ -303,7 +335,17 @@ const salesOpensText = computed(() => {
         <!-- No ticket types means no booking: a drop-in event gets a short
              note instead of a panel, rather than a "Book a place" card with
              nothing in it. -->
-        <Card v-if="!event.ticketTypes?.length" variant="offset">
+        <!-- Sign-ups on somebody else's form (usually a sponsor's): link out
+             rather than show a booking panel that would not count. -->
+        <Card v-if="event.signupUrl" variant="offset">
+          <h2 style="margin:0 0 var(--space-3); font:var(--type-h4)">Sign up</h2>
+          <p style="margin:0 0 var(--space-5); font:var(--type-small); color:var(--text-muted)">
+            Places for this event are taken through its own sign-up form.
+          </p>
+          <Button block :href="event.signupUrl" target="_blank" rel="noopener">Sign up ↗</Button>
+        </Card>
+
+        <Card v-else-if="!event.ticketTypes?.length" variant="offset">
           <h2 style="margin:0 0 var(--space-3); font:var(--type-h4)">No booking needed</h2>
           <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
             This one is free and open to all — just turn up.
@@ -334,10 +376,43 @@ const salesOpensText = computed(() => {
             <p style="margin:var(--space-3) 0 0; font:var(--type-small); color:var(--text-muted)">
               {{
                 event.salesState === 'scheduled'
-                  ? 'Come back then to book your place.'
-                  : 'We haven’t set a date yet — check back shortly.'
+                  ? 'Come back then, or let us email you the moment they open.'
+                  : 'We haven’t set a date yet — let us email you when we do.'
               }}
             </p>
+
+            <!-- The alternative to "come back and check", which nobody does. -->
+            <div class="sales-alert">
+              <p v-if="alertDone" style="margin:0; font:var(--type-small); color:var(--text-strong)">
+                {{ alertDone }}
+              </p>
+              <template v-else>
+                <Field
+                  v-if="!session.authenticated"
+                  label="Email me when tickets open"
+                  help="One email about this event, with a one-click way out."
+                >
+                  <Input
+                    v-model="alertEmail"
+                    type="email"
+                    placeholder="you@ic.ac.uk"
+                    autocomplete="email"
+                    @keyup.enter="canAlert && notifyMe()"
+                  />
+                </Field>
+                <p v-else style="margin:0 0 var(--space-3); font:var(--type-2xs); color:var(--text-faint)">
+                  We'll email {{ session.user?.email }} the moment tickets open.
+                </p>
+                <Button
+                  block
+                  variant="secondary"
+                  :disabled="alertBusy || !canAlert"
+                  @click="notifyMe"
+                >
+                  {{ alertBusy ? 'Saving…' : 'Email me when tickets go on sale' }}
+                </Button>
+              </template>
+            </div>
           </div>
 
           <template v-else>
@@ -529,6 +604,15 @@ const salesOpensText = computed(() => {
   border: 1px solid var(--border-faint);
   border-radius: var(--radius-md);
   background: var(--surface-sunken);
+}
+
+/* Separated from the "on sale soon" copy above it by a rule rather than space
+   alone: it is an action, and it should not read as more of the same
+   paragraph. */
+.sales-alert {
+  margin-top: var(--space-5);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border-faint);
 }
 
 @media (max-width: 860px) {

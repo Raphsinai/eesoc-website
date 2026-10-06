@@ -165,6 +165,8 @@ class ReservationRequest(BaseModel):
     quantity: int = 1
     order_number: str | None = None
     booked_as_guest: bool = False
+    # SHA-256 of the browser's anonymous visitor cookie, when there is one.
+    visitor_hash: str | None = None
     # Guests hold for less time than a signed-in user. None = use the event's
     # own hold_hours.
     hold_hours_override: int | None = None

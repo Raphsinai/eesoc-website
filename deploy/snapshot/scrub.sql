@@ -154,6 +154,19 @@ UPDATE public.locker_grants SET
 -- A free-text admin note is the one field anyone might have typed a name or a
 -- reason into. Not worth auditing row by row; it is not what staging is for.
 UPDATE public.reservations SET note = NULL WHERE note IS NOT NULL;
+
+-- The hash of a guest's browser cookie (migration 032). Not personal, but it
+-- is what shows a browser its bookings; there is no reason to copy it.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name   = 'reservations'
+                  AND column_name  = 'visitor_hash') THEN
+        UPDATE public.reservations SET visitor_hash = NULL
+         WHERE visitor_hash IS NOT NULL;
+    END IF;
+END $$;
 UPDATE public.admins       SET note = NULL WHERE note IS NOT NULL;
 
 -- Uploaded filenames carry names when the upload was a CV.

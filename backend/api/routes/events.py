@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 
 from clients import database
 from config import settings
@@ -46,10 +46,41 @@ log = logging.getLogger("api.events")
 router = APIRouter()
 
 # Why a hold failed, in words a member can act on.
+# An anonymous, per-browser token for guests. Set when Reserve is pressed — not
+# on page view — so it is strictly necessary for something the visitor asked
+# for. Only its hash is stored. It lets the event page show a guest their own
+# booking after a refresh, and lets the per-person limit count it. It is NOT a
+# credential: cancelling or changing a booking still needs the emailed code.
+VISITOR_COOKIE = "eesoc_visitor"
+VISITOR_MAX_AGE = 90 * 24 * 3600
+
+
+def _visitor_hash(request: Request) -> str | None:
+    token = request.cookies.get(VISITOR_COOKIE)
+    return hash_token(token) if token else None
+
+
+def _ensure_visitor(request: Request, response: Response) -> str:
+    token = request.cookies.get(VISITOR_COOKIE) or generate_token()
+    response.set_cookie(
+        VISITOR_COOKIE,
+        token,
+        max_age=VISITOR_MAX_AGE,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite=settings.cookie_samesite,
+        path="/",
+    )
+    return hash_token(token)
+
+
 REASONS = {
     "sold_out": "This event is full.",
     "type_sold_out": "That ticket type has sold out.",
-    "over_user_limit": "You already hold the maximum number of tickets for that type.",
+    "over_user_limit": (
+        "You've already reserved this ticket. Check your email for the "
+        "sign-in code to see or change your booking."
+    ),
 }
 
 
@@ -114,7 +145,9 @@ async def list_events(
 
 @router.get("/events/{slug}")
 async def get_event(
-    slug: str, session: AuthSession | None = Depends(current_session)
+    slug: str,
+    request: Request,
+    session: AuthSession | None = Depends(current_session),
 ) -> dict:
     event = await database.get(f"/events/by-slug/{slug}")
     if event is None:
@@ -133,6 +166,10 @@ async def get_event(
     if session:
         mine = await database.get(
             "/reservations", {"user_id": session.user.id, "event_id": event["id"]}
+        ) or []
+    elif (visitor := _visitor_hash(request)) is not None:
+        mine = await database.get(
+            "/reservations", {"visitor_hash": visitor, "event_id": event["id"]}
         ) or []
 
     card = event_card(event)
@@ -170,6 +207,7 @@ async def get_event(
 )
 async def reserve(
     slug: str,
+    request: Request,
     ticket_type_id: int = Body(embed=True),
     quantity: int = Body(default=1, embed=True),
     order_number: str | None = Body(default=None, embed=True),
@@ -240,10 +278,14 @@ async def reserve(
 
     # A guest already holds the seat from the moment they opened the form, so
     # this converts that draft rather than competing for capacity a second time.
+    visitor = _visitor_hash(request)
     if draft_token:
+        params = {"user_id": user_id}
+        if visitor:
+            params["visitor_hash"] = visitor
         result = await database.post(
             f"/reservations/draft/{draft_token}/claim",
-            params={"user_id": user_id},
+            params=params,
         )
         if not result["ok"] and result["reason"] == "draft_expired":
             raise HTTPException(
@@ -264,6 +306,7 @@ async def reserve(
                 # A guest who has not proved the address gets the shorter
                 # window; a signed-in user gets the event's own.
                 "hold_hours_override": settings.guest_hold_hours if as_guest else None,
+                "visitor_hash": visitor,
             },
         )
 
@@ -523,6 +566,8 @@ async def _own_reservation(reservation_id: int, session: AuthSession) -> dict:
 @router.post("/events/{slug}/hold", dependencies=[require_feature("bookings")])
 async def hold_seat(
     slug: str,
+    request: Request,
+    response: Response,
     ticket_type_id: int = Body(embed=True),
     quantity: int = Body(default=1, embed=True),
     session: AuthSession | None = Depends(current_session),
@@ -559,6 +604,7 @@ async def hold_seat(
             "ticket_type_id": ticket_type_id,
             "quantity": quantity,
             "draft_token": token,
+            "visitor_hash": _ensure_visitor(request, response),
         },
         params={"minutes": settings.draft_hold_minutes},
     )

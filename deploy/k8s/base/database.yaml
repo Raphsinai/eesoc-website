@@ -20,9 +20,11 @@ spec:
   # wants to start the new pod before stopping the old one — which would wait
   # forever for capacity that cannot appear. Old pod goes first instead, so an
   # update is a brief restart rather than a deadlock.
+  # New pod first, as for the api: a gap here is every API call failing.
+  # Migrations take an advisory lock, so two adapters starting together is safe.
   strategy:
     type: RollingUpdate
-    rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
   selector: { matchLabels: { app: database } }
   template:
     metadata: { labels: { app: database } }

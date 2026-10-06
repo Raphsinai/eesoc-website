@@ -21,13 +21,14 @@ spec:
   # daily ICU sync still runs inside the process and its lock does not span pods.
   # Move the sync to a CronJob calling POST /admin/sync before scaling up.
   replicas: 1
-  # maxSurge 0: the node has no spare pod slot, and the default rolling update
-  # wants to start the new pod before stopping the old one — which would wait
-  # forever for capacity that cannot appear. Old pod goes first instead, so an
-  # update is a brief restart rather than a deadlock.
+  # New pod first, old pod second: with one replica, stopping the old one
+  # first (maxSurge 0) took the whole site down for ~30s on every deploy. That
+  # was only there because the node had no spare pod slot; it has since been
+  # raised to 250 (2026-10-06). If a deploy ever sits Pending for want of a
+  # slot, that is the node being full again — fix that, not this.
   strategy:
     type: RollingUpdate
-    rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
   selector: { matchLabels: { app: api } }
   template:
     metadata: { labels: { app: api } }

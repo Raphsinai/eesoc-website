@@ -24,19 +24,19 @@ resources:
 images:
 - name: ghcr.io/OWNER/eesoc-api
   newName: ghcr.io/raphsinai/eesoc-api
-  newTag: 7ba2e0cf80877b5a1956292ba2b35fe65fda2d63
+  newTag: 3dd456a008d7ce1151580ad624c1ae2a7390b405
 - name: ghcr.io/OWNER/eesoc-database
   newName: ghcr.io/raphsinai/eesoc-database
-  newTag: 7ba2e0cf80877b5a1956292ba2b35fe65fda2d63
+  newTag: 3dd456a008d7ce1151580ad624c1ae2a7390b405
 - name: ghcr.io/OWNER/eesoc-frontend
   newName: ghcr.io/raphsinai/eesoc-frontend
-  newTag: 7ba2e0cf80877b5a1956292ba2b35fe65fda2d63
+  newTag: 3dd456a008d7ce1151580ad624c1ae2a7390b405
 - name: ghcr.io/OWNER/eesoc-garage-init
   newName: ghcr.io/raphsinai/eesoc-garage-init
-  newTag: 7ba2e0cf80877b5a1956292ba2b35fe65fda2d63
+  newTag: 3dd456a008d7ce1151580ad624c1ae2a7390b405
 - name: ghcr.io/OWNER/eesoc-union
   newName: ghcr.io/raphsinai/eesoc-union
-  newTag: 7ba2e0cf80877b5a1956292ba2b35fe65fda2d63
+  newTag: 3dd456a008d7ce1151580ad624c1ae2a7390b405
 
 # Single-node cluster. A second replica of anything lands on the same node as
 # the first, so it buys no availability — it only consumes one of the kubelet's

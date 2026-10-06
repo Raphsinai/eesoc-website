@@ -102,6 +102,16 @@ UPDATE public.committee_members SET
                    ELSE 'cmte' || abs(hashtext(login)) END,
     phoneno = NULL;
 
+-- The Union-cache copy of the roster (migration 009), with the same columns
+-- under slightly different names. Same expressions, so it still joins.
+UPDATE public.committee SET
+    cid      = '9' || lpad((abs(hashtext(cid)) % 10000000)::text, 7, '0'),
+    email    = CASE WHEN email IS NULL THEN NULL
+                    ELSE 'committee' || abs(hashtext(email)) || '@staging.invalid' END,
+    login    = CASE WHEN login IS NULL THEN NULL
+                    ELSE 'cmte' || abs(hashtext(login)) END,
+    phone_no = NULL;
+
 UPDATE public.committee_profiles SET
     cid        = CASE WHEN cid IS NULL THEN NULL
                       ELSE '9' || lpad((abs(hashtext(cid)) % 10000000)::text, 7, '0') END,

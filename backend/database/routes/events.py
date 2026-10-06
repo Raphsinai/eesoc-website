@@ -725,7 +725,11 @@ async def expire_reservations() -> int:
     pool = await get_pool()
     async with pool.acquire() as conn:
         result = await conn.execute(
-            "UPDATE public.reservations SET status = 'expired' "
+            # DELETE, not status='expired': reservations_owner_check only lets
+            # a row without a user be a draft, so expiring one raised and the
+            # whole sweep (and the sync that calls it) failed. A draft has no
+            # owner and nothing worth keeping.
+            "DELETE FROM public.reservations "
             "WHERE status = 'draft' AND expires_at < NOW();"
         )
     return int(result.split()[-1])
@@ -1040,7 +1044,8 @@ async def release_draft(draft_token: str) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "UPDATE public.reservations SET status='expired' "
+            # Deleted for the same reason as the sweep above.
+            "DELETE FROM public.reservations "
             "WHERE draft_token = $1 AND status = 'draft';",
             draft_token,
         )

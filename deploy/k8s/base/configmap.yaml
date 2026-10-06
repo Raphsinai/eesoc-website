@@ -11,6 +11,12 @@ data:
   # Hard off in production. The api refuses to start if this is true here.
   DEV_LOGIN_ENABLED: "false"
 
+  # Every member is at Imperial, so the servers keep London time. The code
+  # converts to London explicitly wherever a time is shown; this is the
+  # backstop for anything that reads the local clock (CURRENT_DATE, the email
+  # Date header, a log line) so it never comes out an hour off in BST.
+  TZ: "Europe/London"
+
   DATABASE_ADAPTER_URL: "http://database:8080"
   UNION_API_URL: "http://union:8080"
   # Uploads go to object storage rather than a ReadWriteMany volume: RWX is not

@@ -51,6 +51,11 @@ spec:
       # Modest defaults; this is a society site, not a warehouse.
       max_connections: "100"
       shared_buffers: 128MB
+      # London, matching TZ in the ConfigMap: CURRENT_DATE and any
+      # timestamptz printed by psql read as a person in London expects.
+      # Stored values are unaffected — timestamptz is an instant either way.
+      timezone: Europe/London
+      log_timezone: Europe/London
 
   # Keep a replica on a different node where the cluster allows it.
   affinity:

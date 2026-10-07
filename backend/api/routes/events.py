@@ -173,6 +173,10 @@ async def get_event(
             "/reservations", {"visitor_hash": visitor, "event_id": event["id"]}
         ) or []
 
+    # Where to buy each ticket — shown on the booking itself, so somebody holding
+    # a ticket is one click from paying for it.
+    links = await purchase.links_for_event(event)
+
     card = event_card(event)
     card.update(
         {
@@ -193,6 +197,7 @@ async def get_event(
                     "expiresAt": r.get("expires_at"),
                     "orderNumber": r.get("order_number"),
                     "requiresPurchase": r.get("requires_purchase", True),
+                    "purchaseUrl": links.get(r["ticket_type_id"]) or links.get(None),
                 }
                 for r in mine
                 if r["status"] in ("held", "confirmed")

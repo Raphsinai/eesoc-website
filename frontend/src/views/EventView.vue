@@ -537,6 +537,13 @@ const salesOpensText = computed(() => {
                 Held until {{ new Date(r.expiresAt).toLocaleString() }}
               </p>
 
+              <!-- The one thing left to do with an unpaid booking. -->
+              <div v-if="r.status === 'held' && r.requiresPurchase && r.purchaseUrl">
+                <Button size="sm" :href="r.purchaseUrl" target="_blank" rel="noopener">
+                  Buy your ticket on the Union shop
+                </Button>
+              </div>
+
               <!-- Guests have no Union identity in the sales feed, so this is
                    the only way we can tie their purchase to this booking. -->
               <!-- A guest sees this booking because this browser made it, which

@@ -1412,9 +1412,9 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
 
               <Field
                 label="Where to buy (Union shop link)"
-                help="Goes in every email about an unpaid ticket. Leave blank to use the URL on the linked Union product — which is often empty for our centre."
+                help="Shown on the booking and in every email about an unpaid ticket. Blank uses the linked Union product's shop page (worked out from its id when the Union's feed has no URL)."
               >
-                <Input v-model="draft.purchase_url" placeholder="https://www.imperialcollegeunion.org/shop/…" />
+                <Input v-model="draft.purchase_url" placeholder="https://www-s.imperialcollegeunion.org/shop/product/…" />
               </Field>
 
               <TraceRule />

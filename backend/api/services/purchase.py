@@ -47,7 +47,21 @@ async def _product_url(product_id: int, line_id: int | None, year: str) -> str |
         url = _clean(product.get("url"))
         if url:
             return url
-    return None
+    return derived_shop_url(product_id)
+
+
+# The Union's feed often carries no URL for our centre's products, but the shop
+# page follows the product id: eActivities product 1002713 is
+# /shop/product/2713-/ on www-s (checked by hand for both Freshers' Barnight
+# tickets, 2026-10-07; the bare www host 404s). Used only when nothing better —
+# a link typed on the ticket or event, or a URL in the feed — exists.
+SHOP_BASE = "https://www-s.imperialcollegeunion.org/shop/product"
+
+
+def derived_shop_url(product_id: int | None) -> str | None:
+    if not product_id or product_id <= 1_000_000:
+        return None
+    return f"{SHOP_BASE}/{product_id - 1_000_000}-/"
 
 
 async def link_for(event: dict, ticket_type_id: int | None = None) -> str | None:

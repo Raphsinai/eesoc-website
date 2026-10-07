@@ -36,6 +36,20 @@ from pathlib import Path
 ENV = Path(__file__).resolve().parent.parent / "backend.env"
 
 
+def _unquote(value: str) -> str:
+    """Read a value the way docker compose's env_file does.
+
+    A password containing `#` has to be quoted, or compose and dotenv take the
+    rest of the line as a comment. Compose strips those quotes before the app
+    sees the value; reading it raw here sent the quotes as part of the password,
+    so the check failed with 535 on credentials the app was using fine.
+    """
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    # Unquoted: ` #` starts a trailing comment, a bare `#` is part of the value.
+    return value.split(" #", 1)[0].rstrip()
+
+
 def load_env(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.exists():
@@ -45,7 +59,7 @@ def load_env(path: Path) -> dict[str, str]:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        values[key.strip()] = value.strip()
+        values[key.strip()] = _unquote(value.strip())
     return values
 
 

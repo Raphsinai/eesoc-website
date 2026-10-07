@@ -3,6 +3,12 @@
 #
 #   ./scripts/set-smtp-secret.sh          # take the password from backend.env
 #   ./scripts/set-smtp-secret.sh --ask    # type it instead (not echoed)
+#   ./scripts/set-smtp-secret.sh --pub    # the publicity mailbox: PUB_SMTP_PASS
+#
+# The publicity mailbox (eesocpub@ic.ac.uk) is the one allowed to send to the
+# department's year-group lists; the webmaster mailbox is not. Without
+# PUB_SMTP_PASS in the secret, bulk mail authenticates as the webmaster and
+# falls back to sending from it, and the lists reject it.
 #
 # Why not the obvious one-liner from the README:
 #
@@ -24,11 +30,14 @@ NAMESPACE="${NAMESPACE:-eesoc}"
 SECRET="eesoc-secrets"
 ASSUME_YES=0
 SOURCE="backend.env"
+KEY="SMTP_PASS"
+MAILBOX="eesocweb@ic.ac.uk"
 
 for arg in "$@"; do
   case "$arg" in
     --ask) SOURCE="prompt" ;;
     --yes|-y) ASSUME_YES=1 ;;
+    --pub) KEY="PUB_SMTP_PASS"; MAILBOX="eesocpub@ic.ac.uk" ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -36,15 +45,22 @@ done
 command -v kubectl >/dev/null || { echo "kubectl is not on PATH." >&2; exit 1; }
 
 if [ "$SOURCE" = "prompt" ]; then
-  read -rsp "SMTP password for eesocweb@ic.ac.uk: " PASSWORD; echo
+  read -rsp "SMTP password for $MAILBOX: " PASSWORD; echo
 else
   [ -f backend.env ] || { echo "No backend.env. Use --ask, or create it." >&2; exit 1; }
   # cut -d= -f2- keeps any '=' inside the password itself.
-  PASSWORD="$(grep -m1 '^SMTP_PASS=' backend.env | cut -d= -f2- || true)"
+  PASSWORD="$(grep -m1 "^$KEY=" backend.env | cut -d= -f2- || true)"
+  # A password containing '#' has to be quoted in backend.env, and compose
+  # strips the quotes. So must we, or the secret holds a password with quotes
+  # round it that authenticates nowhere.
+  case "$PASSWORD" in
+    \"*\") PASSWORD="${PASSWORD:1:${#PASSWORD}-2}" ;;
+    \'*\') PASSWORD="${PASSWORD:1:${#PASSWORD}-2}" ;;
+  esac
 fi
 
 if [ -z "${PASSWORD:-}" ]; then
-  echo "SMTP_PASS is empty. Fill it in backend.env, or run with --ask." >&2
+  echo "$KEY is empty. Fill it in backend.env, or run with --ask." >&2
   exit 1
 fi
 
@@ -52,12 +68,13 @@ CONTEXT="$(kubectl config current-context)"
 echo "context    $CONTEXT"
 echo "namespace  $NAMESPACE"
 echo "secret     $SECRET"
+echo "key        $KEY"
 echo "password   ${#PASSWORD} characters"
 
 if [ "$ASSUME_YES" -ne 1 ]; then
   # This writes to a live cluster, and `current-context` is easy to have
   # pointing somewhere else entirely.
-  read -rp "Write SMTP_PASS to that cluster? [y/N] " reply
+  read -rp "Write $KEY to that cluster? [y/N] " reply
   [ "$reply" = "y" ] || [ "$reply" = "Y" ] || { echo "Nothing written."; exit 1; }
 fi
 
@@ -72,7 +89,7 @@ trap 'rm -f "$PATCH_FILE"' EXIT
 # would be a password that silently does not match. BSD base64 (macOS) has no
 # -w, hence the fallback through tr.
 ENCODED="$(printf '%s' "$PASSWORD" | base64 | tr -d '\n')"
-printf '{"data":{"SMTP_PASS":"%s"}}' "$ENCODED" > "$PATCH_FILE"
+printf '{"data":{"%s":"%s"}}' "$KEY" "$ENCODED" > "$PATCH_FILE"
 
 if kubectl -n "$NAMESPACE" get secret "$SECRET" >/dev/null 2>&1; then
   kubectl -n "$NAMESPACE" patch secret "$SECRET" --patch-file "$PATCH_FILE"
@@ -85,11 +102,11 @@ else
   trap 'rm -f "$PATCH_FILE" "$PASS_FILE"' EXIT
   printf '%s' "$PASSWORD" > "$PASS_FILE"
   kubectl -n "$NAMESPACE" create secret generic "$SECRET" \
-    --from-file=SMTP_PASS="$PASS_FILE"
+    --from-file="$KEY=$PASS_FILE"
   echo "created — remember ICU_API_KEY and the S3 keys still need adding"
 fi
 
-# The api reads SMTP_PASS at startup, so the running pod keeps the old value.
+# The api reads $KEY at startup, so the running pod keeps the old value.
 if kubectl -n "$NAMESPACE" get deploy api >/dev/null 2>&1; then
   kubectl -n "$NAMESPACE" rollout restart deploy/api
   kubectl -n "$NAMESPACE" rollout status deploy/api --timeout=120s

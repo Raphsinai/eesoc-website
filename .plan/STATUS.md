@@ -1,4 +1,4 @@
-status: awaiting_approval
+status: in_progress
 
 # Plan: zero-downtime deploys, richer events, email approval queue
 

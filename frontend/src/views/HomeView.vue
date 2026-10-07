@@ -6,6 +6,7 @@ import Card from '@/components/ds/Card.vue'
 import Icon from '@/components/ds/Icon.vue'
 import IconButton from '@/components/ds/IconButton.vue'
 import EventCard from '@/components/ds/EventCard.vue'
+import NewsletterSignup from '@/components/NewsletterSignup.vue'
 import ChipFrame from '@/components/ds/ChipFrame.vue'
 import TraceRule from '@/components/ds/TraceRule.vue'
 import ImageSlot from '@/components/ds/ImageSlot.vue'
@@ -127,6 +128,7 @@ function scrollBy(dir) {
       <div style="margin-top:var(--space-6)">
         <Button variant="secondary" @click="router.push('/events')">See the whole calendar</Button>
       </div>
+      <NewsletterSignup style="margin-top:var(--space-8)" />
       <div style="padding:var(--space-12) 0"><TraceRule /></div>
     </section>
 

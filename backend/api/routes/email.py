@@ -15,14 +15,17 @@ address back on a list.
 from __future__ import annotations
 
 import logging
+import time
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from clients import database
 from models.auth import AuthSession
 from services import emailing
+from services.identity import resolve_or_create_user
+from utils import email as mailer
 from utils.auth import normalise_email
-from utils.deps import current_session, require_session, verify_csrf
+from utils.deps import client_ip, current_session, require_session, verify_csrf
 
 log = logging.getLogger("api.email")
 
@@ -96,6 +99,92 @@ async def set_preferences(
         )
 
     return {"ok": True, "saved": len(items)}
+
+
+# ---------------------------------------------------------- newsletter sign-up
+#
+# The box on "What's on". Signed in, it is one click. Signed out, it is double
+# opt-in: the address gets a link, and nothing is subscribed until it is
+# followed — otherwise anyone could sign anyone up.
+#
+# Throttled in-process (the api runs one replica): one confirmation per address
+# per ten minutes, twenty per source address per hour. Enough to stop the box
+# being used to mail-bomb somebody from our mailbox.
+
+_last_sent: dict[str, float] = {}
+_by_ip: dict[str, list[float]] = {}
+
+
+def _throttled(address: str, ip: str) -> bool:
+    now = time.monotonic()
+    if now - _last_sent.get(address, -1e9) < 600:
+        return True
+    recent = [t for t in _by_ip.get(ip, []) if now - t < 3600]
+    if len(recent) >= 20:
+        _by_ip[ip] = recent
+        return True
+    _by_ip[ip] = recent + [now]
+    _last_sent[address] = now
+    return False
+
+
+async def _subscribe(user_id: int, address: str) -> None:
+    await database.put(
+        f"/email/subscriptions/{user_id}", [{"topic": "newsletter", "subscribed": True}]
+    )
+    # Asking for the newsletter is an explicit request for mail, so an earlier
+    # one-click unsubscribe must not keep silently suppressing it.
+    for topic in ("*", "newsletter"):
+        await database.delete("/email/optouts", {"email": address, "topic": topic})
+
+
+@router.post("/email/subscribe", dependencies=[Depends(verify_csrf)])
+async def subscribe(
+    request: Request,
+    email: str = Body(default="", embed=True),
+    session: AuthSession | None = Depends(current_session),
+) -> dict:
+    """Sign up for the newsletter."""
+    if session is not None and (
+        not email.strip() or normalise_email(email) == normalise_email(str(session.user.email))
+    ):
+        await _subscribe(session.user.id, str(session.user.email))
+        return {
+            "ok": True,
+            "subscribed": True,
+            "message": f"Done — the newsletter will go to {session.user.email}.",
+        }
+
+    address = normalise_email(email)
+    if not address or "@" not in address:
+        raise HTTPException(400, "That doesn't look like an email address.")
+
+    # Same answer whether or not we actually sent, so the box cannot be used
+    # to find out anything about an address.
+    reply = {
+        "ok": True,
+        "subscribed": False,
+        "message": f"Nearly there — we've emailed {address} a link to confirm.",
+    }
+    if _throttled(address, client_ip(request)):
+        log.warning("Newsletter sign-up throttled for %s", address)
+        return reply
+    await mailer.send_newsletter_confirm(address, emailing.subscribe_confirm_url(address))
+    return reply
+
+
+@router.post("/email/subscribe/confirm", dependencies=[Depends(verify_csrf)])
+async def confirm_subscribe(e: str | None = None, t: str | None = None) -> dict:
+    """Follow the link from the confirmation email."""
+    address = normalise_email(e or "")
+    if not address or not emailing.verify_subscribe(address, t or ""):
+        raise HTTPException(400, "That confirmation link is not valid.")
+    # Following the link proves the address, so the account (created if this is
+    # their first contact) is a verified one.
+    user = await resolve_or_create_user(address, verified=True)
+    await _subscribe(user["id"], address)
+    log.info("Newsletter confirmed for %s", address)
+    return {"ok": True, "message": "You're on the list. The next newsletter is on its way to you."}
 
 
 # ------------------------------------------------------------- unsubscribing

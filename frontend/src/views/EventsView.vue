@@ -9,6 +9,7 @@ import Card from '@/components/ds/Card.vue'
 import Button from '@/components/ds/Button.vue'
 import Badge from '@/components/ds/Badge.vue'
 import EventCard from '@/components/ds/EventCard.vue'
+import NewsletterSignup from '@/components/NewsletterSignup.vue'
 import TraceRule from '@/components/ds/TraceRule.vue'
 import session from '@/stores/session'
 
@@ -71,6 +72,10 @@ function open(event) {
         shop — we match your purchase to your booking automatically.
       </p>
     </header>
+
+    <!-- Where people look for events is where they think to ask to hear
+         about them. -->
+    <NewsletterSignup style="margin-top:var(--space-6)" />
 
     <TraceRule style="margin:var(--space-8) 0" />
 

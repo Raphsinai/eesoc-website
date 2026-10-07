@@ -10,6 +10,7 @@ import EventView from '@/views/EventView.vue'
 import AdminView from '@/views/AdminView.vue'
 import JobsView from '@/views/JobsView.vue'
 import EmailView from '@/views/EmailView.vue'
+import SubscribeView from '@/views/SubscribeView.vue'
 import session, { hasAdminArea, refresh } from '@/stores/session'
 import { applySeo } from '@/seo'
 
@@ -37,6 +38,9 @@ const routes = [
   // crawler can POST to.
   { path: '/email', name: 'email', component: EmailView, meta: { title: 'Email preferences', noindex: true } },
   { path: '/unsubscribe', name: 'unsubscribe', component: EmailView, meta: { title: 'Unsubscribe', noindex: true } },
+  // The newsletter confirmation link. Confirms on a press, not on load, so a
+  // mail scanner pre-fetching the URL signs nobody up.
+  { path: '/subscribe', name: 'subscribe', component: SubscribeView, meta: { title: 'Newsletter', noindex: true } },
   { path: '/portal', name: 'portal', component: PortalView, meta: { title: 'Sponsor portal', requires: 'sponsor', noindex: true } },
   { path: '/admin', name: 'admin', component: AdminView, meta: { title: 'Committee admin', requires: 'committee', noindex: true } },
   { path: '/:pathMatch(.*)*', redirect: '/' },

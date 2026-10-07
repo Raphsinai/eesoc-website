@@ -294,6 +294,24 @@ def unsubscribe_url(address: str, topic: str | None = None) -> str:
     return f"{settings.site_origin}/unsubscribe?{urlencode(params)}"
 
 
+def subscribe_token(address: str) -> str:
+    """Proves a newsletter sign-up link was sent to this address.
+
+    Signed over a prefixed value, so an unsubscribe token — which is in every
+    bulk email and gets forwarded — can never be replayed to subscribe someone.
+    """
+    return sign("subscribe:" + address.strip().lower())
+
+
+def verify_subscribe(address: str, token: str) -> bool:
+    return hmac.compare_digest(subscribe_token(address), (token or "").strip())
+
+
+def subscribe_confirm_url(address: str) -> str:
+    params = {"e": address.strip().lower(), "t": subscribe_token(address)}
+    return f"{settings.site_origin}/subscribe?{urlencode(params)}"
+
+
 def alert_cancel_url(token: str) -> str:
     """Stop the per-event "tell me when this is on sale" alert."""
     return f"{settings.site_origin}/unsubscribe?alert={quote(token)}"

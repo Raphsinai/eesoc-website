@@ -565,6 +565,30 @@ async def send_login_code(to: str, code: str, minutes: int) -> bool:
     return await send(to, f"{code} is your EESoc sign-in code", body, html)
 
 
+async def send_newsletter_confirm(to: str, url: str) -> bool:
+    """Double opt-in for somebody who typed their address into the sign-up
+    box. Nothing is subscribed until this link is followed, so a stranger
+    cannot put someone else on the list."""
+    body = (
+        "Somebody — hopefully you — asked for the EESoc newsletter at this "
+        "address.\n\n"
+        f"Confirm: {url}\n\n"
+        "If it wasn't you, ignore this email and nothing happens."
+    )
+    html = _shell(
+        "Confirm the EESoc newsletter",
+        "One click and you're on the list.",
+        _p(
+            "Somebody — hopefully you — asked for the EESoc newsletter at this "
+            "address. What's on, when tickets go on sale, and what the society "
+            "is up to."
+        )
+        + _button("Yes, sign me up", url)
+        + _note("If it wasn't you, ignore this email and nothing happens."),
+    )
+    return await send(to, "Confirm the EESoc newsletter", body, html)
+
+
 async def send_waitlist_offer(
     to: str,
     event_title: str,

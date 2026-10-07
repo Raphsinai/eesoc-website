@@ -318,6 +318,7 @@ a page that does not exist.
 | `DELETE /events/{slug}/notify-me` 🔒 | Cancel that |
 | `GET /email/unsubscribe?e=&t=` | What a link is about to do |
 | `POST /email/unsubscribe?e=&t=` | Unsubscribe — **unauthenticated by design** |
+| `POST /email/unsubscribe/request` | Email an address its own signed unsubscribe link |
 | `POST /me/email-resubscribe` 🔒 | Undo a blanket unsubscribe (needs a session) |
 
 Unsubscribing is deliberately open: the request arrives from a mail client, days
@@ -327,11 +328,21 @@ for authentication is an HMAC over the address (`EMAIL_TOKEN_SECRET`) — enough
 that one person cannot unsubscribe another. Re-subscribing is **not** open, or a
 forwarded email would let anyone put an address back on a list.
 
-Every bulk message carries `List-Unsubscribe` and `List-Unsubscribe-Post`, so
-Gmail and Outlook show their own one-click control. Header folding is turned off
-when building messages precisely so that header survives intact — folded by the
-default policy it becomes an RFC 2047 encoded-word, which clients silently
-ignore.
+Bulk mail is **BCC'd in batches** (`BULK_BATCH_SIZE`, default 400) rather than
+sent one message per person, so a newsletter to a few hundred goes out in
+seconds. The visible To is the publicity mailbox; nobody sees anybody else's
+address. The price is the per-person unsubscribe link: a shared message carries
+the shared `/unsubscribe` page, which emails anybody their own signed link on
+request (`POST /email/unsubscribe/request`, from the webmaster mailbox, throttled
+and answering the same whether or not the address is known). Mail with something
+personal in it — a sign-in code, a booking, a per-event "tell me" alert — is
+still sent to that person alone, with their own link.
+
+Every bulk message carries `List-Unsubscribe`; only one carrying a signed link
+also claims `List-Unsubscribe-Post` (one-click), because POSTing to the shared
+page unsubscribes nobody. Header folding is turned off when building messages
+precisely so that header survives intact — folded by the default policy it
+becomes an RFC 2047 encoded-word, which clients silently ignore.
 
 ### Who can be mailed
 

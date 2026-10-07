@@ -11,6 +11,7 @@ import { useRoute } from 'vue-router'
 import api from '@/api'
 import Card from '@/components/ds/Card.vue'
 import Button from '@/components/ds/Button.vue'
+import Input from '@/components/ds/Input.vue'
 import Badge from '@/components/ds/Badge.vue'
 import TraceRule from '@/components/ds/TraceRule.vue'
 import session from '@/stores/session'
@@ -25,6 +26,27 @@ const notice = ref('')
 // --- the unsubscribe half ---------------------------------------------------
 const target = ref(null)      // what the link in the email is about
 const done = ref(false)
+
+// --- asking for a link ------------------------------------------------------
+// Bulk mail is BCC'd, so its footer links here with no address in it. Signed
+// out, the way to unsubscribe is to have your own link emailed to you.
+const requestEmail = ref('')
+const requested = ref('')
+
+async function requestLink() {
+  busy.value = true
+  error.value = ''
+  try {
+    const res = await api.post('/email/unsubscribe/request', {
+      email: requestEmail.value.trim(),
+    })
+    requested.value = res.message
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
+}
 
 // --- the preferences half ---------------------------------------------------
 const topics = ref([])
@@ -197,13 +219,40 @@ async function dropAlert(alert) {
       <p v-if="error" style="font:var(--type-small); color:var(--danger)">{{ error }}</p>
 
       <!-- ========================== preferences ========================== -->
-      <Card v-if="!session.authenticated" variant="outline">
-        <h2 style="margin:0 0 var(--space-3); font:var(--type-h4)">Manage what you get</h2>
-        <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
-          Sign in to choose which EESoc email you'd like. You don't need an
-          account to unsubscribe — the link in any message is enough.
-        </p>
-      </Card>
+      <template v-if="!session.authenticated">
+        <Card v-if="!isUnsubscribeLink" variant="offset">
+          <h2 style="margin:0 0 var(--space-3); font:var(--type-h4)">Unsubscribe from EESoc email</h2>
+          <p v-if="requested" style="margin:0; font:var(--type-small); color:var(--text-strong)">
+            {{ requested }} It only works for that address, so nobody else can
+            unsubscribe you.
+          </p>
+          <template v-else>
+            <p style="margin:0 0 var(--space-4); font:var(--type-small); color:var(--text-muted)">
+              Enter the address our email reached and we'll send it a link that
+              unsubscribes it. Email about something you've booked still comes through.
+            </p>
+            <form class="request" @submit.prevent="requestLink">
+              <Input
+                v-model="requestEmail"
+                type="email"
+                placeholder="you@ic.ac.uk"
+                aria-label="Email address"
+                required
+              />
+              <Button type="submit" :disabled="busy || !requestEmail.includes('@')">
+                {{ busy ? 'Sending…' : 'Email me a link' }}
+              </Button>
+            </form>
+          </template>
+        </Card>
+
+        <Card variant="outline">
+          <h2 style="margin:0 0 var(--space-3); font:var(--type-h4)">Manage what you get</h2>
+          <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
+            Sign in to choose which EESoc email you'd like.
+          </p>
+        </Card>
+      </template>
 
       <template v-else>
         <Card v-if="status?.unsubscribedFromAll" variant="outline">
@@ -279,6 +328,18 @@ async function dropAlert(alert) {
   padding: var(--space-10) var(--space-6);
   display: grid;
   gap: var(--space-6);
+}
+
+.request {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.request :deep(.ees-input) {
+  flex: 1 1 220px;
+  min-width: 0;
 }
 
 .topic {

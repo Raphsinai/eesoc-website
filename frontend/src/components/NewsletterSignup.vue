@@ -55,7 +55,7 @@ async function submit() {
           <RouterLink to="/email">Change what you get</RouterLink>
         </template>
         <template v-else>
-          The newsletter: what's on, and when tickets go on sale. Unsubscribe in one click.
+          The newsletter: what's on, and when tickets go on sale. Unsubscribe any time.
         </template>
       </span>
     </div>

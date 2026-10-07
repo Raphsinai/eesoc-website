@@ -97,10 +97,15 @@ class Settings(BaseSettings):
     pub_smtp_starttls: str = ""
 
     # --- bulk sending ---
+    # Bulk mail is one message per batch with everybody BCC'd, not one message
+    # per person. Exchange Online caps a message at 500 recipients by default;
+    # 400 leaves room for an admin having lowered it a little, and still sends a
+    # few hundred members in a single message.
+    bulk_batch_size: int = 400
     # Exchange Online throttles a mailbox at roughly 30 messages a minute and
-    # 10,000 recipients a day. 2 seconds between messages keeps us comfortably
-    # under the rate limit; a newsletter to 400 people takes about 13 minutes,
-    # which is fine for something that runs in the background.
+    # 10,000 recipients a day. Batches are spaced by this much, which only
+    # matters for an audience large enough to need more than one — and for the
+    # per-event alerts, which are still one message each.
     bulk_send_interval_seconds: float = 2.0
     # Refuse a send larger than this without it being split. A society
     # newsletter is in the hundreds; four figures means an audience was picked

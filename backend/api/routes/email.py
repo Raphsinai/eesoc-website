@@ -234,6 +234,33 @@ async def describe_unsubscribe(
     }
 
 
+@router.post("/email/unsubscribe/request", dependencies=[Depends(verify_csrf)])
+async def request_unsubscribe(
+    request: Request, email: str = Body(default="", embed=True)
+) -> dict:
+    """Email somebody their own unsubscribe link.
+
+    Bulk mail is BCC'd, so its footer links to the shared /unsubscribe page
+    rather than a signed per-person link. This is how that page turns an address
+    into one. Mailing the link rather than unsubscribing on the spot means a
+    stranger cannot take somebody else off the list.
+    """
+    address = normalise_email(email)
+    if not address or "@" not in address:
+        raise HTTPException(400, "That doesn't look like an email address.")
+    # Same answer whether or not we sent, as for sign-up: the box must not
+    # reveal whether an address gets EESoc email.
+    reply = {
+        "ok": True,
+        "message": f"We've emailed {address} a link to unsubscribe.",
+    }
+    if _throttled(f"unsubscribe:{address}", client_ip(request)):
+        log.warning("Unsubscribe link request throttled for %s", address)
+        return reply
+    await mailer.send_unsubscribe_link(address, emailing.unsubscribe_url(address))
+    return reply
+
+
 @router.post("/email/unsubscribe")
 async def unsubscribe(
     e: str | None = None, t: str | None = None, topic: str | None = None,

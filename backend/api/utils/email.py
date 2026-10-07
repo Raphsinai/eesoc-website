@@ -395,7 +395,10 @@ def _build(
     return message
 
 
-def _send_sync(message: EmailMessage, prof: Profile) -> None:
+def _send_sync(message: EmailMessage, prof: Profile, recipients: list[str]) -> dict:
+    """Deliver one message to `recipients`, which are the envelope, not the
+    headers — so a BCC'd address reaches its inbox without appearing in
+    anybody's copy. Returns the addresses the server refused individually."""
     with smtplib.SMTP(prof.host, prof.port, timeout=settings.smtp_timeout_seconds) as smtp:
         smtp.ehlo()
         if prof.starttls:
@@ -405,7 +408,7 @@ def _send_sync(message: EmailMessage, prof: Profile) -> None:
             smtp.ehlo()
         if prof.user:
             _login(smtp, prof.user, prof.password)
-        smtp.send_message(message)
+        return smtp.send_message(message, to_addrs=recipients)
 
 
 # Logged once per profile rather than per message: a newsletter to 400 people
@@ -439,39 +442,76 @@ async def send(
     profile: str | None = None,
     headers: dict[str, str] | None = None,
 ) -> bool:
-    """Send a message. Returns whether it actually went out.
+    """Send a message to one person. Returns whether it actually went out.
 
     Never raises. A login must not 500 because Exchange is having a moment, and
     the caller already returns an indistinguishable 202 either way.
     """
+    return bool(await send_many([to], subject, body, html, attempts, profile, headers))
+
+
+async def send_many(
+    recipients: list[str],
+    subject: str,
+    body: str,
+    html: str | None = None,
+    attempts: int = 2,
+    profile: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> list[str]:
+    """Send one message to everybody in `recipients`. Returns who it reached.
+
+    With more than one recipient they are all BCC'd and the visible To is the
+    sending mailbox itself, so nobody sees anybody else's address. With exactly
+    one it is an ordinary message addressed to them.
+
+    Never raises, for the same reason as `send`.
+    """
     prof = profile_for(profile)
-    if not _deliverable(to):
+    wanted = [r for r in recipients if _deliverable(r)]
+    if len(wanted) < len(recipients):
+        held = [r for r in recipients if r not in wanted]
         log.warning(
-            "Not sending to %s: not on MAIL_ALLOWLIST (%s). Subject: %s\n%s",
-            to, settings.environment, subject,
+            "Not sending to %d address(es): not on MAIL_ALLOWLIST (%s): %s. "
+            "Subject: %s\n%s",
+            len(held), settings.environment, ", ".join(held[:10]), subject,
             body if settings.log_codes_when_unconfigured else "",
         )
-        return False
+    if not wanted:
+        return []
+    label = wanted[0] if len(wanted) == 1 else f"{len(wanted)} BCC recipients"
     if not prof.usable():
         if settings.log_codes_when_unconfigured:
             reason = "no host" if not prof.host else "no password"
             log.warning(
                 "SMTP profile %s not configured (%s) — would have sent to %s:\n%s",
-                prof.key, reason, to, body,
+                prof.key, reason, label, body,
             )
-        return False
+        return []
 
-    message = _build(to, subject, body, html, prof, headers)
+    to_header = wanted[0] if len(wanted) == 1 else prof.sender
+
+    def delivered(refused: dict) -> list[str]:
+        if refused:
+            log.warning(
+                "Server refused %d of %d recipient(s) of %r: %s",
+                len(refused), len(wanted), subject, ", ".join(list(refused)[:10]),
+            )
+        return [r for r in wanted if r not in refused]
+
+    message = _build(to_header, subject, body, html, prof, headers)
     for attempt in range(1, attempts + 1):
         try:
-            await asyncio.to_thread(_send_sync, message, prof)
-            return True
+            return delivered(await asyncio.to_thread(_send_sync, message, prof, wanted))
         except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, TimeoutError):
             # Transient: Exchange drops idle connections and rate-limits bursts.
             if attempt < attempts:
                 await asyncio.sleep(2 * attempt)
                 continue
-            log.exception("Giving up sending to %s after %d attempts", to, attempts)
+            log.exception("Giving up sending to %s after %d attempts", label, attempts)
+        except smtplib.SMTPRecipientsRefused as exc:
+            log.error("Every recipient of %r was refused: %s", subject, exc.recipients)
+            return []
         except smtplib.SMTPSenderRefused:
             # Exchange refuses a From the authenticated mailbox has no Send As
             # right for. That is a configuration problem nobody can fix from
@@ -479,8 +519,8 @@ async def send(
             # goes out from the mailbox we *are* logged into, once, loudly.
             fallback = transactional()
             if prof.sender_address == fallback.sender_address:
-                log.exception("Sender %s refused sending to %s", prof.sender, to)
-                return False
+                log.exception("Sender %s refused sending to %s", prof.sender, label)
+                return []
             _warn_once(
                 f"sendas:{prof.key}",
                 "%s is not permitted to send as %s, so bulk mail is going out "
@@ -490,18 +530,20 @@ async def send(
                 prof.user, prof.sender, fallback.sender,
             )
             retry = _build(
-                to, subject, body, html,
+                wanted[0] if len(wanted) == 1 else fallback.sender,
+                subject, body, html,
                 # Keep the bulk headers and the publicity Reply-To; swap only
                 # the From, which is the part Exchange objected to.
                 replace(prof, sender=fallback.sender),
                 headers,
             )
             try:
-                await asyncio.to_thread(_send_sync, retry, fallback)
-                return True
+                return delivered(
+                    await asyncio.to_thread(_send_sync, retry, fallback, wanted)
+                )
             except Exception:
-                log.exception("Fallback send to %s failed as well", to)
-                return False
+                log.exception("Fallback send to %s failed as well", label)
+                return []
         except smtplib.SMTPAuthenticationError:
             # Almost always the annual password reset, or Microsoft disabling
             # basic auth on the tenant. Logged loudly because no amount of
@@ -513,11 +555,11 @@ async def send(
                 "the tenant still permits SMTP AUTH.",
                 prof.user, prof.key,
             )
-            return False
+            return []
         except Exception:
-            log.exception("Failed to send mail to %s", to)
-            return False
-    return False
+            log.exception("Failed to send mail to %s", label)
+            return []
+    return []
 
 
 # --------------------------------------------------------------------- templates
@@ -587,6 +629,33 @@ async def send_newsletter_confirm(to: str, url: str) -> bool:
         + _note("If it wasn't you, ignore this email and nothing happens."),
     )
     return await send(to, "Confirm the EESoc newsletter", body, html)
+
+
+async def send_unsubscribe_link(to: str, url: str) -> bool:
+    """Somebody's own unsubscribe link, on request.
+
+    Bulk mail is BCC'd, so its footer can only carry the shared /unsubscribe
+    page; this is what that page sends back. Personal, so it goes from the
+    webmaster mailbox like a sign-in code.
+    """
+    body = (
+        "Somebody — hopefully you — asked to stop EESoc newsletters and "
+        "announcements at this address.\n\n"
+        f"Unsubscribe: {url}\n\n"
+        "If it wasn't you, ignore this email and nothing changes."
+    )
+    html = _shell(
+        "Unsubscribe from EESoc email",
+        "Your unsubscribe link.",
+        _p(
+            "Somebody — hopefully you — asked to stop EESoc newsletters and "
+            "announcements at this address. Email about something you've "
+            "booked still comes through."
+        )
+        + _button("Unsubscribe", url)
+        + _note("If it wasn't you, ignore this email and nothing changes."),
+    )
+    return await send(to, "Unsubscribe from EESoc email", body, html)
 
 
 async def send_waitlist_offer(
@@ -873,7 +942,7 @@ async def send_last_chance(
 
 
 async def send_tickets_on_sale(
-    to: str,
+    to: str | list[str],
     event_title: str,
     when: str,
     venue: str,
@@ -881,7 +950,7 @@ async def send_tickets_on_sale(
     unsubscribe_url: str,
     tickets: list[tuple[str, str]] | None = None,
     purchase_url: str | None = None,
-) -> bool:
+) -> list[str]:
     """Tickets have just opened for an event somebody asked to hear about.
 
     Goes from the publicity mailbox and carries an unsubscribe, because it is
@@ -915,14 +984,18 @@ async def send_tickets_on_sale(
         + _note("You asked us to tell you when this went on sale.")
         + _footer_link("Stop these alerts", unsubscribe_url),
     )
-    return await send(
-        to,
+    return await send_many(
+        _as_list(to),
         f"Tickets for {event_title} are on sale",
         body,
         html,
         profile="publicity",
         headers=_bulk_headers(unsubscribe_url),
     )
+
+
+def _as_list(to: str | list[str]) -> list[str]:
+    return [to] if isinstance(to, str) else list(to)
 
 
 def _bulk_headers(unsubscribe_url: str) -> dict[str, str]:
@@ -932,25 +1005,31 @@ def _bulk_headers(unsubscribe_url: str) -> dict[str, str]:
     makes the client show a confirmation page, and `List-Unsubscribe-Post`
     without the URL list is ignored. The mailto is the fallback for clients that
     only understand that form.
+
+    One-click is only claimed for a signed link — one that names the address
+    (or the alert) it stops. A message BCC'd to many people carries the shared
+    /unsubscribe page instead, which asks who you are first; POSTing to it
+    unsubscribes nobody, so advertising it as one-click would be a lie the
+    client acts on.
     """
     reply_to = publicity().reply_to or settings.smtp_reply_to
     targets = [f"<{unsubscribe_url}>"]
     if reply_to:
         targets.append(f"<mailto:{reply_to}?subject=unsubscribe>")
-    return {
-        "List-Unsubscribe": ", ".join(targets),
-        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-    }
+    headers = {"List-Unsubscribe": ", ".join(targets)}
+    if "?" in unsubscribe_url:
+        headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+    return headers
 
 
 async def send_campaign(
-    to: str,
+    to: str | list[str],
     subject: str,
     heading: str,
     body_text: str,
     body_html: str,
     unsubscribe_url: str,
-) -> bool:
+) -> list[str]:
     """A committee-written newsletter.
 
     The body arrives already rendered — markdown is turned into the site's own
@@ -965,15 +1044,15 @@ async def send_campaign(
         escape(" ".join(body_text.split())[:140]),
         body_html + _footer_link("Unsubscribe from EESoc email", unsubscribe_url),
     )
-    return await send(
-        to, subject, text, html,
+    return await send_many(
+        _as_list(to), subject, text, html,
         profile="publicity",
         headers=_bulk_headers(unsubscribe_url),
     )
 
 
 async def send_event_announcement(
-    to: str,
+    to: str | list[str],
     subject: str,
     event_title: str,
     when: str,
@@ -984,7 +1063,7 @@ async def send_event_announcement(
     body_html: str = "",
     tickets: list[tuple[str, str]] | None = None,
     heading: str | None = None,
-) -> bool:
+) -> list[str]:
     """A committee-written message *about one event* — an announcement, a
     reminder, a change of room.
 
@@ -1027,8 +1106,8 @@ async def send_event_announcement(
         + _button("Full details and booking", event_url)
         + _footer_link("Unsubscribe from EESoc email", unsubscribe_url),
     )
-    return await send(
-        to, subject, "\n".join(text_parts), html,
+    return await send_many(
+        _as_list(to), subject, "\n".join(text_parts), html,
         profile="publicity",
         headers=_bulk_headers(unsubscribe_url),
     )

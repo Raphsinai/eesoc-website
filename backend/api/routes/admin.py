@@ -1246,9 +1246,9 @@ async def send_newsletter(
         },
     )
 
-    async def build(recipient: dict, unsubscribe: str) -> bool:
+    async def build(batch: list[dict], unsubscribe: str) -> list[str]:
         return await mailer.send_campaign(
-            recipient["email"],
+            [r["email"] for r in batch],
             subject.strip(),
             (heading or subject).strip(),
             text,
@@ -1316,9 +1316,9 @@ async def announce_event(
         },
     )
 
-    async def build(recipient: dict, unsubscribe: str) -> bool:
+    async def build(batch: list[dict], unsubscribe: str) -> list[str]:
         return await mailer.send_event_announcement(
-            recipient["email"],
+            [r["email"] for r in batch],
             subject.strip(),
             event["title"],
             when,
@@ -1420,7 +1420,10 @@ async def announce_now(_: AuthSession = Depends(require_site)) -> dict:
 
 
 def _estimate_minutes(count: int) -> str:
-    seconds = count * settings.bulk_send_interval_seconds
+    # One BCC'd message per batch, spaced by the interval, plus a few seconds
+    # for Exchange to take each one.
+    batches = -(-count // max(1, settings.bulk_batch_size))
+    seconds = batches * (settings.bulk_send_interval_seconds + 5)
     if seconds < 90:
         return "under a minute"
     return f"{round(seconds / 60)} minutes"

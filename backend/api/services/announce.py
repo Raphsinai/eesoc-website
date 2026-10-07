@@ -123,26 +123,45 @@ async def _announce_one(event: dict) -> dict:
     ) or []
     by_address = {a["email"].strip().lower(): a for a in alerts}
 
-    async def build(recipient: dict, unsubscribe: str) -> bool:
-        alert = by_address.get(recipient["email"])
-        sent = await mailer.send_tickets_on_sale(
-            recipient["email"],
-            event["title"],
-            when,
-            event.get("venue") or "",
-            url,
-            # Somebody who asked about this one event gets a link that stops
-            # just this alert; a standing subscriber gets the real unsubscribe.
-            # Offering a general unsubscribe to the first group would be a trap.
-            emailing.alert_cancel_url(alert["token"]) if alert else unsubscribe,
-            tickets=tickets,
-            purchase_url=links.get(None),
-        )
-        if alert:
+    async def build(batch: list[dict], unsubscribe: str) -> list[str]:
+        """Somebody who asked about this one event gets their own message with a
+        link that stops just this alert; offering them a general unsubscribe
+        would be a trap. Everybody else is a standing subscriber with nothing
+        personal in theirs, so they share one BCC'd message."""
+        subscribers = [r["email"] for r in batch if r["email"] not in by_address]
+        reached: list[str] = []
+        if subscribers:
+            reached += await mailer.send_tickets_on_sale(
+                subscribers,
+                event["title"],
+                when,
+                event.get("venue") or "",
+                url,
+                unsubscribe,
+                tickets=tickets,
+                purchase_url=links.get(None),
+            )
+        for recipient in batch:
+            alert = by_address.get(recipient["email"])
+            if alert is None:
+                continue
+            reached += await mailer.send_tickets_on_sale(
+                recipient["email"],
+                event["title"],
+                when,
+                event.get("venue") or "",
+                url,
+                emailing.alert_cancel_url(alert["token"]),
+                tickets=tickets,
+                purchase_url=links.get(None),
+            )
             # Marked either way: an address that cannot be delivered to must not
             # be retried on every pass for the rest of the year.
             await database.post(f"/email/sale-alerts/{alert['id']}/notified")
-        return sent
+            # Still one message each, so still paced under Exchange's limit.
+            if settings.bulk_send_interval_seconds > 0:
+                await asyncio.sleep(settings.bulk_send_interval_seconds)
+        return reached
 
     result = await emailing.send_bulk(campaign["id"], recipients, build)
     log.info(

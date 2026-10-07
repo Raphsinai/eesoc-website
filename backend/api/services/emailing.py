@@ -7,11 +7,15 @@ Three things live here:
   * audience resolution — turning the keys an admin ticked into a de-duplicated
     list of addresses;
   * the sender — markdown to the site's own typography, then one message per
-    recipient, paced under Exchange's rate limit, recorded as it goes.
+    batch with the recipients BCC'd, recorded as it goes.
 
-Everything bulk is sent per-recipient rather than BCC. It costs more messages
-but it is the only way each person gets their own unsubscribe link, and a single
-BCC to four hundred addresses is the fastest route into a spam folder.
+Everything bulk is BCC'd in batches rather than sent per recipient: one message
+to four hundred people goes out in seconds, where one each took a quarter of an
+hour under Exchange's rate limit. The cost is the per-person unsubscribe link —
+a shared message can only carry a shared one, so it points at /unsubscribe,
+which emails anybody their own signed link on request. Mail that is about one
+person (a sign-in code, a booking, a per-event alert they set) is still sent to
+them alone.
 """
 
 from __future__ import annotations
@@ -389,6 +393,15 @@ def unsubscribe_url(address: str, topic: str | None = None) -> str:
     return f"{settings.site_origin}/unsubscribe?{urlencode(params)}"
 
 
+def general_unsubscribe_url() -> str:
+    """The unsubscribe link for a message BCC'd to many people.
+
+    Cannot name an address, so it lands on the page that asks for one and emails
+    back that address's own signed link. No one-click: see `_bulk_headers`.
+    """
+    return f"{settings.site_origin}/unsubscribe"
+
+
 def subscribe_token(address: str) -> str:
     """Proves a newsletter sign-up link was sent to this address.
 
@@ -522,15 +535,17 @@ def render_body(markdown: str) -> tuple[str, str]:
 
 
 async def send_bulk(campaign_id: int, recipients: list[dict], build) -> dict:
-    """Send one message per recipient, paced, recording progress as it goes.
+    """Send to everybody in batches, recording progress as it goes.
 
-    `build(recipient, unsubscribe)` returns the coroutine that sends to one
-    person, so this function knows nothing about what is being sent — a
-    newsletter and an event announcement share all of this.
+    `build(batch, unsubscribe)` sends one batch of recipient rows and returns
+    the addresses it reached. Normally that is one message with the whole batch
+    BCC'd; a caller with something personal for a few of them (the on-sale
+    email's per-event alerts) can send those separately inside the same call.
+    This function knows nothing about what is being sent — a newsletter and an
+    event announcement share all of this.
 
-    Progress is written back every 25 messages rather than per message: a send
-    that dies half way through must leave evidence of how far it got, but one
-    adapter round trip per email would double the cost of the whole operation.
+    Counts stay per recipient, not per message, so the history reads "412 sent"
+    rather than "1 sent".
     """
     total = len(recipients)
     await database.patch(
@@ -538,30 +553,32 @@ async def send_bulk(campaign_id: int, recipients: list[dict], build) -> dict:
         params={"status": "sending", "recipients": total},
     )
 
+    size = max(1, settings.bulk_batch_size)
+    batches = [recipients[i:i + size] for i in range(0, total, size)]
+    unsubscribe = general_unsubscribe_url()
+
     sent = failed = 0
     try:
-        for index, recipient in enumerate(recipients, start=1):
-            address = recipient["email"]
+        for index, batch in enumerate(batches, start=1):
             try:
-                ok = await build(recipient, unsubscribe_url(address))
+                reached = len(await build(batch, unsubscribe))
             except Exception:  # noqa: BLE001
-                log.exception("Campaign %s: building mail for %s failed", campaign_id, address)
-                ok = False
-            if ok:
-                sent += 1
-            else:
-                failed += 1
-
-            if index % 25 == 0:
-                await database.patch(
-                    f"/email/campaigns/{campaign_id}",
-                    params={"sent": sent, "failed": failed},
+                log.exception(
+                    "Campaign %s: batch %d of %d failed", campaign_id, index, len(batches)
                 )
+                reached = 0
+            sent += reached
+            failed += len(batch) - reached
+
+            await database.patch(
+                f"/email/campaigns/{campaign_id}",
+                params={"sent": sent, "failed": failed},
+            )
 
             # Exchange throttles a mailbox at roughly 30 messages a minute, and
             # being throttled mid-send looks identical to the mail being
             # rejected. Pacing is cheaper than finding out which it was.
-            if index < total and settings.bulk_send_interval_seconds > 0:
+            if index < len(batches) and settings.bulk_send_interval_seconds > 0:
                 await asyncio.sleep(settings.bulk_send_interval_seconds)
     except asyncio.CancelledError:
         await database.patch(

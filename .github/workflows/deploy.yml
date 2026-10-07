@@ -203,8 +203,160 @@ jobs:
           sys.exit(1 if fail else 0)
           PY
 
+  # Pytest suite (api + database adapter) against the compose TEST stack —
+  # the real services with the ICU bridge swapped for a stub and mail pointed
+  # at mailpit. CI must make zero calls to eActivities (the API is rate-limited
+  # per source IP and a breach bans the whole society), which is why the
+  # service list names every service explicitly and never includes `union`.
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create the env files CI needs
+        run: |
+          cp .env.example .env
+          cp backend.env.example backend.env
+
+      - name: Bring the test stack up
+        run: >
+          docker compose -f docker-compose.yml -f docker-compose.test.yml
+          -p eesoc-test up -d --build
+          postgres database union-stub mailpit api api-nologin frontend
+
+      - name: Wait for the API
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf localhost:8080/api/health >/dev/null; then exit 0; fi
+            sleep 3
+          done
+          docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs
+          exit 1
+
+      # No service in the test stack may hold a real ICU key: the eActivities
+      # API is rate-limited per source IP and a breach bans the whole society,
+      # CI included. The union stub has no env_file at all, and the test
+      # override blanks ICU_API_KEY on the two api services (whose env_file
+      # is a copy of backend.env.example in CI); this assert fails the job
+      # before a single test runs if that ever stops being true.
+      - name: Assert no test service holds an ICU key
+        run: |
+          set -euo pipefail
+          for svc in union-stub api api-nologin; do
+            docker compose -f docker-compose.yml -f docker-compose.test.yml \
+              -p eesoc-test exec -T "$svc" \
+              sh -c 'test -z "${ICU_API_KEY:-}"' \
+              || { echo "::error::ICU_API_KEY is set on $svc"; exit 1; }
+            echo "$svc: no ICU key"
+          done
+
+      - name: Wait for resource seeding
+        run: |
+          for i in $(seq 1 40); do
+            COUNT=$(curl -sf localhost:8080/api/resources \
+              | python3 -c 'import sys,json; print(len(json.load(sys.stdin)["pages"]))' 2>/dev/null || echo 0)
+            if [ "$COUNT" -ge 10 ]; then echo "seeded $COUNT pages"; exit 0; fi
+            sleep 3
+          done
+          echo "::error::Resource seeding did not complete"
+          docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs api
+          exit 1
+
+      - name: Install the test dependencies
+        run: pip install -r backend/api/requirements-dev.txt
+
+      - name: Run the pytest suites
+        run: python3 -m pytest tests -v
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs --tail 200
+
+      - name: Tear the test stack down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test down -v
+
+  # Playwright suite, against the same test stack. The api the browser talks
+  # to is the compose one (no dev server), so the specs exercise exactly what
+  # a deploy will serve.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create the env files CI needs
+        run: |
+          cp .env.example .env
+          cp backend.env.example backend.env
+
+      - name: Bring the test stack up
+        run: >
+          docker compose -f docker-compose.yml -f docker-compose.test.yml
+          -p eesoc-test up -d --build
+          postgres database union-stub mailpit api api-nologin frontend
+
+      - name: Wait for the API
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf localhost:8080/api/health >/dev/null; then exit 0; fi
+            sleep 3
+          done
+          docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs
+          exit 1
+
+      # Same guard as the pytest job, for the same reason, and it stays in
+      # both jobs because each must be safe to re-run alone.
+      - name: Assert no test service holds an ICU key
+        run: |
+          set -euo pipefail
+          for svc in union-stub api api-nologin; do
+            docker compose -f docker-compose.yml -f docker-compose.test.yml \
+              -p eesoc-test exec -T "$svc" \
+              sh -c 'test -z "${ICU_API_KEY:-}"' \
+              || { echo "::error::ICU_API_KEY is set on $svc"; exit 1; }
+            echo "$svc: no ICU key"
+          done
+
+      - name: Wait for resource seeding
+        run: |
+          for i in $(seq 1 40); do
+            COUNT=$(curl -sf localhost:8080/api/resources \
+              | python3 -c 'import sys,json; print(len(json.load(sys.stdin)["pages"]))' 2>/dev/null || echo 0)
+            if [ "$COUNT" -ge 10 ]; then echo "seeded $COUNT pages"; exit 0; fi
+            sleep 3
+          done
+          echo "::error::Resource seeding did not complete"
+          docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs api
+          exit 1
+
+      # npm ci at the repo root, not in frontend/: the specs live in tests/e2e,
+      # outside the frontend package, and Node resolves @playwright/test by
+      # walking up from the spec file — so the install has to sit at the root
+      # (see the root package.json). The config stays in frontend/.
+      - name: Install the e2e dependencies
+        run: npm ci
+
+      - name: Install browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the e2e suites
+        run: npx playwright test --config frontend/playwright.config.js
+
+      - name: Upload report and traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            playwright-report
+            test-results
+
+      - name: Tear the test stack down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test down -v
+
   build:
-    needs: [test, manifests]
+    needs: [test, manifests, pytest, e2e]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:

@@ -30,11 +30,20 @@ Live at https://eesoc.com (production) and https://eesoc.raphsinai.dev (staging)
 - Dev login (local only, `ENVIRONMENT=development`): `POST /api/auth/dev-login {"email":..., "make_admin":true}`.
   With no `SMTP_HOST`, login codes go to `docker compose logs api`.
 - Frontend only: `cd frontend && npm install && npm run dev` / `npm run build`.
-- **Tests: there is no unit/integration test suite** (no pytest, no vitest, no linter config).
-  CI (`.github/workflows/deploy.yml`) is the test: compose up, wait for `/api/health`, assert every migration
-  applied, wait for resource seeding, curl smoke checks (`/`, `/api/events`, `/api/resources`, sitemap, robots),
-  assert `dev_login_enabled` defaults to False; plus a `manifests` job rendering both kustomize overlays and
-  checking staging/production don't overlap.
+- **Tests:** pytest suites in `tests/` and Playwright suites in `tests/e2e/`, both run against the compose
+  test stack (`docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test up -d --build
+  postgres database union-stub mailpit api api-nologin frontend` — the stub replaces the real ICU bridge;
+  the service list must never include `union`). Then `pip install -r backend/api/requirements-dev.txt` +
+  `python3 -m pytest tests -v`, and from the repo root `npm ci` (the Playwright install is in the root
+  package.json — the specs live in tests/e2e, outside the frontend package) +
+  `npx playwright install --with-deps chromium` +
+  `npx playwright test --config frontend/playwright.config.js` (stop the dev stack first — both publish
+  :8080). See `tests/README.md` for the
+  per-section layout rules (`tests/<slug>/`, `tests/e2e/<slug>/`; CI discovers the whole tree).
+  CI (`.github/workflows/deploy.yml`) runs `pytest` and `e2e` jobs on the same stack and gates `build` on
+  them, alongside the `test` smoke job (compose up, wait for `/api/health`, assert every migration applied,
+  wait for resource seeding, curl smoke checks, assert `dev_login_enabled` defaults to False) and a
+  `manifests` job rendering both kustomize overlays and checking staging/production don't overlap.
 - Tooling present locally: docker, node 26, a Python venv in `env/` (gitignored).
 
 ## Deploy (read CLAUDE.md, it is strict)

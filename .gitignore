@@ -1,7 +1,11 @@
 # Secrets and local config. `*.env` covers .env, backend.env and frontend.env;
-# the committed templates end in .example so they are unaffected.
+# `.env*` additionally covers the dot-prefixed variants (.env.local,
+# .env.production). The committed templates end in .example so they are
+# unaffected.
 *.env
+.env*
 !*.env.example
+!.env.example
 
 # Local Python venv
 env/
@@ -30,6 +34,21 @@ yarn-error.log*
 .DS_Store
 .idea/
 *.swp
+
+# Session and credential artifacts a test or debug run can drop in the tree —
+# a storage state or HAR holds live cookies, so none of these is committable.
+session.json
+*passkey*.json
+*.har
+
+# Output of the test suites (pytest + Playwright). The .auth/ storage state is
+# the signed-in sessions the e2e setup mints; the rest are Playwright's report,
+# trace and blob directories. See tests/README.md.
+tests/e2e/.auth/
+playwright-report/
+test-results/
+blob-report/
+playwright/.cache/
 
 # Scratch: the scraped copy of eesoc.com used to build the resource seed.
 # The seed itself (backend/api/seed/resources_seed.json) IS committed.

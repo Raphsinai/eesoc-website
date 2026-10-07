@@ -553,7 +553,10 @@ async def list_reservations(
                    e.title AS event_title, e.slug AS event_slug,
                    e.starts_at AS event_starts_at,
                    tt.name AS ticket_type_name, tt.price_pence, tt.requires_purchase,
-                   u.email AS user_email
+                   tt.members_only,
+                   u.email AS user_email, u.first_name AS user_first_name,
+                   u.last_name AS user_last_name, u.shortcode AS user_shortcode,
+                   (u.member_id IS NOT NULL) AS has_member_record
               FROM public.reservations r
               JOIN public.events e       ON e.id  = r.event_id
               JOIN public.ticket_types tt ON tt.id = r.ticket_type_id

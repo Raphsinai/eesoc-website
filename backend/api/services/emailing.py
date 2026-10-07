@@ -259,6 +259,10 @@ async def _resolve_one(key: str) -> list[dict]:
             {"kind": "topic", "topic": topic, "default_on": default_for(topic)},
         ) or []
 
+    if key.split(":", 1)[0] in EVENT_AUDIENCES:
+        kind, _, raw_id = key.partition(":")
+        return await _event_people(kind, int(raw_id))
+
     if key.startswith("alerts:"):
         return await database.get(
             "/email/audience",
@@ -267,6 +271,59 @@ async def _resolve_one(key: str) -> list[dict]:
 
     log.warning("Unknown audience key %r — ignored", key)
     return []
+
+
+# --------------------------------------------------------- one event's people
+#
+# The people attached to one event, by where their booking stands. Not opt-out
+# filtered: this is mail about something the person booked — the same footing
+# as the pay-up reminder — not a newsletter they can leave.
+
+EVENT_AUDIENCES = {
+    "unpaid": ("Hasn't bought yet", "Holding a ticket that still needs buying on the Union shop."),
+    "confirmed": ("Has bought", "Purchase matched — these people have a place."),
+    "booked": ("Everyone booked", "Held or bought: everyone with a live booking."),
+    "waitlist": ("Waitlist", "Waiting for a place to free up."),
+}
+
+
+async def _event_people(kind: str, event_id: int) -> list[dict]:
+    if kind == "waitlist":
+        rows = await database.get("/waitlist", {"event_id": event_id}) or []
+        return [
+            {"email": r.get("email"), "source": f"waitlist:{event_id}",
+             "first_name": None, "last_name": None, "user_id": r.get("user_id")}
+            for r in rows
+            if not r.get("claimed_at")
+        ]
+    rows = await database.get(
+        "/reservations", {"event_id": event_id, "limit": 5000}
+    ) or []
+    def wanted(r: dict) -> bool:
+        if kind == "unpaid":
+            return r["status"] == "held" and r.get("requires_purchase", True)
+        if kind == "confirmed":
+            return r["status"] == "confirmed"
+        return r["status"] in ("held", "confirmed")
+    return [
+        {"email": r.get("user_email"), "source": f"{kind}:{event_id}",
+         "first_name": r.get("user_first_name"), "last_name": r.get("user_last_name"),
+         "user_id": r.get("user_id")}
+        for r in rows
+        if wanted(r)
+    ]
+
+
+async def event_audiences(event_id: int) -> list[dict]:
+    """The "This event" group for the per-event email dialog, with counts."""
+    out = []
+    for kind, (label, description) in EVENT_AUDIENCES.items():
+        key = f"{kind}:{event_id}"
+        out.append({
+            "key": key, "label": label, "group": "This event",
+            "description": description, "count": len(await resolve([key])),
+        })
+    return out
 
 
 async def test_recipients() -> list[str]:

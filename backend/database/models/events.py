@@ -147,6 +147,9 @@ class ReservationDetail(Reservation):
     members_only: bool = False
     has_member_record: bool = False
     user_email: str | None = None
+    user_first_name: str | None = None
+    user_last_name: str | None = None
+    user_shortcode: str | None = None
 
 
 class ReservationRequest(BaseModel):

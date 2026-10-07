@@ -320,6 +320,96 @@ async def event_reservations(
     }
 
 
+@router.get("/events/{event_id}/detail")
+async def event_detail(
+    event_id: int, session: AuthSession = Depends(require_event_editor)
+) -> dict:
+    """Everything about one event's bookings, for its admin page: a summary per
+    ticket type, every reservation in every state, and the waitlist."""
+    event = await _editable_event(event_id, session)
+    rows = await database.get("/reservations", {"event_id": event_id, "limit": 5000}) or []
+    waiting = await database.get("/waitlist", {"event_id": event_id}) or []
+
+    summary = []
+    for t in event.get("ticket_types", []):
+        mine = [r for r in rows if r["ticket_type_id"] == t["id"]]
+        qty = lambda *states: sum(r["quantity"] for r in mine if r["status"] in states)
+        summary.append({
+            "ticketTypeId": t["id"],
+            "name": t["name"],
+            "price": format_price(t.get("price_pence", 0)),
+            "capacity": t.get("capacity"),
+            "unpaid": qty("held"),
+            "bought": qty("confirmed"),
+            "closed": qty("cancelled", "expired"),
+            "waitlist": sum(
+                w.get("quantity", 1) for w in waiting
+                if w.get("preferred_ticket_type_id") == t["id"] and not w.get("claimed_at")
+            ),
+        })
+
+    def person(r: dict) -> dict:
+        name = " ".join(p for p in [r.get("user_first_name"), r.get("user_last_name")] if p)
+        return {
+            "id": r["id"],
+            "name": name or None,
+            "email": r.get("user_email"),
+            "shortcode": r.get("user_shortcode"),
+            "member": bool(r.get("has_member_record")),
+            "ticketTypeId": r["ticket_type_id"],
+            "ticketType": r.get("ticket_type_name"),
+            "quantity": r["quantity"],
+            "status": r["status"],
+            "requiresPurchase": r.get("requires_purchase", True),
+            "membersOnly": r.get("members_only", False),
+            "orderNumber": r.get("order_number"),
+            "guest": r.get("booked_as_guest", False),
+            "bookedAt": r.get("created_at"),
+            "holdUntil": r.get("expires_at"),
+            "confirmedAt": r.get("confirmed_at"),
+            "cancelledAt": r.get("cancelled_at"),
+        }
+
+    return {
+        "event": {
+            "id": event["id"],
+            "title": event["title"],
+            "slug": event.get("slug"),
+            "startsAt": event.get("starts_at"),
+            "date": format_date(_parse_dt(event.get("starts_at"))),
+            "time": format_time_range(
+                _parse_dt(event.get("starts_at")), _parse_dt(event.get("ends_at"))
+            ),
+            "venue": event.get("venue"),
+            "capacity": event.get("capacity"),
+            "published": event.get("published"),
+        },
+        "summary": summary,
+        "reservations": [person(r) for r in rows if r["status"] != "draft"],
+        "waitlist": [
+            {
+                "id": w["id"],
+                "email": w.get("email"),
+                "position": w.get("position"),
+                "quantity": w.get("quantity", 1),
+                "ticketTypeId": w.get("preferred_ticket_type_id"),
+                "joinedAt": w.get("created_at"),
+                "offeredAt": w.get("offered_at"),
+            }
+            for w in waiting
+            if not w.get("claimed_at")
+        ],
+    }
+
+
+@router.get("/events/{event_id}/audiences")
+async def event_email_audiences(
+    event_id: int, _: AuthSession = Depends(require_site)
+) -> dict:
+    """The per-event audiences for the "Email about this" dialog."""
+    return {"audiences": await emailing.event_audiences(event_id)}
+
+
 @router.get("/reservations/overdue")
 async def overdue_reservations(
     session: AuthSession = Depends(require_event_editor),

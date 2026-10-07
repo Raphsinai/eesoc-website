@@ -148,7 +148,16 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  // Arriving from an event's page with "Email everyone who hasn't bought".
+  const id = Number(route.query.announce)
+  if (id) {
+    const e = events.value.find((x) => x.id === id)
+    if (e) announceEvent(e, route.query.audience ? String(route.query.audience) : null)
+    router.replace({ query: { tab: route.query.tab || 'events' } })
+  }
+})
 
 const counts = computed(() => dash.value?.counts ?? {})
 
@@ -595,13 +604,30 @@ async function sendEmail() {
   }
 }
 
-/** Open the composer for one event, pre-filled with a sensible subject. */
-function announceEvent(e) {
+// The "This event" audiences (hasn't bought, bought, booked, waitlist), loaded
+// when the dialog opens because their counts are per event.
+const eventAudiences = ref([])
+const composeGroups = computed(() =>
+  eventAudiences.value.length
+    ? [['This event', eventAudiences.value], ...audienceGroups.value]
+    : audienceGroups.value,
+)
+
+/** Open the composer for one event, pre-filled with a sensible subject.
+ *  `preselect` ticks one audience, e.g. "unpaid:12" from the event page. */
+function announceEvent(e, preselect = null) {
   announcing.value = e
+  eventAudiences.value = []
+  api
+    .get(`/admin/events/${e.id}/audiences`)
+    .then((r) => {
+      if (announcing.value?.id === e.id) eventAudiences.value = r.audiences
+    })
+    .catch(() => {})
   compose.subject = `${e.title} — ${new Date(e.starts_at).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}`
   compose.heading = ''
   compose.body = ''
-  compose.audiences = []
+  compose.audiences = preselect ? [preselect] : []
   previewHtml.value = ''
   previewCount.value = null
   if (!audiences.value.length) loadEmail()
@@ -609,6 +635,7 @@ function announceEvent(e) {
 
 function closeCompose() {
   announcing.value = null
+  eventAudiences.value = []
   compose.subject = ''
   compose.heading = ''
   compose.body = ''
@@ -1290,6 +1317,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 </div>
                 <div v-else style="display:flex; gap:var(--space-2)">
                   <Button size="sm" variant="ghost" @click="togglePublished(e)">{{ e.published ? 'Unpublish' : 'Publish' }}</Button>
+                  <Button size="sm" variant="secondary" @click="router.push(`/admin/events/${e.id}`)">Details</Button>
                   <Button size="sm" variant="ghost" @click="editEvent(e)">Edit</Button>
                   <Button v-if="can('site')" size="sm" variant="secondary" @click="announceEvent(e)">Email about this</Button>
                   <Button size="sm" variant="danger" @click="removeEvent(e)">Delete</Button>
@@ -2194,7 +2222,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
 
         <TraceRule />
         <span style="font:var(--type-label); color:var(--text-muted)">Who gets it</span>
-        <div v-for="[group, items] in audienceGroups" :key="group">
+        <div v-for="[group, items] in composeGroups" :key="group">
           <span style="font:var(--type-2xs); color:var(--text-faint)">{{ group }}</span>
           <label v-for="a in items" :key="a.key" class="aud">
             <input

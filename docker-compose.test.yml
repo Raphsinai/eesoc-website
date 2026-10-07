@@ -1,0 +1,137 @@
+# Test stack overlay. Layered on the real compose file, never used on its own:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml \
+#     -p eesoc-test up -d --build <services>
+#
+# The service list is always spelled out explicitly so `union` — the real ICU
+# bridge — never starts. It is replaced by `union-stub`, which serves canned
+# fixtures from tests/union_stub and holds no ICU_API_KEY, so the test stack can
+# make exactly zero calls to eActivities. That is a hard requirement, not a
+# convenience: the Union's API is rate-limited per source IP and a breach bans
+# the whole society, CI included.
+#
+# `environment` and `depends_on` merge by key with the base file, so the `api`
+# overrides below only carry what differs. Services that exist only here
+# (mailpit, union-stub, api-nologin) are whole definitions.
+
+services:
+  # Mail sink. Login codes and bulk mail are pointed at mailpit instead of the
+  # shared Imperial mailbox, so tests can assert on what was sent without
+  # emailing anybody for real — mail from a test run must never reach students.
+  mailpit:
+    image: axllent/mailpit
+    ports:
+      # Web UI and JSON API (used by the fixtures to read codes out of the
+      # inbox). Published so host-run pytest can reach it.
+      - "8025:8025"
+    expose:
+      # SMTP, on the compose network only: nothing outside the project sends
+      # mail through it.
+      - "1025"
+
+  # Canned-data stand-in for the real ICU bridge. Same routes, same snake_case
+  # response shapes, no upstream and no credentials — deliberately no env_file
+  # here, because the base `union` service loads ICU_API_KEY from backend.env
+  # and this service must not inherit it.
+  union-stub:
+    build: ./tests/union_stub
+    image: eesoc-website-union-stub
+    ports:
+      # Published for direct fixture assertions (e.g. POST /cache/clear between
+      # tests). The api reaches it in-network as union-stub:8080.
+      - "8082:8080"
+    expose:
+      - "8080"
+
+  # The api, pointed at the stub and the mail sink. Only the deltas from
+  # backend/compose.yaml are here; everything else (env_file, volumes, command)
+  # merges through unchanged.
+  api:
+    environment:
+      # The stub instead of the real bridge. SYNC_ON_STARTUP pulls the canned
+      # members into the database immediately, so dev-login for
+      # member1@ic.ac.uk resolves to a member without waiting for the nightly
+      # cycle that the real sync would use.
+      UNION_API_URL: http://union-stub:8080
+      SYNC_ON_STARTUP: "true"
+      # Both dev-login gates open: ENVIRONMENT must be development for the
+      # bypass to be accepted at all (see _guard_dev_login in api/main.py).
+      ENVIRONMENT: development
+      DEV_LOGIN_ENABLED: "true"
+      # Codes land in mailpit's inbox rather than in `docker compose logs`,
+      # which lets the tests exercise the real code flow end to end.
+      SMTP_HOST: mailpit
+      # The publicity profile (newsletters, announcements) points at the same
+      # sink, so those tests send nothing real either. The host/port are set
+      # explicitly because PUB_SMTP_HOST blank means "inherit the webmaster
+      # profile", which is what we want — just aimed at mailpit.
+      PUB_SMTP_HOST: mailpit
+      PUB_SMTP_PORT: "1025"
+      # Blanked deliberately: the base api service loads backend.env via
+      # env_file, and in CI that is a copy of backend.env.example whose
+      # contents this file cannot assume. `environment` wins over env_file,
+      # so this guarantees the key is empty whatever the template holds — the
+      # api never reads it (only the union bridge does, and it does not run
+      # here), but "no ICU_API_KEY anywhere in the test env" must be a fact,
+      # not an assumption.
+      ICU_API_KEY: ""
+    depends_on:
+      # Merge adds this to the base's database dependency, it does not replace
+      # it — the stub must be listening before the api's startup sync calls it.
+      union-stub:
+        condition: service_started
+
+  # A second api instance with the dev-login bypass OFF. It shares the same
+  # database (so accounts and sessions created through `api` exist here) but
+  # refuses /auth/dev-login, which is how the tests cover the real code flow
+  # and the bypass-off behaviour without two whole projects.
+  #
+  # It is a full duplicate of the api definition rather than an override,
+  # because compose has no clean "second instance of a service" mechanism:
+  # `extends` does not reliably cross an included file's boundary, and the
+  # base api lives in backend/compose.yaml, included from the root file. So
+  # everything api needs is spelled out here again, from the root's point of
+  # view (paths resolve against this file's directory, not backend/).
+  api-nologin:
+    build: ./backend/api
+    image: eesoc-website-api
+    env_file: backend.env
+    environment:
+      DATABASE_ADAPTER_URL: http://database:8080
+      UNION_API_URL: http://union-stub:8080
+      SYNC_ON_STARTUP: "true"
+      # The flag under test: the bypass is off, but the service still boots —
+      # the guard only refuses the *combination* of bypass on and non-dev env.
+      ENVIRONMENT: development
+      DEV_LOGIN_ENABLED: "false"
+      MEDIA_ROOT: /data/media
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_USER: ""
+      SMTP_STARTTLS: "false"
+      PUB_SMTP_HOST: mailpit
+      PUB_SMTP_PORT: "1025"
+      PUB_SMTP_USER: ""
+      PUB_SMTP_PASS: ""
+      # Same reason as on `api` above: env_file may carry the key, `environment`
+      # guarantees it is empty.
+      ICU_API_KEY: ""
+      SITE_ORIGIN: http://localhost:8080
+    volumes:
+      # The api source is mounted so the two instances run the same code; the
+      # media volume is shared with `api` and `frontend`, as in the base file.
+      - ./backend/api:/code
+      - media:/data/media
+    command: ["fastapi", "dev", "main.py", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      # Published directly (nginx does not proxy a second api), which is how
+      # the tests reach it: http://localhost:8081/api.
+      - "8081:8080"
+    expose:
+      - "8080"
+    depends_on:
+      database:
+        condition: service_started
+      # Same reason as `api` above: the startup sync calls the stub.
+      union-stub:
+        condition: service_started

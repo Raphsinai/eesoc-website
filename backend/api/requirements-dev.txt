@@ -1,0 +1,9 @@
+# Test-only pins. Kept beside the api's runtime requirements (backend/api/requirements.txt)
+# because the tests drive the api, so their versions belong with it — but nothing here
+# goes into any built image.
+#
+# httpx is already a runtime dependency (pinned there); pytest is the runner for
+# tests/. Both pinned to stable majors so a new x release cannot silently change
+# what a failing test means.
+pytest==8.4.2
+httpx==0.28.1

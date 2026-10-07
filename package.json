@@ -1,0 +1,11 @@
+{
+  "name": "eesoc-website",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Root of the eesoc-website repo: holds the Playwright install the e2e suites (tests/e2e/) run with. The specs live outside frontend/, and Node resolves packages by walking up from the spec file, so the install has to sit at the repo root for tests/e2e/<slug>/*.spec.js to find @playwright/test. The frontend keeps its own package.json for the build toolchain (vite); nothing here is part of any built image.",
+  "type": "commonjs",
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "playwright": "^1.63.0"
+  }
+}

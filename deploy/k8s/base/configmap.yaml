@@ -72,6 +72,17 @@ data:
   SMTP_USER: "eesocweb@ic.ac.uk"
   SMTP_FROM: "EESoc Webmaster <eesocweb@ic.ac.uk>"
   SMTP_REPLY_TO: "eesoc@imperial.ac.uk"
+  # The publicity officer's mailbox: newsletters, announcements, tickets on
+  # sale — anything not about one person. It is the account permitted to post
+  # to the department's year-group lists (ee_ugs_all, ee1_ugs, ...); the
+  # webmaster is not. It logs in as itself, so PUB_SMTP_PASS must be in
+  # eesoc-secrets (scripts/set-smtp-secret.sh --pub). Without it, bulk mail
+  # authenticates as the webmaster and goes out from eesocweb, which the lists
+  # reject. Exchange rewrites the From to the primary address,
+  # eesoc-publicity-officer@imperial.ac.uk; eesocpub@ic.ac.uk is its alias.
+  PUB_SMTP_USER: "eesocpub@ic.ac.uk"
+  PUB_SMTP_FROM: "EESoc Publicity Officer <eesocpub@ic.ac.uk>"
+  PUB_SMTP_REPLY_TO: "eesoc@imperial.ac.uk"
   # Codes must never be written to logs in production.
   LOG_CODES_WHEN_UNCONFIGURED: "false"
 

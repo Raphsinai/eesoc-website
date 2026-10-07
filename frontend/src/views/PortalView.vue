@@ -28,6 +28,77 @@ const showRequestForm = ref(false)
 const job = ref({ title: '', location: '', apply_url: '', closes_on: '', body: '' })
 const request = ref({ format: '', body: '' })
 const showCvForm = ref(false)
+
+// ------------------------------------------------------------- your card
+// Everything on the public sponsor card except where it sits and whether it
+// shows — those are the committee's (the API enforces it too).
+const card = ref(null)
+const withUsText = ref('')
+
+async function loadProfile() {
+  error.value = ''
+  if (!actingSponsorId.value && canChooseSponsor.value) {
+    card.value = null
+    return
+  }
+  try {
+    const res = await api.get(scoped('/portal/profile'))
+    card.value = { ...res.sponsor }
+    withUsText.value = (res.sponsor.with_us || []).join('\n')
+  } catch (e) {
+    error.value = e.message
+    card.value = null
+  }
+}
+
+async function saveCard() {
+  if (!card.value) return
+  busy.value = true
+  error.value = ''
+  try {
+    const { id, slug, ...fields } = card.value
+    await api.put(scoped('/portal/profile'), {
+      ...fields,
+      with_us: withUsText.value.split('\n').map((l) => l.trim()).filter(Boolean),
+      roles: Math.max(0, Number(fields.roles) || 0),
+    })
+    flash('Saved. Your card on the sponsors page is updated.')
+    await loadProfile()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
+}
+
+async function uploadLogo(event) {
+  const file = event.target.files?.[0]
+  if (!file) return
+  busy.value = true
+  error.value = ''
+  try {
+    const form = new FormData()
+    form.append('file', file)
+    const url = actingSponsorId.value
+      ? `/api/portal/profile/logo?sponsor_id=${actingSponsorId.value}`
+      : '/api/portal/profile/logo'
+    const res = await fetch(url, {
+      method: 'POST',
+      body: form,
+      credentials: 'same-origin',
+      headers: { 'X-CSRF-Token': document.cookie.match(/(?:^|;\s*)csrf=([^;]*)/)?.[1] || '' },
+    })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(body.detail || 'Upload failed')
+    card.value.logo_url = body.url
+    flash(body.message)
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+    event.target.value = ''
+  }
+}
 const cv = ref({ cv_contact_email: '', cv_contact_name: '', cv_contact_note: '' })
 
 function flash(message) {
@@ -233,6 +304,10 @@ async function loadDashboard() {
 
 async function loadPanel(id) {
   if (id === 'dashboard') return loadDashboard()
+  if (id === 'profile') {
+    panel.value = null
+    return loadProfile()
+  }
   error.value = ''
   if (!actingSponsorId.value && canChooseSponsor.value) {
     panel.value = null
@@ -277,7 +352,10 @@ const sponsorStrapline = computed(() => {
 })
 
 const portalHeading = computed(
-  () => panel.value?.heading || (isDash.value ? 'Your term at a glance.' : ''),
+  () =>
+    panel.value?.heading ||
+    (isDash.value ? 'Your term at a glance.' : '') ||
+    (portal.value === 'profile' ? 'How you appear on our sponsors page.' : ''),
 )
 </script>
 
@@ -397,6 +475,59 @@ const portalHeading = computed(
               <span style="font-family:var(--font-mono); font-size:var(--text-xs); color:var(--text-muted)">{{ j.meta }}</span>
             </div>
           </div>
+        </div>
+      </template>
+
+      <!-- Your card: everything on the public card except order and visibility. -->
+      <template v-else-if="portal === 'profile' && card">
+        <div class="portal-cols" style="display:grid; grid-template-columns:minmax(0,1.5fr) minmax(0,1fr); gap:var(--space-10); align-items:start">
+          <form style="display:grid; gap:var(--space-4)" @submit.prevent="saveCard">
+            <Field label="Logo" help="JPEG, PNG, WebP or GIF. Square-ish works best.">
+              <div style="display:flex; gap:var(--space-4); align-items:center; flex-wrap:wrap">
+                <img
+                  v-if="card.logo_url"
+                  :src="card.logo_url"
+                  :alt="card.name"
+                  style="width:96px; height:96px; object-fit:contain; background:#fff; border:1px solid var(--border-hairline); border-radius:var(--radius-sm)"
+                />
+                <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" :disabled="busy" @change="uploadLogo" />
+              </div>
+            </Field>
+            <Field label="Company name"><Input v-model="card.name" required /></Field>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:var(--space-4)">
+              <Field label="Sector" help="e.g. Energy, Semiconductors."><Input v-model="card.sector" /></Field>
+              <Field label="Strand" help="Which part of EEE you hire from."><Input v-model="card.strand" /></Field>
+            </div>
+            <Field label="One line" help="Shown on the card before it is opened."><Input v-model="card.one_line" /></Field>
+            <Field label="Description" help="Shown when the card is opened.">
+              <textarea v-model="card.blurb" rows="6" class="ees-textarea" />
+            </Field>
+            <Field label="What you do with EESoc" help="One per line, e.g. Careers fair, Tech talk.">
+              <textarea v-model="withUsText" rows="3" class="ees-textarea" />
+            </Field>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:var(--space-4)">
+              <Field label="Website"><Input v-model="card.site" placeholder="example.com/careers" /></Field>
+              <Field label="Open roles" help="The count on your card."><Input v-model.number="card.roles" type="number" min="0" /></Field>
+            </div>
+            <Field label="CV contact email" help="Where members send CVs. EESoc does not collect them.">
+              <Input v-model="card.cv_contact_email" type="email" />
+            </Field>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:var(--space-4)">
+              <Field label="CV contact name"><Input v-model="card.cv_contact_name" /></Field>
+              <Field label="CV note"><Input v-model="card.cv_contact_note" /></Field>
+            </div>
+            <div><Button type="submit" :disabled="busy">{{ busy ? 'Saving…' : 'Save your card' }}</Button></div>
+          </form>
+          <Card variant="offset">
+            <div style="display:grid; gap:var(--space-4)">
+              <span class="eyebrow" style="letter-spacing:var(--tracking-label)">What you can't change</span>
+              <p style="margin:0; font:var(--type-small); color:var(--text-body)">
+                Where your card sits on the page, and whether it is shown, are set by
+                the EESoc committee. Everything else here is yours to keep up to date.
+              </p>
+              <Button variant="secondary" block href="/sponsors">See the sponsors page</Button>
+            </div>
+          </Card>
         </div>
       </template>
 

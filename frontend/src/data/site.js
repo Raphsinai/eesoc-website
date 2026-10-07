@@ -149,6 +149,7 @@ export const nav = [
 
 export const portalNav = [
   { id: 'dashboard', label: 'Dashboard' },
+  { id: 'profile', label: 'Your card' },
   { id: 'jobs', label: 'Job listings' },
   { id: 'calendar', label: 'Event calendar' },
   { id: 'request', label: 'Request an event' },

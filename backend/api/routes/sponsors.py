@@ -559,6 +559,32 @@ async def get_profile(
     }
 
 
+@router.post("/portal/profile/logo", dependencies=[Depends(verify_csrf), require_feature("sponsor_portal")])
+async def upload_logo(
+    file: UploadFile = File(...),
+    sponsor_id: int | None = None,
+    session: AuthSession = Depends(require_sponsor),
+) -> dict:
+    """Replace the logo on this sponsor's card.
+
+    Images only: the shared allow-list also takes PDFs, which an <img> cannot
+    show. SVG is refused by that allow-list already (it can carry script). Saved
+    straight onto the card, so the upload is the whole action.
+    """
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(400, "The logo must be a JPEG, PNG, WebP or GIF image.")
+    sid = await _scoped_sponsor(session, sponsor_id)
+    current = await database.get(f"/sponsors/{sid}")
+    if current is None:
+        raise HTTPException(404, "No such sponsor")
+
+    meta = await storage.save(file, f"sponsor-{sid}")
+    row = await database.post("/uploads", {**meta, "uploaded_by": session.user.id})
+    url = storage.public_url(row["stored_name"])
+    await database.put(f"/sponsors/{sid}", {**current, "logo_url": url})
+    return {"ok": True, "url": url, "message": "Logo updated. It is live on your card."}
+
+
 @router.put("/portal/profile", dependencies=[Depends(verify_csrf), require_feature("sponsor_portal")])
 async def update_profile(
     body: dict = Body(...),

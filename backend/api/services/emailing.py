@@ -132,7 +132,11 @@ def default_for(topic: str) -> bool:
 # to post. If a send to a list bounces, that is the first thing to check.
 
 DEPARTMENT_LISTS: list[dict] = [
-    {"key": "dept_ee1",  "label": "EEE/EIE Year 1", "email": "ee1ugs@ic.ac.uk"},
+    # Every EEE and EIE undergraduate, all years. Ticking this alongside a
+    # year-group list sends that year the message twice — the department
+    # expands both aliases, and we only see the two addresses.
+    {"key": "dept_ugs_all", "label": "All undergraduates", "email": "ee_ugs_all@ic.ac.uk"},
+    {"key": "dept_ee1", "label": "EEE/EIE Year 1", "email": "ee1ugs@ic.ac.uk"},
     {"key": "dept_ee2",  "label": "EEE Year 2",     "email": "ee2ugs@ic.ac.uk"},
     {"key": "dept_eie2", "label": "EIE Year 2",     "email": "eie2ugs@ic.ac.uk"},
     {"key": "dept_ee3",  "label": "EEE Year 3",     "email": "ee3ugs@ic.ac.uk"},

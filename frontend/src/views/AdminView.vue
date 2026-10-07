@@ -495,6 +495,34 @@ async function loadEmail() {
   audiences.value = a.audiences
   mailStatus.value = a.mail
   campaigns.value = c
+  loadTestList().catch(() => {})
+}
+
+// The "Test list" audience: a few committee addresses to try a send on first.
+const testRecipients = ref([])
+const newTestEmail = ref('')
+
+async function loadTestList() {
+  testRecipients.value = (await api.get('/admin/email/test-recipients')).recipients
+}
+
+async function changeTestList(action) {
+  busy.value = true
+  error.value = ''
+  try {
+    const res =
+      action === 'add'
+        ? await api.post('/admin/email/test-recipients', { email: newTestEmail.value.trim() })
+        : await api.del('/admin/email/test-recipients', { email: action })
+    testRecipients.value = res.recipients
+    if (action === 'add') newTestEmail.value = ''
+    // The audience's count and description come from the server.
+    audiences.value = (await api.get('/admin/email/audiences')).audiences
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
 }
 
 /** Audiences arrive flat with a `group` on each; the picker shows them grouped
@@ -1868,6 +1896,20 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               </label>
             </div>
 
+            <!-- Edit the Test list in place: it is what you tick to try a send. -->
+            <div class="test-list">
+              <span style="font:var(--type-label); color:var(--text-muted)">Test list</span>
+              <div v-for="addr in testRecipients" :key="addr" class="test-list__row">
+                <span style="font-family:var(--font-mono); font-size:var(--text-xs)">{{ addr }}</span>
+                <Button size="sm" variant="ghost" :disabled="busy" @click="changeTestList(addr)">Remove</Button>
+              </div>
+              <span v-if="!testRecipients.length" style="font:var(--type-small); color:var(--text-faint)">Nobody yet.</span>
+              <form class="test-list__add" @submit.prevent="changeTestList('add')">
+                <Input v-model="newTestEmail" type="email" placeholder="name@ic.ac.uk" aria-label="Add to test list" />
+                <Button type="submit" size="sm" variant="secondary" :disabled="busy || !newTestEmail.includes('@')">Add</Button>
+              </form>
+            </div>
+
             <div style="display:flex; gap:var(--space-3); flex-wrap:wrap; align-items:center">
               <Button variant="secondary" :disabled="busy || !compose.audiences.length" @click="preview">
                 Preview
@@ -2189,6 +2231,28 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
 </template>
 
 <style scoped>
+.test-list {
+  display: grid;
+  gap: var(--space-2);
+  margin-bottom: var(--space-5);
+  padding: var(--space-4);
+  border: var(--border-width-hairline) dashed var(--border-default);
+  border-radius: var(--radius-sm);
+}
+
+.test-list__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.test-list__add {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+}
+
 /* One audience row: tickbox, name + what it is, and the live count. The count
    is right-aligned and tabular so a column of them can be scanned — the
    difference between 42 and 420 recipients is the whole decision. */

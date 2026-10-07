@@ -1253,6 +1253,32 @@ async def announce_event(
     }
 
 
+@router.get("/email/test-recipients")
+async def email_test_list(_: AuthSession = Depends(require_site)) -> dict:
+    return {"recipients": await emailing.test_recipients()}
+
+
+@router.post("/email/test-recipients", dependencies=[Depends(verify_csrf)])
+async def email_test_add(
+    email: str = Body(embed=True), session: AuthSession = Depends(require_site)
+) -> dict:
+    address = normalise_email(email)
+    if not address or "@" not in address:
+        raise HTTPException(400, "That doesn't look like an email address.")
+    await database.post(
+        "/email/test-recipients", {"email": address, "added_by": session.user.id}
+    )
+    return {"recipients": await emailing.test_recipients()}
+
+
+@router.delete("/email/test-recipients", dependencies=[Depends(verify_csrf)])
+async def email_test_remove(
+    email: str, _: AuthSession = Depends(require_site)
+) -> dict:
+    await database.delete("/email/test-recipients", {"email": email})
+    return {"recipients": await emailing.test_recipients()}
+
+
 @router.get("/email/campaigns")
 async def email_campaigns(
     limit: int = 30, _: AuthSession = Depends(require_site)

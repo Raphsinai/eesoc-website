@@ -45,6 +45,11 @@ BEGIN
     IF to_regclass('public.event_sale_alerts') IS NOT NULL THEN
         TRUNCATE TABLE public.event_sale_alerts;
     END IF;
+    -- Real committee addresses (migration 034). Staging refills its own test
+    -- list from MAIL_ALLOWLIST when it finds it empty.
+    IF to_regclass('public.email_test_recipients') IS NOT NULL THEN
+        TRUNCATE TABLE public.email_test_recipients;
+    END IF;
 END $$;
 
 -- ---------------------------------------------------------------------------

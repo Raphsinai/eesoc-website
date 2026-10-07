@@ -159,6 +159,15 @@ async def audiences() -> list[dict]:
     """
     groups: list[dict] = []
 
+    test = await test_recipients()
+    groups.append({
+        "key": "test",
+        "label": "Test list",
+        "group": "Testing",
+        "description": ", ".join(test) if test else "Empty — add addresses below.",
+        "count": len(test),
+    })
+
     people = [
         {"key": "members", "label": "EESoc members", "group": "People",
          "description": f"Everyone ICU lists as a member for {academic_year()}."},
@@ -226,6 +235,14 @@ async def _resolve_one(key: str) -> list[dict]:
         return [{"email": entry["email"], "source": key, "list": True,
                  "first_name": None, "last_name": None, "user_id": None}]
 
+    if key == "test":
+        # Not opt-out filtered: committee members who asked to see the drafts.
+        return [
+            {"email": e, "source": "test", "first_name": None, "last_name": None,
+             "user_id": None}
+            for e in await test_recipients()
+        ]
+
     if key == "members":
         return await database.get(
             "/email/audience",
@@ -250,6 +267,23 @@ async def _resolve_one(key: str) -> list[dict]:
 
     log.warning("Unknown audience key %r — ignored", key)
     return []
+
+
+async def test_recipients() -> list[str]:
+    """The test list's addresses.
+
+    Staging's copy of the database has every real address scrubbed out, so its
+    list arrives empty on every refresh. There it is refilled from the full
+    addresses in MAIL_ALLOWLIST — the people staging may mail anyway.
+    """
+    rows = await database.get("/email/test-recipients") or []
+    if not rows and settings.environment == "staging":
+        for address in settings.mail_allowlist.split(","):
+            address = address.strip().lower()
+            if "@" in address and not address.startswith("@"):
+                await database.post("/email/test-recipients", {"email": address})
+        rows = await database.get("/email/test-recipients") or []
+    return [r["email"] for r in rows]
 
 
 # ------------------------------------------------------- unsubscribe links

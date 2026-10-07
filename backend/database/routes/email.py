@@ -485,3 +485,41 @@ async def event_categories() -> list[str]:
             """
         )
     return [r["category"] for r in rows]
+
+
+# ------------------------------------------------------------- test list
+
+
+@router.get("/test-recipients")
+async def list_test_recipients() -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT email, added_by, created_at FROM public.email_test_recipients "
+            "ORDER BY created_at, email;"
+        )
+    return [dict(r) for r in rows]
+
+
+@router.post("/test-recipients", status_code=201)
+async def add_test_recipient(body: dict) -> dict:
+    email = (body.get("email") or "").strip().lower()
+    if "@" not in email:
+        raise HTTPException(400, "That doesn't look like an email address.")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO public.email_test_recipients (email, added_by) VALUES ($1, $2) "
+            "ON CONFLICT (email) DO NOTHING;",
+            email, body.get("added_by"),
+        )
+    return {"email": email}
+
+
+@router.delete("/test-recipients", status_code=204)
+async def remove_test_recipient(email: str) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM public.email_test_recipients WHERE email = lower($1);", email
+        )

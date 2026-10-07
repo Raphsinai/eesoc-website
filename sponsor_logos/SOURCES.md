@@ -17,6 +17,8 @@ transparent-background exports rendered from those SVGs for tools that won't tak
 | `jane-street.svg` | Jane Street | janestreet.com — `/assets/logo_horizontal-….svg` | Official site asset, horizontal lockup, black. The supplied `jane_street_logo_horizontal_*_registered.ai/.png` are the brand-pack originals (with ®) and are kept alongside — the `.ai` files are PDF-compatible |
 | `imc.svg` | IMC | imc.com (inline SVG in the page header, extracted) | Dot-grid mark + lowercase `imc` wordmark. Shipped as `fill="currentColor"`; pinned to black. `imc-white.svg` is the reversed version |
 | `qrt.svg` | Qube Research & Technologies (QRT) | qube-rt.com — `/img/qrt.svg`, via the Wayback Machine | Blue cube mark + wordmark. Site version is white-on-dark; recoloured to black. `qrt-white.svg` is the original white for dark backgrounds |
+| `arctic-lake.svg` | Arctic Lake Technology | arcticlake.com — `/assets/AL_Logo-removebg-preview-2_….png`, **traced to vector** | The site only ships a 716×348 PNG (no SVG anywhere, favicon aside). Traced with potrace from a 6× upscale, two colour layers: navy `#465687` (ARCTIC + chevron), light blue `#7BA7D8` (LAKE). Faithful at poster size, but not an official vector — ask them for their brand pack if it matters. `arctic-lake-white.svg` is all-white for dark backgrounds; the untouched source is `png/arctic-lake-original-716px.png` |
+| `ducky-drones.svg` | Ducky Drones | duckydrones.com — duck mark from `framerusercontent.com/images/wBMlYc5xZ9dw4Y11VAJWEvCc99U.svg`; wordmark **built** | The site has no lockup file: its header is the duck plus the live text "ducky drones" in **Afacad Bold** (Google Fonts, OFL). This lockup sets that text in Afacad Bold at its −0.03em tracking and converts it to outlines. Default is black text, and the duck has a black outline (as in their favicon) so it holds up on white. `ducky-drones-yellow.svg` (all `#FFD600`, how their site looks) and `ducky-drones-white.svg` are for dark backgrounds. `ducky-drones-mark.svg` / `-mark-outlined.svg` are the duck alone |
 
 ## Fixes applied
 
@@ -34,6 +36,8 @@ transparent-background exports rendered from those SVGs for tools that won't tak
   are now inline `fill=` attributes, so the file stands on its own.
 - `png/*.png` for `imc`, `qrt` and `jane-street` were rendered from the SVGs at
   1600px wide with PyMuPDF, matching the rest of the folder.
+- Arctic Lake and Ducky Drones added 2026-10-07; their PNGs were rendered the same way.
+  The duck's eye is a hole, so it shows whatever background the logo sits on.
 
 ## Before publishing
 

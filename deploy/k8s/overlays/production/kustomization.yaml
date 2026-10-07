@@ -24,19 +24,19 @@ resources:
 images:
 - name: ghcr.io/OWNER/eesoc-api
   newName: ghcr.io/raphsinai/eesoc-api
-  newTag: b8d8bc3adaee1dd3b73d30917887c0d16c8a5e90
+  newTag: 1a0e8ae05a54e68c144fd646e0ae07ef5cbd78f5
 - name: ghcr.io/OWNER/eesoc-database
   newName: ghcr.io/raphsinai/eesoc-database
-  newTag: b8d8bc3adaee1dd3b73d30917887c0d16c8a5e90
+  newTag: 1a0e8ae05a54e68c144fd646e0ae07ef5cbd78f5
 - name: ghcr.io/OWNER/eesoc-frontend
   newName: ghcr.io/raphsinai/eesoc-frontend
-  newTag: b8d8bc3adaee1dd3b73d30917887c0d16c8a5e90
+  newTag: 1a0e8ae05a54e68c144fd646e0ae07ef5cbd78f5
 - name: ghcr.io/OWNER/eesoc-garage-init
   newName: ghcr.io/raphsinai/eesoc-garage-init
-  newTag: b8d8bc3adaee1dd3b73d30917887c0d16c8a5e90
+  newTag: 1a0e8ae05a54e68c144fd646e0ae07ef5cbd78f5
 - name: ghcr.io/OWNER/eesoc-union
   newName: ghcr.io/raphsinai/eesoc-union
-  newTag: b8d8bc3adaee1dd3b73d30917887c0d16c8a5e90
+  newTag: 1a0e8ae05a54e68c144fd646e0ae07ef5cbd78f5
 
 # Single-node cluster. A second replica of anything lands on the same node as
 # the first, so it buys no availability — it only consumes one of the kubelet's

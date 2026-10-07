@@ -58,3 +58,24 @@ specs; CI discovers the whole `tests/` tree, so only 01 and 02 ever edit the wor
 
 This round is PLAN ONLY: no code, no delegation. Awaiting approval of the section split
 above; the next round starts at section 01.
+
+## Build progress
+
+| # | Section | Status |
+|---|---|---|
+| 01 | Baseline tests | **merged** (branch `worktree-agent-a6a87117693b0238c`, PASSED — static validation; see blockers) |
+| 02 | Zero-downtime rollout | in progress |
+| 03 | SPA asset continuity | in progress |
+| 05 | Events: calendar, links | in progress |
+| 04, 06–09 | rest | awaiting dependencies |
+
+## Blockers (human steps)
+
+1. **`git push` is denied in the build environment.** All merges land on local `main`;
+   nothing has reached CI or staging. Human must run `git push origin main` and watch
+   the **first CI run of the new `pytest` and `e2e` jobs** — the suites were validated
+   statically (11 pytest + 11 Playwright specs collect, all code compiles, both compose
+   YAMLs parse) but never executed: the Docker daemon socket is also blocked here. If
+   the first run is red, fix before promoting anything.
+2. Real staging rollout verification (section 02, `scripts/watch-rollout.sh`) after CI
+   is green — see spec 02.

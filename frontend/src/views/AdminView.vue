@@ -199,7 +199,7 @@ async function reconcile() {
 // -------------------------------------------------------------- events -----
 const blank = () => ({
   slug: '', title: '', category: 'Social', description: '', image_url: '', venue: '',
-  starts_at: '', ends_at: '', capacity: null, hold_hours: 48, published: false,
+  starts_at: '', ends_at: '', doors_close_at: '', capacity: null, hold_hours: 48, published: false,
   // Not announced is the default for a new event: the site shows On sale
   // soon and refuses bookings until someone chooses a date.
   sales_scheduled: false,
@@ -253,6 +253,7 @@ function editEvent(e) {
     ...blank(), ...e,
     starts_at: toLocalInput(e.starts_at),
     ends_at: toLocalInput(e.ends_at),
+    doors_close_at: toLocalInput(e.doors_close_at),
     sales_scheduled: Boolean(e.sales_open_at),
     sales_open_at: toLocalInput(e.sales_open_at),
     signup_url: e.signup_url ?? '',
@@ -291,6 +292,11 @@ async function saveEvent() {
       // datetime-local is the browser's own clock; send the instant in UTC.
       starts_at: new Date(draft.starts_at).toISOString(),
       ends_at: draft.ends_at ? new Date(draft.ends_at).toISOString() : null,
+      // Explicit null when blank, so clearing the field clears the event's
+      // doors-close time rather than leaving the old one in place.
+      doors_close_at: draft.doors_close_at
+        ? new Date(draft.doors_close_at).toISOString()
+        : null,
       // The radio decides, not whether the field happens to be empty.
       sales_open_at:
         draft.sales_scheduled && draft.sales_open_at
@@ -1513,6 +1519,12 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 <Field label="Starts"><Input v-model="draft.starts_at" type="datetime-local" /></Field>
                 <Field label="Ends"><Input v-model="draft.ends_at" type="datetime-local" /></Field>
               </div>
+              <Field
+                label="Doors close"
+                help="Optional. Shown on the event page and in every email — no entry after this time."
+              >
+                <Input v-model="draft.doors_close_at" type="datetime-local" />
+              </Field>
               <div style="display:grid; grid-template-columns:1fr 1fr; gap:var(--space-3)">
                 <Field label="Total capacity" help="Blank = per-type only."><Input v-model.number="draft.capacity" type="number" min="1" /></Field>
                 <Field label="Hold hours" help="Min 24."><Input v-model.number="draft.hold_hours" type="number" min="24" /></Field>

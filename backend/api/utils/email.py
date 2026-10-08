@@ -60,6 +60,10 @@ BORDER = "#DDE1E8"
 SUNKEN = "#EEF0F4"
 BLUE = "#1049B1"
 GOLD = "#E7B570"
+# The site's warning pair (amber-500/amber-100 in colors.css). The doors-close
+# row is the one line in an email that is a hard limit at the door.
+WARNING = "#D89A46"
+WARNING_BG = "#FAEEDD"
 
 MONO = "SFMono-Regular, ui-monospace, Menlo, Consolas, 'Liberation Mono', monospace"
 SANS = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
@@ -121,26 +125,57 @@ def _button(label: str, url: str) -> str:
     )
 
 
-def _detail_rows(pairs: list[tuple[str, str]]) -> str:
+def _detail_rows(pairs: list[tuple[str, str] | str]) -> str:
     """Label/value lines — ticket, time, deadline.
 
     A table rather than a flex row: Outlook renders this through Word, which
     has no flexbox, and the labels would stack on top of their values.
+
+    An item that is already a string is a rendered `<tr>` (`_doors_close_row`),
+    appended as-is: the doors-close line is a warning, not a detail, and is
+    styled as one.
     """
-    rows = "".join(
-        f'<tr>'
-        f'<td style="padding:6px 16px 6px 0;font-family:{MONO};font-size:12px;'
-        f'letter-spacing:.1em;text-transform:uppercase;color:{MUTED};'
-        f'white-space:nowrap;vertical-align:top;">{label}</td>'
-        f'<td style="padding:6px 0;font-family:{SANS};font-size:15px;'
-        f'color:{BODY_TEXT};">{value}</td>'
-        f"</tr>"
-        for label, value in pairs
-    )
+    rows = ""
+    for item in pairs:
+        if isinstance(item, str):
+            rows += item
+            continue
+        label, value = item
+        rows += (
+            f'<tr>'
+            f'<td style="padding:6px 16px 6px 0;font-family:{MONO};font-size:12px;'
+            f'letter-spacing:.1em;text-transform:uppercase;color:{MUTED};'
+            f'white-space:nowrap;vertical-align:top;">{label}</td>'
+            f'<td style="padding:6px 0;font-family:{SANS};font-size:15px;'
+            f'color:{BODY_TEXT};">{value}</td>'
+            f"</tr>"
+        )
     return (
         f'<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
         f'style="margin:4px 0 18px;width:100%;border-top:1px solid {BORDER};'
         f'border-bottom:1px solid {BORDER};">{rows}</table>'
+    )
+
+
+def _doors_close_row(doors_close: str | None) -> str:
+    """The doors-close row of a details block, or "" when there is none.
+
+    One helper because seven emails show it and they must all show it the same
+    way: bold on a warning tint, so the one time limit that is not negotiable
+    at the door does not read as just another detail.
+    """
+    if not doors_close:
+        return ""
+    return (
+        f'<tr>'
+        f'<td style="padding:6px 16px 6px 0;font-family:{MONO};font-size:12px;'
+        f'letter-spacing:.1em;text-transform:uppercase;color:{INK};'
+        f'white-space:nowrap;vertical-align:top;background:{WARNING_BG};">'
+        f'Doors close</td>'
+        f'<td style="padding:6px 0;font-family:{SANS};font-size:15px;'
+        f'font-weight:700;color:{INK};background:{WARNING_BG};">'
+        f'{escape(doors_close)}</td>'
+        f"</tr>"
     )
 
 
@@ -671,6 +706,7 @@ async def send_waitlist_offer(
     expires: str,
     url: str,
     purchase_url: str | None = None,
+    doors_close: str | None = None,
 ) -> bool:
     """A place has come free and is being held for them.
 
@@ -681,7 +717,9 @@ async def send_waitlist_offer(
     body = (
         f"Good news — a place has opened up for {event_title}.\n\n"
         f"Ticket:      {ticket_type}\n"
-        f"Held until:  {expires}\n\n"
+        f"Held until:  {expires}\n"
+        + (f"Doors close: {doors_close}\n" if doors_close else "")
+        + "\n"
         "Buy it on the Union shop and we'll confirm your booking automatically "
         "once the purchase reaches us.\n\n"
         + (f"Buy your ticket: {purchase_url}\n" if purchase_url else "")
@@ -689,11 +727,14 @@ async def send_waitlist_offer(
         "If you no longer want it, ignore this email and the place goes to the "
         "next person on the list.\n"
     )
+    rows = [("Ticket", ticket), ("Held until", escape(expires))]
+    if doors_close:
+        rows.append(_doors_close_row(doors_close))
     html = _shell(
         f"A place has come free for {title}",
         f"Held until {escape(expires)} — buy on the Union shop to confirm.",
         _p(f"A place has opened up for <strong>{title}</strong>.")
-        + _detail_rows([("Ticket", ticket), ("Held until", escape(expires))])
+        + _detail_rows(rows)
         + _p(
             "Buy it on the Union shop and we'll confirm your booking "
             "automatically once the purchase reaches us."
@@ -772,6 +813,7 @@ async def send_purchase_reminder(
     quantity: int,
     url: str,
     purchase_url: str | None = None,
+    doors_close: str | None = None,
 ) -> bool:
     """The committee's manual nudge, from the unpaid-bookings screen."""
     title = escape(event_title)
@@ -780,9 +822,12 @@ async def send_purchase_reminder(
         "a purchase against your name on the Union shop yet.\n\n"
         "Buy it there and we'll confirm your place automatically. If you already "
         "have, reply with your order number and we'll match it up.\n\n"
+        + (f"Doors close: {doors_close}\n\n" if doors_close else "")
         + (f"Buy your ticket: {purchase_url}\n" if purchase_url else "")
         + f"Your booking:    {url}\n"
     )
+    # No details block in this one otherwise: the hold is the subject, and the
+    # doors-close time is the only thing worth a row of its own.
     html = _shell(
         f"Your {title} ticket is still unpaid",
         "We can't see a purchase against your name yet.",
@@ -790,6 +835,11 @@ async def send_purchase_reminder(
             f"We're holding <strong>{quantity} ticket(s)</strong> for "
             f"<strong>{title}</strong>, but we can't see a purchase "
             "against your name on the Union shop yet."
+        )
+        + (
+            _detail_rows([_doors_close_row(doors_close)])
+            if doors_close
+            else ""
         )
         + _button("Buy your ticket", purchase_url or url)
         + _note(
@@ -811,6 +861,7 @@ async def send_booking_confirmed(
     url: str | None = None,
     ticket_url: str | None = None,
     qr_url: str | None = None,
+    doors_close: str | None = None,
 ) -> bool:
     """Their booking has gone from held to confirmed — or the committee added it.
 
@@ -822,6 +873,9 @@ async def send_booking_confirmed(
     ticket = f"{ticket_type} × {quantity}" if quantity > 1 else ticket_type
     rows = [("Ticket", escape(ticket)), ("When", escape(starts))]
     lines = [f"Ticket:  {ticket}", f"When:    {starts}"]
+    if doors_close:
+        rows.append(_doors_close_row(doors_close))
+        lines.append(f"Doors close: {doors_close}")
     if venue:
         rows.append(("Where", escape(venue)))
         lines.append(f"Where:   {venue}")
@@ -898,6 +952,7 @@ async def send_booking_held(
     booking_url: str,
     purchase_url: str | None = None,
     needs_order_number: bool = False,
+    doors_close: str | None = None,
 ) -> bool:
     """Sent the moment a hold is taken. The one email this flow was missing.
 
@@ -931,6 +986,10 @@ async def send_booking_held(
         f"Ticket:      {ticket_type} ({price})",
         f"How many:    {quantity}",
         f"Event:       {starts}",
+    ]
+    if doors_close:
+        lines.append(f"Doors close: {doors_close}")
+    lines += [
         f"Pay by:      {expires}",
         "",
         what_next,
@@ -955,8 +1014,10 @@ async def send_booking_held(
         ("Ticket", f"{ticket} ({escape(price)})"),
         ("How many", str(quantity)),
         ("Event", escape(starts)),
-        ("Pay by", escape(expires)),
     ]
+    if doors_close:
+        rows.append(_doors_close_row(doors_close))
+    rows.append(("Pay by", escape(expires)))
     html = _shell(
         f"We're holding your {title} ticket",
         f"Pay by {escape(expires)} to keep it.",
@@ -988,6 +1049,7 @@ async def send_last_chance(
     expires: str,
     booking_url: str,
     purchase_url: str | None = None,
+    doors_close: str | None = None,
 ) -> bool:
     """The one automated chase, sent shortly before a hold lapses.
 
@@ -1000,7 +1062,9 @@ async def send_last_chance(
         f"Your {event_title} ticket is still unpaid, and we can only hold it "
         f"until {expires}.\n\n"
         f"Ticket:   {quantity} × {ticket_type}\n"
-        f"Hold ends: {expires}\n\n"
+        f"Hold ends: {expires}\n"
+        + (f"Doors close: {doors_close}\n" if doors_close else "")
+        + "\n"
         "Buy it on the Union shop and we'll confirm your place automatically.\n\n"
         + (f"Buy your ticket: {purchase_url}\n\n" if purchase_url else "")
         + f"Your booking:    {booking_url}\n\n"
@@ -1008,6 +1072,9 @@ async def send_last_chance(
         "until the next morning to reach us. If you no longer want the ticket, "
         "cancel on the booking page so somebody else can have it.\n"
     )
+    rows = [("Ticket", f"{quantity} × {ticket}"), ("Hold ends", escape(expires))]
+    if doors_close:
+        rows.append(_doors_close_row(doors_close))
     html = _shell(
         f"Last chance for your {title} ticket",
         f"The hold ends {escape(expires)}.",
@@ -1015,9 +1082,7 @@ async def send_last_chance(
             f"Your <strong>{title}</strong> ticket is still unpaid, and we can "
             f"only hold it until <strong>{escape(expires)}</strong>."
         )
-        + _detail_rows(
-            [("Ticket", f"{quantity} × {ticket}"), ("Hold ends", escape(expires))]
-        )
+        + _detail_rows(rows)
         + (
             _button("Buy your ticket", purchase_url)
             if purchase_url
@@ -1048,6 +1113,7 @@ async def send_tickets_on_sale(
     unsubscribe_url: str,
     tickets: list[tuple[str, str]] | None = None,
     purchase_url: str | None = None,
+    doors_close: str | None = None,
 ) -> list[str]:
     """Tickets have just opened for an event somebody asked to hear about.
 
@@ -1060,6 +1126,7 @@ async def send_tickets_on_sale(
         f"Tickets for {event_title} are on sale now.\n\n"
         f"When:   {when}\n"
         + (f"Where:  {venue}\n" if venue else "")
+        + (f"Doors close: {doors_close}\n" if doors_close else "")
         + (f"\nTickets:\n{ticket_lines}\n" if ticket_lines else "")
         + f"\nReserve your place: {event_url}\n"
         + (f"Buy on the Union shop: {purchase_url}\n" if purchase_url else "")
@@ -1070,6 +1137,8 @@ async def send_tickets_on_sale(
     rows = [("When", escape(when))]
     if venue:
         rows.append(("Where", escape(venue)))
+    if doors_close:
+        rows.append(_doors_close_row(doors_close))
     for name, price in tickets or []:
         rows.append((escape(name), escape(price)))
 
@@ -1161,6 +1230,7 @@ async def send_event_announcement(
     body_html: str = "",
     tickets: list[tuple[str, str]] | None = None,
     heading: str | None = None,
+    doors_close: str | None = None,
 ) -> list[str]:
     """A committee-written message *about one event* — an announcement, a
     reminder, a change of room.
@@ -1174,6 +1244,8 @@ async def send_event_announcement(
     rows = [("When", escape(when))]
     if venue:
         rows.append(("Where", escape(venue)))
+    if doors_close:
+        rows.append(_doors_close_row(doors_close))
     for name, price in tickets or []:
         rows.append((escape(name), escape(price)))
 
@@ -1185,6 +1257,8 @@ async def send_event_announcement(
     ]
     if venue:
         text_parts.append(f"Where:  {venue}")
+    if doors_close:
+        text_parts.append(f"Doors close: {doors_close}")
     if tickets:
         text_parts += ["", "Tickets:"] + [f"  {n} — {p}" for n, p in tickets]
     text_parts += [

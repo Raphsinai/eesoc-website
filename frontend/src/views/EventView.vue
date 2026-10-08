@@ -311,6 +311,12 @@ const aimedAt = computed(() => {
   return years.map((y) => YEAR_NAMES[y] || `${y}th`).join(', ')
 })
 
+// Doors close, shown beside the date/time as a callout: people plan their
+// travel around it, so it is the loudest line under the title. The API sends
+// it ready-formatted ("18:15", or "Thu 9 Oct, 18:15" when it is not the same
+// day as the start); nothing at all when the event has no doors-close time.
+const doorsClose = computed(() => event.value?.doorsClose || '')
+
 // Shown only when salesState is "scheduled", i.e. salesOpenAt is set and in
 // the future. Rendered in the viewer's own timezone, which is what they will
 // be going by.
@@ -359,6 +365,11 @@ const salesOpensText = computed(() => {
             <h1 style="margin:0; font:var(--type-h1)">{{ event.title }}</h1>
             <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
               {{ event.date }} · {{ event.time }}<span v-if="event.venue"> · {{ event.venue }}</span>
+            </p>
+            <!-- Beside the date/time, in the same header block, so it is on
+                 screen before anything is scrolled past. -->
+            <p v-if="doorsClose" class="event-doors-close">
+              <strong>Doors close {{ doorsClose }}</strong> — no entry after
             </p>
             <!-- Sponsors the committee linked to this event. Published sponsors
                  only — the API drops anyone still in the pipeline. -->
@@ -711,6 +722,19 @@ const salesOpensText = computed(() => {
 .event-media--empty {
   position: relative;
   aspect-ratio: 21 / 9;
+}
+
+/* A callout, not another muted line: this is the one detail that decides
+   whether somebody who set off on time makes it in at all, so it gets the
+   warning tint the maintenance notice uses. */
+.event-doors-close {
+  margin: 0;
+  padding: var(--space-3);
+  font: var(--type-small);
+  color: var(--text-strong);
+  background: var(--status-warning-bg);
+  border: var(--border-width-hairline) solid var(--status-warning);
+  border-radius: var(--radius-md);
 }
 
 .sales-notice {

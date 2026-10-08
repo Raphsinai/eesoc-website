@@ -18,8 +18,18 @@ what goes into them is exactly what is already public on the event page.
 
 from datetime import datetime, timezone
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo
 
 PRODID = "-//EESoc//Events//EN"
+
+# Same London clock as utils/present.py, duplicated here rather than imported:
+# this module is stdlib-only by contract (see the docstring), and the ics
+# tests load it by path with no package on sys.path to import.
+LONDON = ZoneInfo("Europe/London")
+DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+          "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 # RFC 5545 lines are octet-counted, and a continuation line's leading space
 # counts, so the first line carries 75 octets and every following one 74.
@@ -82,6 +92,31 @@ def utc_stamp(value) -> str:
     return when.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+# Events are in London (see present.py): the doors-close sentence below is
+# prose a person reads, so it gets the London wall clock — printing the
+# stored UTC value would put the cutoff an hour early for half the year.
+LONDON = ZoneInfo("Europe/London")
+
+
+def _doors_close_line(doors_close_at) -> str | None:
+    """The "Doors close HH:MM — no entry after." sentence, or None.
+
+    present.py formats this for the web page and the emails, but this module
+    stays import-free on purpose (see the docstring: the tests load it by
+    path), so the handful of lines are repeated here rather than imported.
+    """
+    if not doors_close_at:
+        return None
+    when = (
+        doors_close_at
+        if isinstance(doors_close_at, datetime)
+        else datetime.fromisoformat(str(doors_close_at))
+    )
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return f"Doors close {when.astimezone(LONDON).strftime('%H:%M')} — no entry after."
+
+
 def _host(site_origin: str) -> str:
     """The host part of the site origin, for building stable UIDs.
 
@@ -109,8 +144,13 @@ def _vevent_lines(event: dict, site_origin: str) -> list[str]:
     if event.get("venue"):
         lines.append(f"LOCATION:{escape(event['venue'])}")
     lines.append(f"URL:{site_origin}/events/{event['slug']}")
-    if event.get("description"):
-        lines.append(f"DESCRIPTION:{escape(event['description'])}")
+    # Appended to the event copy, not replacing it: the cutoff is extra
+    # information, and DESCRIPTION is the only place a calendar file can say it.
+    description = event.get("description") or ""
+    if doors := _doors_close_line(event.get("doors_close_at")):
+        description = f"{description}\n{doors}" if description else doors
+    if description:
+        lines.append(f"DESCRIPTION:{escape(description)}")
     lines.append("END:VEVENT")
     return lines
 

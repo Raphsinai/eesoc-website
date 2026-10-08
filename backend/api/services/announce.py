@@ -25,7 +25,13 @@ from clients import database
 from config import settings
 from services import confirmations, emailing, purchase
 from utils import email as mailer
-from utils.present import format_date, format_price, format_time_range, london
+from utils.present import (
+    format_date,
+    format_doors_close,
+    format_price,
+    format_time_range,
+    london,
+)
 
 log = logging.getLogger("api.announce")
 
@@ -141,6 +147,8 @@ async def build_sale_announcement(event: dict, campaign_row: dict | None = None)
     tickets = _ticket_lines(event)
     links = await purchase.links_for_event(event)
     when = _when(event)
+    # Formatted once here, so both audiences' messages show the same cutoff.
+    doors = format_doors_close(event.get("starts_at"), event.get("doors_close_at"))
 
     # Alerts are marked notified by address, so somebody who both asked about
     # this event and subscribed generally is not left with a live alert that
@@ -168,6 +176,7 @@ async def build_sale_announcement(event: dict, campaign_row: dict | None = None)
                 unsubscribe,
                 tickets=tickets,
                 purchase_url=links.get(None),
+                doors_close=doors,
             )
         for recipient in batch:
             alert = by_address.get(recipient["email"])
@@ -182,6 +191,7 @@ async def build_sale_announcement(event: dict, campaign_row: dict | None = None)
                 emailing.alert_cancel_url(alert["token"]),
                 tickets=tickets,
                 purchase_url=links.get(None),
+                doors_close=doors,
             )
             # Marked either way: an address that cannot be delivered to must not
             # be retried on every pass for the rest of the year.
@@ -212,6 +222,9 @@ async def build_event_announcement(event: dict, campaign_row: dict):
     )
     tickets = _ticket_lines(event)
     url = f"{settings.site_origin}/events/{event['slug']}"
+    # Same cutoff the fresh send in routes/admin.py shows — a resumed
+    # announcement must not silently drop it.
+    doors = format_doors_close(event.get("starts_at"), event.get("doors_close_at"))
 
     async def build(batch: list[dict], unsubscribe: str) -> list[str]:
         return await mailer.send_event_announcement(
@@ -226,6 +239,7 @@ async def build_event_announcement(event: dict, campaign_row: dict):
             body_html=html,
             tickets=tickets,
             heading=heading,
+            doors_close=doors,
         )
 
     return build
@@ -278,6 +292,7 @@ async def _chase_one(reservation: dict) -> bool:
         deadline,
         f"{settings.site_origin}/events/{event['slug']}",
         purchase_url=await purchase.link_for(event, reservation["ticket_type_id"]),
+        doors_close=format_doors_close(event.get("starts_at"), event.get("doors_close_at")),
     )
 
 

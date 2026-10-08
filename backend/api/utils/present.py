@@ -43,6 +43,24 @@ def format_time_range(start: datetime | None, end: datetime | None) -> str:
     return f"{start.strftime('%H:%M')} – {end.strftime('%H:%M')}"
 
 
+def format_doors_close(starts, doors) -> str | None:
+    """The doors-close time as one short string, or None when there is none.
+
+    "18:15" when it falls on the same London day as the start — the day is
+    already printed beside it — and "Thu 9 Oct, 18:15" when it does not, so a
+    doors-close on a different day can never be mistaken for one on this one.
+    Accepts ISO strings as well as datetimes: every event dict here arrives
+    from the database service as JSON.
+    """
+    doors_dt = _parse(doors)
+    if doors_dt is None:
+        return None
+    when = london(doors_dt)
+    if starts is None or london(_parse(starts)).date() == when.date():
+        return when.strftime("%H:%M")
+    return f"{format_date(doors_dt)}, {when.strftime('%H:%M')}"
+
+
 def format_price(pence) -> str:
     """Pence to a display string.
 
@@ -146,6 +164,10 @@ def event_card(event: dict) -> dict:
         "signupUrl": event.get("signup_url"),
         "startsAt": event.get("starts_at"),
         "endsAt": event.get("ends_at"),
+        # The doors-close cutoff, when the event has one, both raw (so a
+        # client can re-localise) and ready-formatted.
+        "doorsCloseAt": event.get("doors_close_at"),
+        "doorsClose": format_doors_close(starts, event.get("doors_close_at")),
         "soldOut": bool(event.get("sold_out")),
         "published": bool(event.get("published")),
         "salesState": sales_state(event)[0],

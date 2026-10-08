@@ -1,4 +1,10 @@
 # DECISIONS — assumptions recorded during autonomous build rounds
+- **2026-10-08 (section 14, doors close):** `events.doors_close_at` (migration 063) is carried
+  by the event models/read payloads only — **section 08 (event duplication/series, not yet
+  built) must copy `doors_close_at` when it duplicates an event**, or duplicated events would
+  silently lose their doors-close cutoff from every email and the event page. Recorded here
+  so 08's spec writer finds it without re-deriving the dependency.
+
 - **2026-10-08 (round 4, Raph's direct instructions):** "push to prod, you can bypass" read
   as **his explicit approval to promote the reconciliation** (main = the plan line + the
   landed ticketing) to production after CI green — not something I can or will force past

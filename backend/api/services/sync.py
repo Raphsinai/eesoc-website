@@ -22,7 +22,7 @@ from clients import database, union
 from services import announce, confirmations, purchase
 from utils import email as mailer
 from config import settings
-from utils.present import format_date, format_time_range, london
+from utils.present import format_date, format_doors_close, format_time_range, london
 from utils.year import academic_year
 
 log = logging.getLogger("api.sync")
@@ -292,6 +292,9 @@ async def notify_waitlist_offers(offers: list[dict]) -> int:
             if await mailer.send_waitlist_offer(
                 str(user["email"]), event["title"], ticket_name, expires, url,
                 purchase_url=link,
+                doors_close=format_doors_close(
+                    event.get("starts_at"), event.get("doors_close_at")
+                ),
             ):
                 sent += 1
             # Marked either way: an unsendable address must not cause a retry

@@ -54,6 +54,10 @@ class Event(BaseModel):
     venue: str | None = None
     starts_at: datetime
     ends_at: datetime | None = None
+    # When the doors shut, if the venue has a hard entry cutoff. None = no
+    # cutoff. May sit before starts_at (doors close at 18:00 for an 18:30
+    # talk), but never after ends_at — see the routes' validation.
+    doors_close_at: datetime | None = None
     capacity: int | None = None
     hold_hours: int = 48
     published: bool = False
@@ -119,6 +123,9 @@ class EventWrite(BaseModel):
     venue: str | None = None
     starts_at: datetime
     ends_at: datetime | None = None
+    # Must be on the write model too, not just Event: the admin form sends it
+    # with every create and update.
+    doors_close_at: datetime | None = None
     capacity: int | None = None
     hold_hours: int = 48
     published: bool = False
@@ -210,6 +217,10 @@ class ReservationDetail(Reservation):
     event_title: str | None = None
     event_slug: str | None = None
     event_starts_at: datetime | None = None
+    # The doors-close time and venue travel with the event columns here, so
+    # "My tickets" (section 15) can show them without a second query.
+    event_doors_close_at: datetime | None = None
+    event_venue: str | None = None
     ticket_type_name: str | None = None
     price_pence: int = 0
     requires_purchase: bool = True

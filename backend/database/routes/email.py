@@ -33,7 +33,7 @@ ALERT_COLUMNS = """
 
 CAMPAIGN_COLUMNS = """
     id, subject, heading, body, audiences, status, recipients, sent, failed,
-    error, created_by, created_at, started_at, finished_at
+    error, created_by, created_at, started_at, finished_at, kind, event_id
 """
 
 
@@ -319,12 +319,21 @@ async def update_campaign(
     sent: int | None = None,
     failed: int | None = None,
     error: str | None = None,
+    kind: str | None = None,
+    event_id: int | None = None,
 ) -> Campaign:
     """Progress, recorded as the send runs.
 
     `started_at` and `finished_at` are derived from the status rather than
     passed in, so a caller cannot record a finish time for something still
     running.
+
+    `kind` and `event_id` are written once, by the send that starts (not by
+    the create) — they are what a *different* process reads back to rebuild an
+    interrupted send, and passing them here means the resume path needs no
+    second endpoint. `COALESCE` keeps whatever the row already holds whenever
+    a caller leaves a field out, which is what makes this additive for the
+    callers that never send them.
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -336,12 +345,14 @@ async def update_campaign(
                 sent        = COALESCE($4, sent),
                 failed      = COALESCE($5, failed),
                 error       = COALESCE($6, error),
+                kind        = COALESCE($7, kind),
+                event_id    = COALESCE($8, event_id),
                 started_at  = CASE WHEN $2 = 'sending' THEN NOW() ELSE started_at END,
                 finished_at = CASE WHEN $2 IN ('sent','failed') THEN NOW() ELSE finished_at END
              WHERE id = $1
             RETURNING {CAMPAIGN_COLUMNS};
             """,
-            campaign_id, status, recipients, sent, failed, error,
+            campaign_id, status, recipients, sent, failed, error, kind, event_id,
         )
     if row is None:
         raise HTTPException(404, "No such campaign")

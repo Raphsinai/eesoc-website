@@ -39,6 +39,7 @@ def _target_years_text(years: list[int]) -> str:
 
 EVENT_COLUMNS = """
     id, slug, title, category, description, image_url, venue, starts_at, ends_at,
+    doors_close_at,
     capacity, hold_hours, published, sponsorship_claimable,
     requested_by_sponsor_id, academic_year, created_by, created_at, updated_at,
     sales_open_at, sales_announced_at, purchase_url, industry, signup_url,
@@ -98,6 +99,32 @@ RESERVATION_COLUMNS = """
     booked_as_guest, reminder_sent_at, source, added_by, confirmation_email,
     confirmation_sent_at, confirmation_attempts
 """
+
+def _utc(value: datetime) -> datetime:
+    """Naive values are taken as UTC, the convention everywhere else here."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _check_doors_close(event: EventWrite) -> None:
+    """Doors close no later than the event ends.
+
+    A doors-close before starts_at is legitimate (doors close at 18:00 for an
+    18:30 talk); after ends_at is a typo nobody would notice on the form until
+    somebody is refused at a door that never shut.
+    """
+    if (
+        event.doors_close_at is not None
+        and event.ends_at is not None
+        and _utc(event.doors_close_at) > _utc(event.ends_at)
+    ):
+        raise HTTPException(
+            422,
+            "Doors close cannot be after the event ends. "
+            "It may be before the event starts.",
+        )
+
 
 # A failed confirmation email is retried this many times in all, then left for
 # the committee to resend by hand from the bookings page.
@@ -266,22 +293,25 @@ async def create_event(event: EventWrite, created_by: int | None = None) -> Even
     """Event and its ticket types are created together, in one transaction: an
     event with no way to book it is not a useful intermediate state."""
     pool = await get_pool()
+    _check_doors_close(event)
     async with pool.acquire() as conn, conn.transaction():
         try:
             row = await conn.fetchrow(
                 f"""
                 INSERT INTO public.events
                     (slug, title, category, description, image_url, venue, starts_at,
-                     ends_at, capacity, hold_hours, published, sponsorship_claimable,
+                     ends_at, doors_close_at,
+                     capacity, hold_hours, published, sponsorship_claimable,
                      requested_by_sponsor_id, academic_year, created_by, sales_open_at,
                      purchase_url, industry, signup_url,
                      map_url, meeting_url, meeting_url_private, target_years)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
-                        $20,$21,$22,$23)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+                        $19,$20,$21,$22,$23,$24)
                 RETURNING {EVENT_COLUMNS};
                 """,
                 event.slug, event.title, event.category, event.description,
                 event.image_url, event.venue, event.starts_at, event.ends_at,
+                event.doors_close_at,
                 event.capacity, event.hold_hours, event.published,
                 event.sponsorship_claimable, event.requested_by_sponsor_id,
                 event.academic_year or "", created_by, event.sales_open_at,
@@ -310,30 +340,33 @@ async def create_event(event: EventWrite, created_by: int | None = None) -> Even
 
 @router.put("/events/{event_id}")
 async def update_event(event_id: int, event: EventWrite) -> EventDetail:
+    _check_doors_close(event)
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction():
         row = await conn.fetchrow(
             f"""
             UPDATE public.events SET
                 slug=$2, title=$3, category=$4, description=$5, image_url=$6,
-                venue=$7, starts_at=$8, ends_at=$9, capacity=$10, hold_hours=$11,
-                published=$12, sponsorship_claimable=$13,
-                requested_by_sponsor_id=$14,
-                academic_year=COALESCE($15, academic_year),
-                sales_open_at=$16,
-                purchase_url=$17,
-                industry=$18,
-                signup_url=$19,
-                map_url=$20,
-                meeting_url=$21,
-                meeting_url_private=$22,
-                target_years=$23,
+                venue=$7, starts_at=$8, ends_at=$9, doors_close_at=$10,
+                capacity=$11, hold_hours=$12,
+                published=$13, sponsorship_claimable=$14,
+                requested_by_sponsor_id=$15,
+                academic_year=COALESCE($16, academic_year),
+                sales_open_at=$17,
+                purchase_url=$18,
+                industry=$19,
+                signup_url=$20,
+                map_url=$21,
+                meeting_url=$22,
+                meeting_url_private=$23,
+                target_years=$24,
                 updated_at=NOW()
              WHERE id=$1
             RETURNING {EVENT_COLUMNS};
             """,
             event_id, event.slug, event.title, event.category, event.description,
             event.image_url, event.venue, event.starts_at, event.ends_at,
+            event.doors_close_at,
             event.capacity, event.hold_hours, event.published,
             event.sponsorship_claimable, event.requested_by_sponsor_id,
             event.academic_year, event.sales_open_at, event.purchase_url,
@@ -588,6 +621,10 @@ async def list_reservations(
                    r.confirmation_sent_at, r.confirmation_attempts,
                    e.title AS event_title, e.slug AS event_slug,
                    e.starts_at AS event_starts_at,
+                   -- Doors close and venue, so "My tickets" (section 15) can
+                   -- render each booking's event without a second query.
+                   e.doors_close_at AS event_doors_close_at,
+                   e.venue AS event_venue,
                    tt.name AS ticket_type_name, tt.price_pence, tt.requires_purchase,
                    tt.members_only,
                    u.email AS user_email, u.first_name AS user_first_name,
@@ -1000,7 +1037,7 @@ async def claim_confirmations(limit: int = 50) -> list[dict]:
             SELECT r.id, r.quantity, r.confirmation_attempts, r.source,
                    u.email, u.first_name,
                    e.title AS event_title, e.slug AS event_slug,
-                   e.starts_at, e.ends_at, e.venue,
+                   e.starts_at, e.ends_at, e.venue, e.doors_close_at,
                    tt.name AS ticket_type_name
               FROM public.reservations r
               JOIN public.users u         ON u.id = r.user_id

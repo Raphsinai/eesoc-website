@@ -28,7 +28,12 @@ from utils.auth import (
     set_session_cookies,
 )
 from utils import email as mailer
-from utils.present import format_date, format_price, format_time_range
+from utils.present import (
+    format_date,
+    format_doors_close,
+    format_price,
+    format_time_range,
+)
 from services import sync as sync_service
 from utils.deps import (
     assert_may_edit_event,
@@ -493,6 +498,7 @@ async def remind(
         # them to find it, which is the reason the booking is unpaid often
         # enough to be worth fixing here.
         purchase_url=await purchase.link_for(event, reservation["ticket_type_id"]),
+        doors_close=format_doors_close(event.get("starts_at"), event.get("doors_close_at")),
     )
     return {
         "ok": True,
@@ -1928,6 +1934,7 @@ async def announce_event(
     when = (
         f"{format_date(starts)}, {format_time_range(starts, ends)}" if starts else "TBC"
     )
+    doors = format_doors_close(event.get("starts_at"), event.get("doors_close_at"))
     tickets = [
         (t["name"], format_price(t.get("price_pence", 0)))
         for t in event.get("ticket_types", [])
@@ -1961,6 +1968,7 @@ async def announce_event(
             body_html=html,
             tickets=tickets,
             heading=(heading or subject).strip(),
+            doors_close=doors,
         )
 
     # kind/event_id, so a pod replaced mid-send can resume this specific message

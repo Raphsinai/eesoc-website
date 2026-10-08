@@ -36,6 +36,7 @@ from utils.deps import (
 from utils.present import (
     event_card,
     format_date,
+    format_doors_close,
     format_price,
     format_time_range,
     london,
@@ -499,6 +500,7 @@ async def _send_held_confirmation(
             # else has to tell us the order number, and the email is where they
             # find that out.
             needs_order_number=not is_member,
+            doors_close=format_doors_close(starts, event.get("doors_close_at")),
         )
     except Exception:  # noqa: BLE001
         log.exception("Could not send booking confirmation to %s", address)

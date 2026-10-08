@@ -104,11 +104,17 @@ additive wiring — see DECISIONS). Static gates green (compileall; 61 tests col
 e2e specs node --check; `npm run build` clean, jsQR its own on-demand chunk). Plan docs
 updated. **Not pushed — the permission layer blocks `git push` here.**
 
-Next: gap analysis of the landed ticketing vs spec 06 is running; from it, rescope
-section 06 to only what's missing (expected: per-event sign-up questions + answers,
-answers CSV export, answers retention purge, and test suites for everything landed), then
-delegate the remainder and merge. Section 06 must not re-create the landed checkins table
-(migration 060 on origin) — its own numbering (043–046) predates and skips that now.
+Next: gap analysis returned (2026-10-08): the QR/door/check-in/committee-add core is
+**fully landed and working** (with one scope deviation: the door is whole-roster by
+design per 12, not `events`-capability as old-06 sketched); **never built**: the sign-up
+questions half (questions, answers, answers CSV, retention purge — old-06 AC1–3, 6–7).
+Also flagged: `emailing._secret()` falls back to a fixed string when neither
+`EMAIL_TOKEN_SECRET` nor SMTP password is set — fine in dev, and production/staging carry
+the k8s secret, but worth a CI/manifest assertion someday; noted, not sectioned. **Spec 06
+is rescoped** to the remainder + regression tests for the whole landed surface (migrations
+043–044; the planned 045-checkins migration is dead — 060 landed). Section 12 (Raph's
+perms instruction) spawned first and is in flight; **06 builds after 12 merges** (both own
+`AdminEventView.vue`/`routes/admin.py`).
 
 **Raph then instructed (round 4, same day):** push through to production ("push to prod,
 you can bypass" — recorded as his approval of the reconciliation for prod), and tighten

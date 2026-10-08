@@ -1,77 +1,107 @@
-# 06 — Events: sign-up forms, attendee export, QR check-in
+# 06 (rescoped, round 4) — Sign-up questions, answers, export; tests for the landed ticketing
 
-**Depends on:** 02 (resumable bulk-send/claim machinery and `emailing.py` conventions),
-05 (events routes/models it builds on).
+> **Rescoped 2026-10-08 after the reconciliation merge (2582c63).** The original
+> 06 (questions + QR tickets + CSV + check-in screen) was partly built out-of-plan
+> by the origin line (commits 34f0ac3, a43c4b5) and has landed on `main`. Gap
+> analysis vs this spec's ACs is recorded in `requests/03-*`'s companion report and
+> `DECISIONS.md`; this file now specs **only the remainder**. Everything the origin
+> line built is a dependency, not something to recreate.
 
-## Goal
+**Depends on:** 12 (ticketing perms + audit log — merges first; both touch
+`AdminEventView.vue` and `routes/admin.py`). Builds on the landed ticketing
+surface (tokens, door check-in, committee adds) and on 02's job-lease machinery
+(migrations 035–037) for the retention purge.
 
-Per-event custom questions on booking, a CSV export with answers, a QR ticket in the
-confirmation email and "my bookings", and a mobile door check-in screen for committee.
+## Already landed — do NOT rebuild (verify, don't re-implement)
 
-## Owns
+- Signed ticket tokens (`services/tickets.py`: reservation-id + HMAC over
+  `emailing._secret()`, `compare_digest`, 400 on tampered payload), `/ticket/<token>`
+  view + QR PNG endpoint, the QR in the confirmation email and the EventView ticket
+  CTA (`utils/email.py`, `routes/events.py`, `EventView.vue`).
+- The door: `routes/checkin.py` (events/list/state/scan/manual/undo, public ticket
+  + QR endpoints), `frontend/src/views/CheckinView.vue` (polling, BarcodeDetector +
+  lazy jsQR, name search, overrides, undo), `migrations/060_checkins.sql`
+  (**one row per reservation** — this file is landed and immutable; the old 06's
+  planned `045` checkins migration is dead, never write it).
+- Committee-added tickets (`routes/admin.py`, `database/routes/events.py`,
+  `059_booking_confirmations.sql`: `source`, `added_by`, per-booking confirmation
+  email state incl. MAIL_ALLOWLIST suppression).
+- Section 12 (in flight) tightens who may override / add / manually confirm and
+  adds the audit log; **this section must not touch those gates or the audit log** —
+  build beside them.
 
-- migrations `043`–`046` (questions, answers, attendance, check-in tokens — expand-only)
-- `backend/api/routes/checkin.py` (new), signup-question endpoints wherever they fit
-  cleanly into the existing events routes (05 has landed; you may edit
-  `backend/api/routes/events.py` now)
-- `backend/database/routes/events.py` + `models/events.py` (question/answer/attendance
-  queries)
-- `backend/api/services/emailing.py` — only the booking-confirmation additions (02's
-  resumable-send design has landed; keep it intact; transactional emails stay
-  automatic)
-- `frontend/src/views/EventView.vue` (booking form with custom questions),
-  `frontend/src/views/PortalView.vue` ("my bookings" QR ticket),
-  `frontend/src/views/CheckinView.vue` (new), `frontend/src/router/index.js`,
-  `frontend/src/api/index.js`
-- `backend/api/utils/deps.py`/`roles.py` only if a checkin capability check needs it
-  (check-in and answers require the `events` capability — prefer existing capability
-  reuse over new roles)
-- `API.md`, `deploy/snapshot/scrub.sql` (answers hold personal data!)
-- tests under `tests/checkin/` and `tests/e2e/checkin/`
+## Owns (the remainder)
+
+- migrations `043`–`044` (questions; answers — expand-only; `045`–`046` reserved if
+  needed, but **060 is taken** by the landed checkins, so never go there)
+- `backend/api/routes/events.py`: the questions surface (admin CRUD per event) and
+  answer submission on booking reserve (member + guest), answers visibility
+- `backend/database/routes/events.py` + `models/events.py`: question/answer queries
+- A **server-side** CSV export endpoint (the landed CSV in `AdminEventView.vue:227-242`
+  is client-generated and carries no answers — extend or replace per spec below)
+- `backend/api/services/jobs.py` or a sibling: the answers retention purge riding
+  02's lease-guarded job mechanism (never a new scheduler)
+- `frontend/src/views/EventView.vue` (booking form questions for member + guest),
+  `frontend/src/views/AdminEventView.vue` (question editor; answers in the door
+  list / CSV button — coordinate with 12's layout)
+- `API.md`, `deploy/snapshot/scrub.sql` (answers hold personal data)
+- tests under `tests/checkin/` + `tests/e2e/checkin/` — **both the new questions
+  feature AND regression coverage for the whole landed ticketing surface**
+  (tokens incl. tampered, door scan/manual/override/undo idempotence, committee
+  add incl. guest holder + over-capacity 409 + cancel/waitlist promotion,
+  confirmation-email allowlist suppression, `060` idempotence)
 
 ## Design notes
 
-- **QR tokens must be unguessable signed values** (HMAC, like the existing
-  `EMAIL_TOKEN_SECRET` signing in `services/emailing.py` — reuse the pattern and the
-  secret), not booking ids. The QR encodes a URL the check-in screen can consume by
-  scan, and the token is bound to the booking.
-- Guests book too: the QR and check-in must work for guest bookings as for members.
-- Answers are personal data: visible only to holders of the `events` capability
-  (endpoint-level check, not just UI hiding), and **deleted automatically 30 days after
-  the event** (configurable via an env/config setting with a sane default). The purge
-  rides the same background-job mechanism 02 made restart-safe.
-- CSV export: attendees with answers, correct content-disposition, streamed or paginated
-  enough not to block the event loop on big events.
-- The check-in screen: mobile-first, camera scan (a browser-side QR library — keep it
-  small and CSP-friendly) **and** name search fallback, mark attended, live attended
-  count. Committee-only route.
+- Questions: text / single-choice / multi-choice, required/optional, ordered.
+  Answers submitted with the booking reserve; missing required answers → 422/400
+  naming the question. Choices round-trip.
+- **Answers visibility is `events`-capability, endpoint-enforced** — not
+  `require_event_editor` (which also admits `industry` for industry events —
+  correct for editing, wrong for personal data; the export and any answer-bearing
+  endpoint use a strict `require_capability("events")`-style guard). Guests' answers
+  are the same class of data as members'.
+- The door (`require_committee`) stays whole-roster — superseded by 12/Raph's
+  round-4 instruction; the old 06 design note that wanted `events`-capability-only
+  on the door is dropped.
+- CSV: server-side, `text/csv` + content-disposition, one row per attendee with
+  answers; paginated or streamed so a big event doesn't block the loop; `events`
+  capability required. Keep the client-side door-list CSV only if it holds no
+  answers (assert it doesn't).
+- Retention: answers (and guest name/email rows per the landed privacy model)
+  purge 30 days after the event ends, configurable via env/config with the 30-day
+  default; a lease-guarded job (02's `jobs` table), restart-safe, never blocking
+  requests. **The audit log from 12 is explicitly excluded** — it exists to be
+  durable; 12's scrub handles it.
+- `scrub.sql`: answers columns/tables truncated like the landed checkins
+  truncation.
 
-## Acceptance criteria
+## Acceptance criteria (rescoped)
 
-1. An admin defines questions (text, single-choice, multi-choice; required/optional);
-   a member books and must answer required ones (API rejects missing answers), optional
-   ones persist; choices round-trip.
-2. Guest booking with answers works identically.
-3. CSV export contains one row per attendee with answers; a member without the `events`
-   capability cannot fetch it (403) and the questions' answers never appear in any
-   public/member-facing endpoint (assert on payloads).
-4. The booking confirmation email (mailpit) contains the QR (an image or a link that
-   renders one) and "my bookings" shows it; the QR encodes a signed token, and a forged
-   token (tampered payload, wrong signature) is rejected with 4xx.
-5. Check-in flow: scan/submit a valid token → attendee marked attended, live count
-   increments; search-by-name check-in works for members and guests; double check-in is
-   idempotent or clearly reported, not silent.
-6. Answers are purged by the retention job: a test fast-forwards (or injects a past
-   event date) and asserts answers are gone while bookings survive; the retention window
-   is configurable.
-7. `verify.sql`'s guarantee holds: every new personal-data column (answers, tokens if
-   identifying, guest fields) is scrubbed — staging snapshot test or direct scrub run
-   stays clean.
-8. Every new send path (QR confirmation) goes through the existing MAIL_ALLOWLIST /
-   maintenance guards — test that staging-style allowlist settings block it.
-9. `API.md` updated; existing booking/holds/waitlist tests still green.
+1. Admin defines questions (3 kinds; required/optional) on an event; a member
+   booking must answer required ones (API rejects missing, naming the question),
+   optional persist; choices round-trip (pytest + Playwright).
+2. Guest booking answers behave identically (pytest).
+3. Server-side CSV: one row per attendee **with answers**; `events` capability
+   required (a committee member without it → 403); no answers in any public or
+   member-facing payload (negative assertions).
+4. The landed surfaces stay green: tokens tamper-rejected (400), door scan/manual
+   check-in idempotent with clear duplicate reporting, override gated by 12,
+   undo works, committee add (guest + member) lands confirmed with
+   `source='committee'`, over-capacity 409, cancel promotes the waitlist,
+   confirmation mail suppressed under a staging allowlist fixture (all pytest;
+   one Playwright door pass).
+5. Retention purge: with the window wound down in a test, answers are gone after
+   the event+window while bookings, tickets and 12's audit rows survive; window
+   configurable (pytest).
+6. `scrub.sql` covers every new personal-data column/table; migration 043–044
+   expand-only; `API.md` documents questions/answers/export/retention.
+7. Static gates: `env/bin/python -m pytest tests --collect-only -q` clean,
+   `python3 -m compileall backend scripts`, `node --check` every spec,
+   `npm run build` clean; router stays lazy-chunked (03's tests unregressed).
 
 ## Constraints
 
-- Transactional emails (confirmations) stay automatic; no queue involvement here.
-- Migrations expand-only; no secrets in repo; comments explain why.
+- No Union API calls anywhere; no queue involvement (booking confirmations stay
+  transactional); never read `.env`/`backend.env`/`env/`; comments explain why;
+  commit style `area: what changed`; migrations immutable once shipped.

@@ -534,10 +534,37 @@ comes up first (-1), then the adapter migrates (1), then the api starts (2). An 
 applied is logged as an error rather than silently re-run — migrations are
 immutable once shipped.
 
-**`api` is pinned to one replica.** The daily ICU sync runs inside the process
-and takes an in-process lock, which does not span pods. Before scaling up, move
-the sync to a CronJob that calls `POST /admin/sync` and drop the in-process
-scheduler.
+**Migrations expand, deploy, then contract — never in one step.** A migration
+is immutable once it has shipped, so the only lever over a rollout is what the
+*next* file may contain, and the rule keeps a rolling update survivable:
+
+1. **Expand** — an additive migration only: a new table, a new index, a new
+   column that is nullable or carries a `DEFAULT`.
+2. **Deploy** — the old code keeps working, because nothing it reads was
+   removed or narrowed.
+3. **Old and new pods run side by side** through the RollingUpdate
+   (`maxUnavailable: 0`, `maxSurge: 1`) — this is the exact window a drop or a
+   rename would break, and the window this rule exists to protect.
+4. **Contract** — `DROP COLUMN`, `DROP TABLE`, `RENAME`, or narrowing a column
+   to `NOT NULL` land **only in a later deploy**, once no running code depends
+   on the old shape. The file must carry `-- contract-step: <reason>` saying
+   why *now* is safe.
+
+`scripts/check-migrations.py` (CI job `migrations`) fails the build on any of
+those without the marker, and prints the marker's reason when one is present —
+so a contract step is a reviewed, named decision, not housekeeping that
+happened to look safe. The rule is prospective: it gates migrations from 035
+onward, because 000–034 shipped before the rule existed and an applied
+migration is immutable now — their drops and renames are exactly why the rule
+was written, and editing history to make it look compliant would be the worse
+contract.
+
+**`api` runs one replica.** The daily ICU sync guard is a Postgres-level lease
+claimed through the database adapter (`job_leases`, migration 035), so it
+spans pods — two api replicas could not double-run the sync, and the old
+"move the sync to a CronJob before scaling up" warning is done. It stays at
+one for simplicity, and because the event-announce loop still runs
+in-process.
 
 **`union` is pinned to one replica, with `strategy: Recreate`.** eActivities
 rate-limits per source IP and bans the whole society on breach. The throttle and

@@ -1,4 +1,25 @@
 # DECISIONS — assumptions recorded during autonomous build rounds
+- **2026-10-08 (round 4, reconciliation):** `origin/main` had diverged with a parallel line
+  (same day) that already built part of the plan: QR tickets + door check-in (34f0ac3, on
+  staging), committee-added tickets + per-booking confirmation email (a43c4b5, **promoted
+  to production**), the 26-27 sponsor agreement, admin account creation, and staging pins —
+  all with **no test coverage** (origin has no `tests/` and its CI runs no pytest/e2e; the
+  whole test infra is our line's section 01). That line reserved migration numbers 058–060,
+  outside our pre-assigned 035–057, and its commit messages coordinate with our plan
+  explicitly ("plan 06's copy of this table, numbered 045, must be dropped when that section
+  merges"). Decision: reconcile by merging `origin/main` **into** our `main` (merge commit
+  2582c63) rather than rebase/rebuild — our 30 commits carry the test + rollout
+  infrastructure the landed work never had, and the landed work carries the features our
+  spec 06 would duplicate. Conflicts (both additive wiring, no behaviour change):
+  `backend/database/main.py` registers both new routers; `frontend/src/router/index.js`
+  keeps route-level lazy chunks and adds the new routes (checkin, ticket, admin-sponsors)
+  as lazy loaders. Static gates green on the merged tree: compileall clean, 61 tests
+  collect, every e2e spec `node --check`s, `npm run build` clean (jsQR splits to its own
+  on-demand chunk). `git push` remains permission-blocked here, so **the first CI run of
+  pytest+e2e on the merged tree is still the true execution gate** — Raph must push.
+  Section 06 gets rescoped against a gap analysis (what of its ACs the landed work already
+  covers) before any new build starts; the landed checkins migration is 060, so rescoped 06
+  must not duplicate it.
 - **2026-10-08 (round 3, planner writes):** Edit/Write are denied to the planner session
   in this build environment (don't-ask mode auto-denies any tool that would prompt).
   `.plan/STATUS.md` and `DECISIONS.md` updates are therefore written by an implementer

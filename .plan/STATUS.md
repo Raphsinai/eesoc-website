@@ -58,7 +58,10 @@ specs; CI discovers the whole `tests/` tree, so only 01 and 02 ever edit the wor
 The plan is approved; build rounds run from this file. Round 1 (2026-10-07) merged section
 01. Round 2 triaged the user's notes into proposed sections 10/11 (awaiting approval, not
 built) and salvaged an interrupted round's WIP onto clearly-marked `wip:` commits on
-`worktree-agent-*` branches. This is round 3.
+`worktree-agent-*` branches. Round 3 merged 03+05, resumed 02 to its merge, spawned 07.
+This is round 4: it reconciled `origin/main` (a parallel line that had already landed QR
+ticketing, check-in, committee-added tickets and the sponsor agreement — see DECISIONS)
+into `main` as merge commit 2582c63.
 
 ## Build progress
 
@@ -86,7 +89,26 @@ Round-3 notes:
 - Proposed sections 10 (committee-added tickets) and 11 (form builder), from round-2 notes,
   remain **awaiting approval** — not built, not part of this round.
 
-## Blockers (human steps)
+## Round 4 (2026-10-08): reconciliation
+
+Raph asked to "finish the event QR code ticketing system" — and it turned out to be
+**partly built already** on `origin/main` by a parallel line: QR tickets, the door
+check-in screen and ticket pages (34f0ac3, on staging), committee-added tickets +
+confirmation email (a43c4b5, **promoted to production**), the sponsor agreement, admin
+account creation. That line reserved migrations 058–060 and coordinates with this plan;
+it landed with **zero tests** (origin has no `tests/` — the whole pytest+Playwright infra
+is this line's sections 01–03+05, which origin lacks).
+
+Done this round: merged origin/main into local main (2582c63; both conflicts were
+additive wiring — see DECISIONS). Static gates green (compileall; 61 tests collect; all
+e2e specs node --check; `npm run build` clean, jsQR its own on-demand chunk). Plan docs
+updated. **Not pushed — the permission layer blocks `git push` here.**
+
+Next: gap analysis of the landed ticketing vs spec 06 is running; from it, rescope
+section 06 to only what's missing (expected: per-event sign-up questions + answers,
+answers CSV export, answers retention purge, and test suites for everything landed), then
+delegate the remainder and merge. Section 06 must not re-create the landed checkins table
+(migration 060 on origin) — its own numbering (043–046) predates and skips that now.
 
 1. **`git push` is denied in the build environment.** All merges land on local `main`;
    nothing has reached CI or staging. Human must run `git push origin main` and watch

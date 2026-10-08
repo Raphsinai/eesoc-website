@@ -464,3 +464,211 @@ jobs:
             echo "Check it, then run the **promote** workflow to put the same"
             echo "images on <https://eesoc.com>."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------- section 02
+  #
+  # The four jobs below are the zero-downtime rollout suite. They are appended
+  # here rather than wired into `build`'s `needs:` on purpose: the existing
+  # gates own that list, and the planner wires new gates when the section
+  # merges. Each job names its acceptance criterion from the section spec.
+
+  # AC-5: the expand/contract gate. No docker at all — the checker is a static
+  # pass over the migration files, so it runs in seconds and fails a contract
+  # step (DROP COLUMN / DROP TABLE, a RENAME, or NOT NULL without DEFAULT)
+  # that lacks the `-- contract-step:` marker. See deploy/README.md for the
+  # rule and the marker.
+  migrations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the test dependencies
+        run: pip install -r backend/api/requirements-dev.txt
+
+      - name: Check every shipped migration, and the deliberately-bad fixtures
+        run: python3 -m pytest tests/zero-downtime/test_check_migrations.py -v
+
+  # AC-2: recreating the api under load drops zero requests. The compose stack
+  # has no load balancer (the `api` name flips between containers mid-recreate),
+  # so the load script retries a refused connection — the browser-refresh case —
+  # while counting any final non-2xx answer as a failure. The script asserts
+  # zero failures itself; its exit status is the job's verdict.
+  rollout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create the env files CI needs
+        run: |
+          cp .env.example .env
+          cp backend.env.example backend.env
+
+      - name: Bring the test stack up
+        run: >
+          docker compose -f docker-compose.yml -f docker-compose.test.yml
+          -p eesoc-test up -d --build
+          postgres database union-stub mailpit api api-nologin frontend
+
+      - name: Wait for the API
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf localhost:8080/api/health >/dev/null; then exit 0; fi
+            sleep 3
+          done
+          docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs
+          exit 1
+
+      # The load runs for 90s while the recreate below happens inside that
+      # window. Its own status lands in a file because `wait` cannot reach a
+      # process started in a previous step's shell.
+      - name: Start the load loop
+        run: |
+          nohup bash -c '
+            bash scripts/rollout-load.sh http://localhost:8080 90 > load.log 2>&1
+            echo $? > load.status
+          ' >/dev/null 2>&1 &
+
+      - name: Recreate the api under load
+        run: >
+          docker compose -f docker-compose.yml -f docker-compose.test.yml
+          -p eesoc-test up -d --build api
+
+      - name: Wait for the API again
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf localhost:8080/api/health >/dev/null; then exit 0; fi
+            sleep 3
+          done
+          docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs api
+          exit 1
+
+      - name: Assert zero failed requests
+        run: |
+          for i in $(seq 1 120); do
+            [ -f load.status ] && break
+            sleep 2
+          done
+          [ -f load.status ] || { echo "::error::load loop never finished"; cat load.log; exit 1; }
+          STATUS=$(cat load.status)
+          tail -n 40 load.log
+          [ "$STATUS" = "0" ] || { echo "::error::load loop reported $STATUS failed-request status"; exit 1; }
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs --tail 200
+
+      - name: Tear the test stack down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test down -v
+
+  # AC-3: an api SIGKILLed mid-bulk-send is finished by the restarted api,
+  # with no recipient mailed twice. The test drives the kill and the restart
+  # and asserts on mailpit and the campaign row; the job brings up the right
+  # stack: the rollout overlay (tests/zero-downtime/docker-compose.rollout.yml
+  # — one message per recipient, one second apart) is what makes a test-scale
+  # send long enough to be interrupted.
+  resumable-send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create the env files CI needs
+        run: |
+          cp .env.example .env
+          cp backend.env.example backend.env
+
+      - name: Bring the rollout test stack up
+        run: >
+          docker compose -f docker-compose.yml -f docker-compose.test.yml
+          -f tests/zero-downtime/docker-compose.rollout.yml
+          -p eesoc-test up -d --build
+          postgres database union-stub mailpit api api-nologin frontend
+
+      - name: Wait for the API
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf localhost:8080/api/health >/dev/null; then exit 0; fi
+            sleep 3
+          done
+          docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs
+          exit 1
+
+      - name: Install the test dependencies
+        run: pip install -r backend/api/requirements-dev.txt
+
+      - name: Run the resumable-send test
+        run: EESOC_ROLLOUT=1 python3 -m pytest tests/zero-downtime/test_resumable_send.py -v
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs --tail 200
+
+      - name: Tear the test stack down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test down -v
+
+  # AC-4 and AC-8: two api replicas never both run the union sync (the stub
+  # counts its own requests, so the test can read the ground truth), and with
+  # the stub stopped the api still serves /api/events from its own database.
+  # The events test STOPS union-stub, which is exactly why it runs here and
+  # never in the shared pytest job: it must not break any other suite's stack.
+  sync-single-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create the env files CI needs
+        run: |
+          cp .env.example .env
+          cp backend.env.example backend.env
+
+      - name: Bring the rollout test stack up
+        run: >
+          docker compose -f docker-compose.yml -f docker-compose.test.yml
+          -f tests/zero-downtime/docker-compose.rollout.yml
+          -p eesoc-test up -d --build
+          postgres database union-stub mailpit api api-nologin frontend
+
+      - name: Wait for the API
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf localhost:8080/api/health >/dev/null; then exit 0; fi
+            sleep 3
+          done
+          docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs
+          exit 1
+
+      - name: Install the test dependencies
+        run: pip install -r backend/api/requirements-dev.txt
+
+      - name: Run the single-sync and events-from-cache tests
+        run: >
+          EESOC_ROLLOUT=1 python3 -m pytest
+          tests/zero-downtime/test_single_sync.py
+          tests/zero-downtime/test_events_from_cache.py -v
+
+      # AC-8 at the browser level: the SPA's own pages render with the bridge
+      # stopped. The spec stops union-stub itself and starts it again in
+      # afterAll, so it is safe beside the pytest suites above. --project=public
+      # only: the spec does its own dev-login through the request fixture, so
+      # the admin project (and its setup dependency) would just double the run.
+      # The gate variable is what the whole describe skip-tests on.
+      - name: Install the e2e dependencies
+        run: npm ci
+
+      - name: Install browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the union-stopped browser spec
+        run: >
+          EESOC_ROLLOUT_E2E=1 npx playwright test
+          --config frontend/playwright.config.js --project=public
+          tests/e2e/zero-downtime/union_stopped.spec.js
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs --tail 200
+
+      - name: Tear the test stack down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test down -v

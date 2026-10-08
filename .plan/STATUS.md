@@ -48,34 +48,51 @@ specs; CI discovers the whole `tests/` tree, so only 01 and 02 ever edit the wor
 
 1. **02:** live staging rollout verification — push to `main` (if the build environment
    can't) and run `scripts/watch-rollout.sh https://eesoc.raphsinai.dev` during the deploy.
-   Exact commands will be in the spec's report.
-2. **03/04:** any cluster-side setup outside git (Garage bucket/key for old chunks if
-   that route is taken; CNPG permissions for the staging database switchover).
+2. **03/04:** any cluster-side setup outside git (Garage bucket/key for old chunks if that
+   route is taken; CNPG permissions for the staging database switchover).
 3. **Final:** Raph verifies on staging: queue end-to-end with real allowlist mail, QR
    check-in on a phone, and a push during which the site stays up.
 
-## Nothing built yet
+## Build rounds
 
-This round is PLAN ONLY: no code, no delegation. Awaiting approval of the section split
-above; the next round starts at section 01.
+The plan is approved; build rounds run from this file. Round 1 (2026-10-07) merged section
+01. Round 2 triaged the user's notes into proposed sections 10/11 (awaiting approval, not
+built) and salvaged an interrupted round's WIP onto clearly-marked `wip:` commits on
+`worktree-agent-*` branches. This is round 3.
 
 ## Build progress
 
 | # | Section | Status |
 |---|---|---|
 | 01 | Baseline tests | **merged** (branch `worktree-agent-a6a87117693b0238c`, PASSED — static validation; see blockers) |
-| 02 | Zero-downtime rollout | in progress |
-| 03 | SPA asset continuity | in progress |
-| 05 | Events: calendar, links | in progress |
-| 04, 06–09 | rest | awaiting dependencies |
+| 02 | Zero-downtime rollout | in progress (lead hit its turn limit mid-flight with uncommitted work; resumed to finish, validate, commit) |
+| 03 | SPA asset continuity | **merged** (branch `plan-03-spa-assets`, PASSED static: route-level lazy chunks, in-image union of previous builds, no-cache index + immutable assets, reload-loop-safe recovery; e2e execution CI-gated) |
+| 05 | Events: calendar, links | **merged** (branch `plan-05-events-calendar`, PASSED static: .ics download, subscribable all/category feeds with pagination, booking-gated meeting links, external sign-up link, target year groups; stack runs CI-gated) |
+| 07 | Rich event pages | in progress (spawned after 05 merged) |
+| 04, 06, 08, 09 | rest | awaiting dependencies |
+
+Post-merge static gates green on `main`: pytest collects 49 tests, `compileall` over
+backend+scripts, `node --check` on every e2e spec, `npm run build` clean. Nothing is
+pushed — push is blocked, so staging has not moved; the first CI run (pytest + e2e) is
+the true execution gate.
+
+Round-3 notes:
+- 03's `deploy.yml` change is purely additive (`PREVIOUS_FRONTEND_IMAGE` build-arg for the
+  frontend image union); 02 also edits `deploy.yml` — expect a small conflict at 02's merge.
+- 05's validator flagged a pre-existing cap in `backend/api/routes/admin.py`
+  `list_all_events` (`limit=500`) — same defect class 05 fixed on its own feed (pagination
+  + tie-break). Handed to 08's prompt when 08 is spawned (08 owns the admin routes).
+- Old `refs/stash` (autostash + pre-staging-backup) predates the plan; left untouched.
+- Proposed sections 10 (committee-added tickets) and 11 (form builder), from round-2 notes,
+  remain **awaiting approval** — not built, not part of this round.
 
 ## Blockers (human steps)
 
 1. **`git push` is denied in the build environment.** All merges land on local `main`;
    nothing has reached CI or staging. Human must run `git push origin main` and watch
-   the **first CI run of the new `pytest` and `e2e` jobs** — the suites were validated
-   statically (11 pytest + 11 Playwright specs collect, all code compiles, both compose
-   YAMLs parse) but never executed: the Docker daemon socket is also blocked here. If
-   the first run is red, fix before promoting anything.
-2. Real staging rollout verification (section 02, `scripts/watch-rollout.sh`) after CI
-   is green — see spec 02.
+   the **first CI run of the `pytest` and `e2e` jobs** — the suites were validated
+   statically (49 pytest tests collect, every Playwright spec lists, all code compiles,
+   both compose YAMLs parse) but never executed: the Docker daemon socket is also
+   blocked here. If the first run is red, fix before promoting anything.
+2. Real staging rollout verification (section 02, `scripts/watch-rollout.sh`) after CI is
+   green — see spec 02.

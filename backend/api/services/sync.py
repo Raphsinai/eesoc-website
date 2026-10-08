@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 from clients import database, union
@@ -25,9 +27,40 @@ from utils.year import academic_year
 
 log = logging.getLogger("api.sync")
 
-# Guards against two workers syncing at once. Single-process today, but the
-# whole point of the daily job is that it is not run twice.
+# The in-process half of the run guard: two requests hitting this pod must not
+# interleave sync steps.
 _lock = asyncio.Lock()
+
+
+@asynccontextmanager
+async def _lease(name: str, ttl_seconds: int = 900):
+    """The cross-pod half of the run guard: a named lease in the database.
+
+    A rolling update starts the replacement pod before stopping the old one,
+    so for a minute there are two api processes that each believe they are
+    alone — and the whole point of the daily job is that it runs once, not
+    once per pod: the Union rate-limits per source IP and a breach bans the
+    whole society. The in-process lock above cannot see the other pod; a lease
+    row can, because both pods talk to the same database through the adapter.
+
+    Released in `finally`, so a graceful shutdown hands the lease straight
+    back; the TTL is the takeover path for a pod that died mid-sync without
+    releasing.
+    """
+    holder = uuid.uuid4().hex
+    claim = await database.post(
+        "/job-leases/claim",
+        {"name": name, "holder": holder, "ttl_seconds": ttl_seconds},
+    )
+    if not (claim or {}).get("claimed"):
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        await database.post(
+            "/job-leases/release", {"name": name, "holder": holder}
+        )
 
 
 async def _run_step(kind: str, year: str, fetch, store) -> dict:
@@ -64,55 +97,66 @@ async def sync_all(force: bool = False, year: str | None = None) -> dict:
     today = datetime.now(timezone.utc)
     sync_committee_today = today.month == 8 and today.day == 1
 
-    async with _lock:
-        results = [
-            await _run_step(
-                "members", year,
-                lambda: union.members(year, force),
-                lambda rows: database.post(
-                    "/union/members/sync", rows, params={"academic_year": year}
-                ),
-            ),
-            *(
-                [
-                    await _run_step(
-                        "committee", year,
-                        lambda: union.committee(year, force),
-                        lambda rows: database.post(
-                            "/union/committee/sync", rows, params={"academic_year": year}
-                        ),
-                    )
-                ]
-                if sync_committee_today or force
-                else []
-            ),
-            await _run_step(
-                "products", year,
-                lambda: union.products(year, force),
-                lambda rows: database.post(
-                    "/union/products/sync", rows, params={"academic_year": year}
-                ),
-            ),
-            await _run_step(
-                "sales", year,
-                lambda: union.sales(year, force),
-                lambda rows: database.post(
-                    "/union/sales/sync", rows, params={"academic_year": year}
-                ),
-            ),
-        ]
+    # The lease, not the in-process lock, is what keeps a rolling update's two
+    # pods from both running the daily sync. Both guards are needed: the lease
+    # against the other pod, the lock against a second request on this one.
+    async with _lease("daily-union-sync") as held:
+        if not held:
+            log.info("Another pod is running the union sync — skipping")
+            # ok, not an error: the work is happening, just elsewhere, and a
+            # skipped sync is infinitely better than a doubled one against a
+            # rate limit that bans the society.
+            return {"ok": True, "skipped": True}
 
-        # Order matters: expire first so a stale hold cannot claim a sale that
-        # should go to somebody still waiting, then match against fresh sales.
-        expired = await database.post("/reservations/expire")
-        matched = await database.post(
-            "/reservations/match", params={"academic_year": year}
-        )
-        # Expiring a hold frees a seat, so the queue is worked immediately
-        # afterwards rather than a day later.
-        promoted = await database.post("/waitlist/promote")
-        notified = await notify_waitlist_offers((promoted or {}).get("offered", []))
-        swept = await database.post("/auth/sessions/sweep")
+        async with _lock:
+            results = [
+                await _run_step(
+                    "members", year,
+                    lambda: union.members(year, force),
+                    lambda rows: database.post(
+                        "/union/members/sync", rows, params={"academic_year": year}
+                    ),
+                ),
+                *(
+                    [
+                        await _run_step(
+                            "committee", year,
+                            lambda: union.committee(year, force),
+                            lambda rows: database.post(
+                                "/union/committee/sync", rows, params={"academic_year": year}
+                            ),
+                        )
+                    ]
+                    if sync_committee_today or force
+                    else []
+                ),
+                await _run_step(
+                    "products", year,
+                    lambda: union.products(year, force),
+                    lambda rows: database.post(
+                        "/union/products/sync", rows, params={"academic_year": year}
+                    ),
+                ),
+                await _run_step(
+                    "sales", year,
+                    lambda: union.sales(year, force),
+                    lambda rows: database.post(
+                        "/union/sales/sync", rows, params={"academic_year": year}
+                    ),
+                ),
+            ]
+
+            # Order matters: expire first so a stale hold cannot claim a sale that
+            # should go to somebody still waiting, then match against fresh sales.
+            expired = await database.post("/reservations/expire")
+            matched = await database.post(
+                "/reservations/match", params={"academic_year": year}
+            )
+            # Expiring a hold frees a seat, so the queue is worked immediately
+            # afterwards rather than a day later.
+            promoted = await database.post("/waitlist/promote")
+            notified = await notify_waitlist_offers((promoted or {}).get("offered", []))
+            swept = await database.post("/auth/sessions/sweep")
 
     # Belt and braces. The announcer has its own ten-minute loop; running it
     # here as well means a night when that loop was down still gets worked
@@ -199,14 +243,21 @@ async def sync_committee_now(force: bool = True) -> dict:
         return {"ok": False, "error": "UNION_API_URL is not set"}
 
     year = academic_year()
-    async with _lock:
-        result = await _run_step(
-            "committee", year,
-            lambda: union.committee(year, force),
-            lambda rows: database.post(
-                "/union/committee/sync", rows, params={"academic_year": year}
-            ),
-        )
+    # Same two guards as the daily sync, for the same two concurrent callers:
+    # a second request on this pod (the lock), a second pod (the lease).
+    async with _lease("union-committee-pull") as held:
+        if not held:
+            log.info("Another pod is pulling the committee roster — skipping")
+            return {"ok": True, "skipped": True}
+
+        async with _lock:
+            result = await _run_step(
+                "committee", year,
+                lambda: union.committee(year, force),
+                lambda rows: database.post(
+                    "/union/committee/sync", rows, params={"academic_year": year}
+                ),
+            )
     return {"ok": result["ok"], "academic_year": year, **result}
 
 

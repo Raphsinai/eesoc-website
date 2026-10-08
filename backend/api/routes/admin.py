@@ -1331,7 +1331,14 @@ async def announce_event(
             heading=(heading or subject).strip(),
         )
 
-    _dispatch(emailing.send_bulk(campaign["id"], recipients, build))
+    # kind/event_id, so a pod replaced mid-send can resume this specific message
+    # rather than leaving the campaign half-sent.
+    _dispatch(
+        emailing.send_bulk(
+            campaign["id"], recipients, build,
+            kind="event_announcement", event_id=event_id,
+        )
+    )
     return {
         "ok": True,
         "campaignId": campaign["id"],

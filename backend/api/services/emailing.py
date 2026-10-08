@@ -24,7 +24,10 @@ import asyncio
 import hashlib
 import hmac
 import logging
+import os
 import re
+import uuid
+from time import monotonic
 from urllib.parse import quote, urlencode
 
 from clients import database
@@ -532,9 +535,79 @@ def render_body(markdown: str) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------- sending
+#
+# The send is resumable across a pod replacement. Two claims make that work:
+#
+#   * the sender lease (job_leases, "campaign:<id>") — at most one sender at a
+#     time, old pod or new. It is a database lease, not an in-process lock,
+#     because a rolling update has both pods alive together and only the
+#     database is visible to both.
+#
+#   * one row per recipient (campaign_recipients), claimed before the message
+#     goes out and confirmed after. A pod killed mid-batch leaves its claimed
+#     row unconfirmed, and that row goes stale and is re-claimed — so the
+#     replacement pod knows exactly who was already messaged and never
+#     double-sends, while a row confirmed `sent` is never mailed again.
+#
+# Both live behind services/database-routes/jobs.py; this file only ever talks
+# to the adapter.
+
+# Both windows are read from the environment rather than hard-coded because CI
+# shortens them (the section-02 rollout overlay sets each to 5s) so a killed
+# test pod's campaign finishes within seconds, not minutes. Production runs
+# with the defaults here.
+
+# The sender lease outlives one batch, not one send: it is renewed after every
+# batch, so a paced send keeps it for as long as it keeps making progress. The
+# TTL has to comfortably exceed the LONGEST paced batch — at the production
+# defaults (batch 400 x interval 2s) that is about 800s — because a live
+# sender must never lose its lease mid-batch: the moment the lease expires
+# underneath one, another pod can take the campaign over and re-claim rows the
+# first sender is still sending, and those recipients get mailed twice. 900s
+# clears the longest batch with slack.
+#
+# What that wait costs is smaller than it sounds. The graceful path — SIGTERM,
+# CancelledError, the `finally` releasing the lease — hands the campaign over
+# at once, so a rolling update's replacement pod resumes within seconds and
+# the TTL never delays anything. The wait only bites on a SIGKILL or a crash,
+# where nothing ran to release the lease — and there, a resume within ~15
+# minutes beats the shorter TTL that would be needed to beat it, because a TTL
+# under the longest batch is exactly what lets a mid-batch sender be taken
+# over and double-mail its rows.
+SENDER_LEASE_TTL_SECONDS = int(os.environ.get("SENDER_LEASE_TTL_SECONDS", "900"))
+
+# A claimed-but-unconfirmed row has to belong to a dead sender for this long
+# before it is re-claimable. Long on purpose: at this age the alternative is
+# re-sending on a message that did in fact go out (the sender died between
+# SMTP accepting it and the confirm landing), which is the worse failure.
+BATCH_STALE_SECONDS = int(os.environ.get("BATCH_STALE_SECONDS", "600"))
+
+# TTL >= stale is an invariant, not a coincidence, and shortening either window
+# has to keep it. Nobody can take a campaign over until the dead sender's lease
+# has expired, and the lease is renewed right after each batch of rows is
+# claimed — so by the time a takeover is possible at all, every row the dead
+# sender claimed and never confirmed is already past its stale window and
+# re-claimable. A resumed campaign therefore always has every remaining
+# recipient within reach, and can never mark itself complete with a row still
+# stranded inside a stale window it could not re-claim.
+
+# The startup resume re-tries a campaign whose lease somebody else holds,
+# this often, for this long in total, before giving up and leaving it to the
+# next restart or another retry. Comfortably past the lease TTL: a SIGKILLed
+# sender's lease frees at most one TTL after its last renewal, and a resume
+# whose budget ended exactly there would give up in the very poll before the
+# takeover it was waiting for became possible.
+RESUME_POLL_SECONDS = 10
+RESUME_RETRY_SECONDS = 1200
 
 
-async def send_bulk(campaign_id: int, recipients: list[dict], build) -> dict:
+async def send_bulk(
+    campaign_id: int,
+    recipients: list[dict],
+    build,
+    kind: str = "newsletter",
+    event_id: int | None = None,
+) -> dict:
     """Send to everybody in batches, recording progress as it goes.
 
     `build(batch, unsubscribe)` sends one batch of recipient rows and returns
@@ -544,31 +617,121 @@ async def send_bulk(campaign_id: int, recipients: list[dict], build) -> dict:
     This function knows nothing about what is being sent — a newsletter and an
     event announcement share all of this.
 
+    `kind` and `event_id` are written onto the campaign row, not kept here: a
+    send interrupted by a restart can only be finished by a *different*
+    process, and the row is the only place that process can read them from.
+    `recipients` may be empty on a resume — the per-recipient rows seeded by
+    the previous pod *are* the audience then, and re-resolving the stored
+    audience keys would re-mail people who have since opted out.
+
     Counts stay per recipient, not per message, so the history reads "412 sent"
     rather than "1 sent".
     """
-    total = len(recipients)
     await database.patch(
         f"/email/campaigns/{campaign_id}",
-        params={"status": "sending", "recipients": total},
+        params={
+            "status": "sending",
+            "kind": kind,
+            # Sent only when there is a fresh audience: on a resume this would
+            # otherwise reset the recorded count to zero.
+            **({"recipients": len(recipients)} if recipients else {}),
+            **({"event_id": event_id} if event_id is not None else {}),
+        },
     )
 
-    size = max(1, settings.bulk_batch_size)
-    batches = [recipients[i:i + size] for i in range(0, total, size)]
+    if recipients:
+        # Idempotent, so a resume that reaches this with the same list is a
+        # no-op: DO NOTHING leaves every previously confirmed row alone.
+        await database.post(
+            "/campaign-recipients",
+            {"campaign_id": campaign_id, "emails": [r["email"] for r in recipients]},
+        )
+
+    # The lease. Not claimed -> another pod (old or new) is mid-send on this
+    # campaign right now, and there is nothing this one can do but stay out of
+    # the way: claiming anyway would put two senders on one campaign, and each
+    # sender paces itself at Exchange's per-mailbox rate limit.
+    lease_name = f"campaign:{campaign_id}"
+    holder = uuid.uuid4().hex
+    claim = await database.post(
+        "/job-leases/claim",
+        {"name": lease_name, "holder": holder, "ttl_seconds": SENDER_LEASE_TTL_SECONDS},
+    )
+    if not (claim or {}).get("claimed"):
+        log.info(
+            "Campaign %s: sender lease held by %r — deferring to that pod",
+            campaign_id, (claim or {}).get("holder"),
+        )
+        # ok, not an error: the campaign is in good hands, and this is the
+        # state the resume path retries later.
+        return {"sent": 0, "failed": 0, "deferred": True, "ok": True}
+
+    # Where the last sender left off, so a replacement pod's counters continue
+    # its predecessor's instead of restarting the visible history at zero —
+    # the committee reads "sent 412", not "sent 200 (twice)".
+    campaign = await database.get(f"/email/campaigns/{campaign_id}") or {}
+    sent = int(campaign.get("sent") or 0)
+    failed = int(campaign.get("failed") or 0)
     unsubscribe = general_unsubscribe_url()
 
-    sent = failed = 0
     try:
-        for index, batch in enumerate(batches, start=1):
+        while True:
+            batch = await database.post(
+                "/campaign-recipients/claim",
+                {
+                    "campaign_id": campaign_id,
+                    "batch_size": max(1, settings.bulk_batch_size),
+                    "stale_seconds": BATCH_STALE_SECONDS,
+                },
+            ) or {}
+            emails = batch.get("emails") or []
+            if not emails:
+                break
+
+            # Renewal, not a second lease: same name, same holder. Losing it
+            # means somebody took over after this pod's TTL ran out mid-batch
+            # — that pod now owns the send, so stop rather than double-pace it.
+            renewal = await database.post(
+                "/job-leases/claim",
+                {
+                    "name": lease_name,
+                    "holder": holder,
+                    "ttl_seconds": SENDER_LEASE_TTL_SECONDS,
+                },
+            )
+            if not (renewal or {}).get("claimed"):
+                log.warning(
+                    "Campaign %s: lost the sender lease mid-batch — leaving the "
+                    "rest to the lease holder", campaign_id,
+                )
+                # The campaign stays 'sending'; the rows this pod claimed but
+                # did not confirm will go stale and the new holder re-claims them.
+                break
+
+            rows = [{"email": e} for e in emails]
             try:
-                reached = len(await build(batch, unsubscribe))
+                reached = await build(rows, unsubscribe)
             except Exception:  # noqa: BLE001
                 log.exception(
-                    "Campaign %s: batch %d of %d failed", campaign_id, index, len(batches)
+                    "Campaign %s: batch of %d failed", campaign_id, len(rows)
                 )
-                reached = 0
-            sent += reached
-            failed += len(batch) - reached
+                reached = []
+            reached_set = {str(e).strip().lower() for e in reached}
+
+            delivered = [e for e in emails if e.strip().lower() in reached_set]
+            missed = [e for e in emails if e.strip().lower() not in reached_set]
+            for batch_emails, ok in ((delivered, True), (missed, False)):
+                if not batch_emails:
+                    continue
+                # Both confirmed either way: a row left 'claimed' would be
+                # re-sent once it goes stale, and a missed address must not be
+                # re-mailed on every future resume.
+                await database.post(
+                    "/campaign-recipients/confirm",
+                    {"campaign_id": campaign_id, "emails": batch_emails, "ok": ok},
+                )
+                sent += len(batch_emails) if ok else 0
+                failed += 0 if ok else len(batch_emails)
 
             await database.patch(
                 f"/email/campaigns/{campaign_id}",
@@ -578,23 +741,36 @@ async def send_bulk(campaign_id: int, recipients: list[dict], build) -> dict:
             # Exchange throttles a mailbox at roughly 30 messages a minute, and
             # being throttled mid-send looks identical to the mail being
             # rejected. Pacing is cheaper than finding out which it was.
-            if index < len(batches) and settings.bulk_send_interval_seconds > 0:
+            if batch.get("remaining", 0) and settings.bulk_send_interval_seconds > 0:
                 await asyncio.sleep(settings.bulk_send_interval_seconds)
     except asyncio.CancelledError:
-        await database.patch(
-            f"/email/campaigns/{campaign_id}",
-            params={"status": "failed", "sent": sent, "failed": failed,
-                    "error": "Cancelled — the service stopped mid-send."},
-        )
+        # SIGTERM under a rolling update. Deliberately NOT marking the campaign
+        # failed: this send is not lost, it is paused — the rows stay claimable
+        # (a claimed-unconfirmed one goes stale and is re-claimed) and the
+        # replacement pod's startup resume finishes it. Marking it failed here
+        # is how a graceful shutdown used to destroy the campaign it was saving.
+        # The lease is released in `finally`, so the next sender starts at once.
+        log.info("Campaign %s interrupted mid-send — left resumable", campaign_id)
         raise
     except Exception as exc:  # noqa: BLE001
         log.exception("Campaign %s failed", campaign_id)
         await database.patch(
             f"/email/campaigns/{campaign_id}",
-            params={"status": "failed", "sent": sent, "failed": failed,
-                    "error": str(exc)[:400]},
+            params={
+                "status": "failed",
+                "sent": sent,
+                "failed": failed,
+                "error": str(exc)[:400],
+            },
         )
         return {"sent": sent, "failed": failed, "ok": False}
+    finally:
+        # Always given back — also on the cancelled path, because that is the
+        # case where it matters most: the successor pod cannot resume while a
+        # lease from a pod that asked to stop still covers the campaign.
+        await database.post(
+            "/job-leases/release", {"name": lease_name, "holder": holder}
+        )
 
     # A run where nothing got out is a failure, whatever the loop did. Recording
     # it as "sent" is how a committee discovers weeks later that the newsletter
@@ -614,3 +790,144 @@ async def send_bulk(campaign_id: int, recipients: list[dict], build) -> dict:
     )
     log.info("Campaign %s finished: %d sent, %d failed", campaign_id, sent, failed)
     return {"sent": sent, "failed": failed, "ok": failed == 0}
+
+
+# ------------------------------------------------------------- resuming sends
+
+
+async def resume_pending() -> dict:
+    """Pick up bulk sends the previous api pod left unfinished.
+
+    Runs once at startup, beside the announce scheduler: a rolling update
+    stops the old pod while a slow, paced send is mid-flight, and "the new pod
+    finishes it" is the whole design. The campaign rows say which sends those
+    are (`status = 'sending'`), and `kind`/`event_id` say how to rebuild the
+    message.
+
+    Does not re-resolve the audience: the rows seeded when the send started are
+    the people who were messaged, and a subscriber who opted out since should
+    not be re-subscribed by an automatic retry.
+    """
+    if not mailer.configured():
+        # With no mail credentials no send could have run, so none can be
+        # resumed — and a resumed send here would only mark campaigns failed.
+        log.info("No mail credentials — skipping the send-resume pass")
+        return {"resumable": 0, "skipped": True}
+
+    rows = await database.get("/campaigns/resumable") or []
+    results: list[dict] = []
+    deferred: list[dict] = []
+
+    for row in rows:
+        await _resume_one_into(row, results, deferred)
+
+    # A deferred campaign is leased by a live pod (or by one that died with
+    # seconds left on its lease). Either way the lease frees up within its TTL,
+    # and polling picks the campaign up then — without this wait, a send that
+    # was claimed a second before the old pod stopped would sit unresumed
+    # until the next restart.
+    deadline = monotonic() + RESUME_RETRY_SECONDS
+    while deferred and monotonic() < deadline:
+        await asyncio.sleep(RESUME_POLL_SECONDS)
+        still: list[dict] = []
+        for row in deferred:
+            await _resume_one_into(row, results, still)
+        deferred = still
+
+    if deferred:
+        log.warning(
+            "%d campaign(s) still leased elsewhere after %ss — leaving them for "
+            "the next restart", len(deferred), RESUME_RETRY_SECONDS,
+        )
+    log.info("Resume pass: %d resumable, %d picked up", len(rows), len(rows) - len(deferred))
+    return {"resumable": len(rows), "results": results}
+
+
+async def _resume_one_into(row: dict, done: list[dict], deferred: list[dict]) -> None:
+    """Resume one campaign, filing the outcome or the deferral into a list.
+
+    One bad campaign must never kill the pass — several can be resumable after
+    one deploy, and the others still deserve their retry.
+    """
+    campaign_id = row.get("id")
+    try:
+        outcome = await _resume_one(row)
+    except Exception:  # noqa: BLE001
+        log.exception("Resuming campaign %s failed", campaign_id)
+        done.append({"campaign": campaign_id, "ok": False, "error": True})
+        return
+    if outcome.get("deferred"):
+        deferred.append({"campaign": campaign_id, "deferred": True})
+    else:
+        done.append({"campaign": campaign_id, **outcome})
+
+
+async def _resume_one(row: dict) -> dict:
+    """Rebuild one campaign's `build` closure from the stored row, and send.
+
+    This is why the row carries `kind` and `event_id`: the closure that built
+    the original messages died with the old pod, and the stored columns are the
+    only description of it that survives.
+    """
+    campaign_id = row["id"]
+    kind = (row.get("kind") or "newsletter").strip()
+
+    if kind == "newsletter":
+        # The same construction as routes/admin.py's send_newsletter, from the
+        # stored row instead of the request body.
+        subject = (row.get("subject") or "").strip()
+        heading = (row.get("heading") or subject).strip()
+        html, text = render_body(row.get("body") or "")
+
+        async def build(batch: list[dict], unsubscribe: str) -> list[str]:
+            return await mailer.send_campaign(
+                [r["email"] for r in batch], subject, heading, text, html, unsubscribe
+            )
+
+        return await send_bulk(campaign_id, [], build, kind="newsletter")
+
+    if kind in ("event_announcement", "on_sale"):
+        # Imported here, not at the top: announce imports this module, so a
+        # module-level import would be circular at load time. Both builders
+        # are only ever called from inside a running request or the startup
+        # task, never at import time.
+        from services import announce
+
+        event = await database.get(f"/events/{row.get('event_id')}")
+        if event is None:
+            # The event was deleted between send and resume. A row this old is
+            # an audit record, not a promise, so the campaign is closed failed
+            # with the reason rather than retried forever.
+            await database.patch(
+                f"/email/campaigns/{campaign_id}",
+                params={
+                    "status": "failed",
+                    "error": (
+                        f"Cannot resume: event {row.get('event_id')} no longer "
+                        "exists."
+                    ),
+                },
+            )
+            return {"campaign": campaign_id, "ok": False,
+                    "error": f"event {row.get('event_id')} deleted"}
+
+        if kind == "on_sale":
+            build = await announce.build_sale_announcement(event, row)
+        else:
+            build = await announce.build_event_announcement(event, row)
+        return await send_bulk(
+            campaign_id, [], build, kind=kind, event_id=row.get("event_id")
+        )
+
+    # A kind from a future deploy, or a typo in the column. Nothing can be
+    # rebuilt, and retrying cannot help — close it with the reason rather than
+    # leaving it resumable forever.
+    log.error("Campaign %s has unknown kind %r — marking failed", campaign_id, kind)
+    await database.patch(
+        f"/email/campaigns/{campaign_id}",
+        params={
+            "status": "failed",
+            "error": f"Cannot resume: unknown campaign kind {kind!r}.",
+        },
+    )
+    return {"campaign": campaign_id, "ok": False, "error": f"unknown kind {kind!r}"}

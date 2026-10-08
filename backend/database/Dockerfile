@@ -9,4 +9,9 @@ RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
 # why there is deliberately no __init__.py here and imports are absolute.
 COPY . /code
 
-CMD ["fastapi", "run", "main.py", "--host", "0.0.0.0", "--port", "8080"]
+# --timeout-graceful-shutdown: on SIGTERM (a RollingUpdate stops this container
+# with one) uvicorn finishes the request in flight before exiting. The api
+# serves everything THROUGH this adapter, so a replacement that cut it off
+# mid-SELECT would surface as a user-facing error — the preStop sleep and this
+# flag together are what keep a RollingUpdate invisible.
+CMD ["fastapi", "run", "main.py", "--host", "0.0.0.0", "--port", "8080", "--timeout-graceful-shutdown", "15"]

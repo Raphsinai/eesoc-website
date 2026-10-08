@@ -64,6 +64,12 @@ class Campaign(BaseModel):
     recipients: int = 0
     sent: int = 0
     failed: int = 0
+    # What the message is (newsletter, event announcement, on-sale) and which
+    # event it was about. A send interrupted by a pod replacement can only be
+    # finished by a *different* process, which never saw the closure that
+    # built it — these two are how the stored row says which one to rebuild.
+    kind: str = "newsletter"
+    event_id: int | None = None
     error: str | None = None
     created_by: int | None = None
     created_at: datetime | None = None

@@ -228,17 +228,35 @@ async def save(upload: UploadFile, purpose: str = "general") -> dict:
     key = _key(extension)
 
     if using_s3():
-        await asyncio.to_thread(
-            _s3().put_object,
-            Bucket=S3_BUCKET,
-            Key=f"{S3_PREFIX}/{key}" if S3_PREFIX else key,
-            Body=data,
-            ContentType=content_type,
-            # Long cache: keys are random and never reused, so a stored object
-            # is immutable.
-            CacheControl="public, max-age=31536000, immutable",
-        )
-        stored = f"{S3_PREFIX}/{key}" if S3_PREFIX else key
+        # Imported lazily like boto3 itself, so the local backend never needs
+        # botocore present either.
+        from botocore.exceptions import BotoCoreError, ClientError, EndpointConnectionError
+
+        object_key = f"{S3_PREFIX}/{key}" if S3_PREFIX else key
+        # Object storage runs as a single replica under a Recreate strategy, so
+        # every deploy of it briefly removes the S3 endpoint entirely. That is a
+        # retryable state, not a broken one, and surfacing it as a 500 would
+        # tell the committee member mid-upload the exact opposite of the truth.
+        # 503 says what is so: it will be back, try again in a moment.
+        try:
+            await asyncio.to_thread(
+                _s3().put_object,
+                Bucket=S3_BUCKET,
+                Key=object_key,
+                Body=data,
+                ContentType=content_type,
+                # Long cache: keys are random and never reused, so a stored object
+                # is immutable.
+                CacheControl="public, max-age=31536000, immutable",
+            )
+        except (ClientError, EndpointConnectionError, BotoCoreError) as exc:
+            log.warning("Object store unreachable while saving an upload: %s", exc)
+            raise HTTPException(
+                503,
+                "Uploads are temporarily unavailable while object storage "
+                "restarts — please retry in a moment.",
+            ) from exc
+        stored = object_key
     else:
         ensure_root()
         destination = MEDIA_ROOT / key

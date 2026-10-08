@@ -17,9 +17,13 @@ metadata:
     # After the adapter has migrated the schema (wave 1).
     argocd.argoproj.io/sync-wave: "2"
 spec:
-  # Uploads no longer pin this to a node — they go to object storage — but the
-  # daily ICU sync still runs inside the process and its lock does not span pods.
-  # Move the sync to a CronJob calling POST /admin/sync before scaling up.
+  # One replica is a choice, no longer a requirement. The daily ICU sync
+  # guard is a Postgres-level lease claimed through the database adapter
+  # (see migration 035), so it spans pods — two replicas could not both run
+  # the sync, and the old "move it to a CronJob before scaling up" warning
+  # is done. It stays at one because the event-announce loop still runs
+  # in-process — scaling up would run that from every pod — and because
+  # one has carried the whole site without complaint so far.
   replicas: 1
   # New pod first, old pod second: with one replica, stopping the old one
   # first (maxSurge 0) took the whole site down for ~30s on every deploy. That
@@ -33,6 +37,11 @@ spec:
   template:
     metadata: { labels: { app: api } }
     spec:
+      # The whole-pod drain budget. With maxUnavailable: 0 a rolling update
+      # never cuts a pod that is serving, but SIGKILL after this many seconds
+      # does: both containers' preStop sleeps and the in-flight requests
+      # under them have to fit, so 45 leaves the 8s + 5s sleeps room to spare.
+      terminationGracePeriodSeconds: 45
       # The repository is private, so its GHCR images are too. `ghcr-pull` is a
       # docker-registry secret in this namespace and is NOT in git.
       imagePullSecrets:
@@ -45,6 +54,15 @@ spec:
             - configMapRef: { name: eesoc-config }
             # S3 credentials live alongside the other secrets.
             - secretRef:    { name: eesoc-secrets }
+          # The endpoint must leave Service load balancing before the
+          # process stops: without preStop, the kubelet SIGTERMs the moment
+          # the pod enters Terminating while the Service still routes here,
+          # and everything in flight drops mid-response. The hook runs before
+          # SIGTERM, so sleep 8 buys the last-routed requests their answer,
+          # comfortably inside the 45s grace budget.
+          lifecycle:
+            preStop:
+              exec: { command: ["/bin/sh", "-c", "sleep 8"] }
           livenessProbe:
             # /health does not touch the database on purpose — see api/main.py.
             httpGet: { path: /health, port: 8080 }
@@ -64,8 +82,8 @@ spec:
         #
         # A container costs nothing against the kubelet's pod limit, and the
         # node is at it — this is the difference between the site fitting and
-        # not. Nothing is given up: the api is already pinned to one replica by
-        # its in-process sync lock, so the two could never scale apart anyway.
+        # not. Nothing is given up: the api runs as one replica (see above), so
+        # the SPA and the API scale together either way.
         #
         # nginx still proxies /api through the `api` Service rather than
         # localhost, so the identical config works under docker compose, where
@@ -77,6 +95,14 @@ spec:
             httpGet: { path: /, port: 80 }
             initialDelaySeconds: 5
             periodSeconds: 10
+          # Same load-balancing ordering as the api container: stop taking
+          # Service-routed requests before the process does. `nginx -s quit`
+          # stops accepting and drains its keepalive connections, so a
+          # browser with an idle keepalive open is answered, not reset, and
+          # the sleep covers the interval after the endpoint leaves.
+          lifecycle:
+            preStop:
+              exec: { command: ["/bin/sh", "-c", "nginx -s quit && sleep 5"] }
           resources:
             requests: { cpu: 25m, memory: 64Mi }
             limits:   { memory: 192Mi }

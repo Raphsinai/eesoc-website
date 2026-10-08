@@ -12,7 +12,7 @@ real thing.
 
 from datetime import datetime, timezone
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 import fixtures
 
@@ -20,6 +20,44 @@ app = FastAPI(
     title="EESoc ICU bridge (stub)",
     description="Canned eActivities fixtures. Never talks to the Union.",
 )
+
+# Request counting, added for the section-02 rollout tests (tests/zero-downtime).
+#
+# The daily union sync must run on exactly one api pod even while a
+# RollingUpdate has two pods alive at once — the api's in-process lock cannot
+# see the other pod, so the claim lives in Postgres (see
+# backend/api/services/sync.py). The test for that needs ground truth about
+# how many times the stub was actually called, which only the stub itself can
+# report. Plain in-process counters are that ground truth: the stub runs as a
+# single process, so the numbers cannot race or drift.
+_REQUEST_COUNTS: dict[str, int] = {}
+
+# The counter's own endpoints are excluded, so a test polling /counts does not
+# inflate the numbers it is about to assert on.
+_COUNTED_EXCLUSIONS = {"/counts", "/counts/reset"}
+
+
+@app.middleware("http")
+async def _count_requests(request: Request, call_next):
+    # Keyed on the path without its query string: the sync passes ?year=..., and
+    # what the tests care about is which report was pulled, not with what
+    # arguments.
+    if request.url.path not in _COUNTED_EXCLUSIONS:
+        _REQUEST_COUNTS[request.url.path] = _REQUEST_COUNTS.get(request.url.path, 0) + 1
+    return await call_next(request)
+
+
+@app.get("/counts")
+async def request_counts() -> dict:
+    """How many times each stub path has been requested since the last reset."""
+    return {"total": sum(_REQUEST_COUNTS.values()), "requests": dict(_REQUEST_COUNTS)}
+
+
+@app.post("/counts/reset")
+async def reset_request_counts() -> dict:
+    """Zero the counters, so a test can measure exactly one sync run's traffic."""
+    _REQUEST_COUNTS.clear()
+    return {"ok": True}
 
 
 def academic_year(when: datetime | None = None) -> str:

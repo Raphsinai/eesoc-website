@@ -1,0 +1,39 @@
+# Rollout-specific test-stack overlay — section 02 (zero-downtime).
+#
+# NEVER used on its own: it is layered as the THIRD `-f` file on the two real
+# compose files, by the section-02 CI jobs only:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml \
+#     -f tests/zero-downtime/docker-compose.rollout.yml -p eesoc-test \
+#     up -d --build postgres database union-stub mailpit api api-nologin frontend
+#
+# The service list stays exactly the test stack's: `union` — the real ICU
+# bridge — is never included, in this file or in any command that layers it.
+#
+# What this adds: sending ONE message per recipient, one second apart, so a
+# test-scale send is still slow enough to interrupt — with the production
+# default (400 to a message, every two seconds) a 15-recipient audience
+# finishes in one batch and no time at all, and there is nothing running to
+# kill. Plus lease and stale windows of 5s each, so a SIGKILLed test pod's
+# campaign resumes within seconds instead of waiting out the production TTL.
+# In production none of these apply: the code defaults hold (batch 400,
+# interval 2s, lease TTL 900s, stale 600s).
+services:
+  api:
+    environment:
+      BULK_BATCH_SIZE: "1"
+      BULK_SEND_INTERVAL_SECONDS: "1"
+      # Short lease and stale windows so the replacement pod can take over the
+      # killed one's campaign (and re-claim its claimed rows) well inside this
+      # test's 120s completion deadline.
+      SENDER_LEASE_TTL_SECONDS: "5"
+      BATCH_STALE_SECONDS: "5"
+
+  # Same settings for the same reasons as `api` above: this instance runs the
+  # same code, and its sends must be as interruptible and resumable.
+  api-nologin:
+    environment:
+      BULK_BATCH_SIZE: "1"
+      BULK_SEND_INTERVAL_SECONDS: "1"
+      SENDER_LEASE_TTL_SECONDS: "5"
+      BATCH_STALE_SECONDS: "5"

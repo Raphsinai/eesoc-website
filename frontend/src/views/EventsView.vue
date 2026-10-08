@@ -71,6 +71,17 @@ function open(event) {
         Academic year {{ session.academicYear }}. Tickets are bought on the Union
         shop — we match your purchase to your booking automatically.
       </p>
+      <!-- A plain anchor to the session-free feed: this is how somebody finds
+           the URL to paste into their calendar app, which is exactly the
+           client that cannot log in. -->
+      <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
+        <a
+          data-testid="calendar-subscribe-link"
+          href="/api/events.ics"
+          style="color:inherit"
+        >Subscribe to the calendar</a>
+        — every published event, straight into your calendar app.
+      </p>
     </header>
 
     <!-- Where people look for events is where they think to ask to hear

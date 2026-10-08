@@ -31,9 +31,12 @@ const EventsView = () => import('@/views/EventsView.vue')
 const EventView = () => import('@/views/EventView.vue')
 const AdminView = () => import('@/views/AdminView.vue')
 const AdminEventView = () => import('@/views/AdminEventView.vue')
+const AdminSponsorView = () => import('@/views/AdminSponsorView.vue')
 const JobsView = () => import('@/views/JobsView.vue')
 const EmailView = () => import('@/views/EmailView.vue')
 const SubscribeView = () => import('@/views/SubscribeView.vue')
+const CheckinView = () => import('@/views/CheckinView.vue')
+const TicketView = () => import('@/views/TicketView.vue')
 
 const routes = [
   // `title` is the page half of eesoc.com's "<Page> | EESoc - Imperial College
@@ -64,7 +67,14 @@ const routes = [
   { path: '/subscribe', name: 'subscribe', component: SubscribeView, meta: { title: 'Newsletter', noindex: true } },
   { path: '/portal', name: 'portal', component: PortalView, meta: { title: 'Sponsor portal', requires: 'sponsor', noindex: true } },
   { path: '/admin/events/:id', name: 'admin-event', component: AdminEventView, meta: { title: 'Event bookings', requires: 'committee', noindex: true } },
+  { path: '/admin/sponsors/:id', name: 'admin-sponsor', component: AdminSponsorView, meta: { title: 'Sponsor agreement', requires: 'committee', noindex: true } },
   { path: '/admin', name: 'admin', component: AdminView, meta: { title: 'Committee admin', requires: 'committee', noindex: true } },
+  // The door. 'committee' covers anybody on the roster, role or not — the API
+  // checks the same thing.
+  { path: '/checkin', name: 'checkin', component: CheckinView, meta: { title: 'Door check-in', requires: 'committee', noindex: true } },
+  { path: '/checkin/:eventId', name: 'checkin-event', component: CheckinView, meta: { title: 'Door check-in', requires: 'committee', noindex: true } },
+  // A ticket. Public — the token in the URL is the credential.
+  { path: '/ticket/:token', name: 'ticket', component: TicketView, meta: { title: 'Your ticket', noindex: true } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 

@@ -422,6 +422,12 @@ def _warn_once(key: str, message: str, *args) -> None:
         log.error(message, *args)
 
 
+def deliverable(to: str) -> bool:
+    """Public form of `_deliverable`, for callers that record why nothing was
+    sent rather than treating an allow-listed-out address as a failure."""
+    return _deliverable(to)
+
+
 def _deliverable(to: str) -> bool:
     """Whether MAIL_ALLOWLIST lets this address receive real mail."""
     allowed = [a.strip().lower() for a in settings.mail_allowlist.split(",") if a.strip()]
@@ -702,6 +708,64 @@ async def send_waitlist_offer(
     return await send(to, f"A place has come free for {event_title}", body, html)
 
 
+async def send_sponsor_note(
+    to: list[str],
+    sponsor: str,
+    topic: str,
+    note: str,
+    author: str,
+    url: str,
+) -> list[str]:
+    """A sponsor asked a question or left a note in the portal.
+
+    To the committee, so it goes from the transactional mailbox like any other
+    single message — not bulk, no unsubscribe. The note is quoted in full so it
+    can be read, and often answered, from the inbox; the reply itself goes in
+    the portal so the sponsor sees it where they asked.
+    """
+    who, what = escape(sponsor), escape(topic)
+    quoted = "<br>".join(escape(line) for line in note.splitlines())
+    body = (
+        f"{sponsor} left a note in the sponsor portal.\n\n"
+        f"About:  {topic}\n"
+        f"From:   {author}\n\n"
+        f"{note}\n\n"
+        f"Reply in the admin page: {url}\n"
+    )
+    html = _shell(
+        f"{who}: a note about {what}",
+        escape(" ".join(note.split())[:140]),
+        _detail_rows([("Sponsor", who), ("About", what), ("From", escape(author))])
+        + f'<blockquote style="margin:0 0 18px;padding:12px 16px;border-left:3px solid {GOLD};'
+        f'background:{SUNKEN};font-family:{SANS};font-size:15px;line-height:1.6;color:{BODY_TEXT};">'
+        f"{quoted}</blockquote>"
+        + _button("Reply in the admin page", url),
+    )
+    return await send_many(to, f"Sponsor note from {sponsor}: {topic}", body, html)
+
+
+async def send_sponsor_reply(
+    to: list[str], topic: str, url: str
+) -> list[str]:
+    """The committee answered a sponsor's note.
+
+    Says that there is a reply, not what it is: the conversation lives in the
+    portal, and copying it into email means two places to keep track of.
+    """
+    what = escape(topic)
+    body = (
+        f"The EESoc committee has replied to your note about {topic}.\n\n"
+        f"Read it in the sponsor portal: {url}\n"
+    )
+    html = _shell(
+        "EESoc has replied",
+        f"About {what}",
+        _p(f"The committee has replied to your note about <strong>{what}</strong>.")
+        + _button("Read it in the portal", url),
+    )
+    return await send_many(to, f"EESoc replied: {topic}", body, html)
+
+
 async def send_purchase_reminder(
     to: str,
     event_title: str,
@@ -738,19 +802,53 @@ async def send_purchase_reminder(
 
 
 async def send_booking_confirmed(
-    to: str, event_title: str, ticket_type: str, starts: str
+    to: str,
+    event_title: str,
+    ticket_type: str,
+    starts: str,
+    venue: str | None = None,
+    quantity: int = 1,
+    url: str | None = None,
+    ticket_url: str | None = None,
+    qr_url: str | None = None,
 ) -> bool:
+    """Their booking has gone from held to confirmed — or the committee added it.
+
+    The one email that says "you have a place", so it carries everything they
+    would otherwise have to look up: what, when, where, how many — and the QR
+    the door scans. The QR is an image on our own domain, which a client may
+    hold back until asked; the ticket link under it always works.
+    """
+    ticket = f"{ticket_type} × {quantity}" if quantity > 1 else ticket_type
+    rows = [("Ticket", escape(ticket)), ("When", escape(starts))]
+    lines = [f"Ticket:  {ticket}", f"When:    {starts}"]
+    if venue:
+        rows.append(("Where", escape(venue)))
+        lines.append(f"Where:   {venue}")
     body = (
         f"Your place at {event_title} is confirmed.\n\n"
-        f"Ticket:  {ticket_type}\n"
-        f"When:    {starts}\n\n"
-        "See you there.\n"
+        + "\n".join(lines)
+        + "\n\n"
+        + (f"Your ticket (show this at the door): {ticket_url}\n" if ticket_url else "")
+        + (f"Event details: {url}\n" if url else "")
+        + "\nSee you there.\n"
+    )
+    qr = (
+        f'<p style="margin:4px 0 6px;text-align:center;">'
+        f'<img src="{escape(qr_url)}" alt="Your ticket QR code" width="200" height="200" '
+        f'style="display:inline-block;width:200px;height:200px;border:0;"></p>'
+        f'<p style="margin:0 0 14px;text-align:center;font-family:{SANS};font-size:13px;'
+        f'color:{MUTED};">Show this at the door.</p>'
+        if qr_url else ""
     )
     html = _shell(
         f"You're confirmed for {escape(event_title)}",
-        f"{escape(ticket_type)} · {escape(starts)}",
+        f"{escape(ticket)} · {escape(starts)}",
         _p(f"Your place at <strong>{escape(event_title)}</strong> is confirmed.")
-        + _detail_rows([("Ticket", escape(ticket_type)), ("When", escape(starts))])
+        + _detail_rows(rows)
+        + qr
+        + (_button("Open your ticket", ticket_url) if ticket_url else "")
+        + (_note(f'<a href="{url}" style="color:{MUTED};">Event details</a>') if url else "")
         + _p("See you there."),
     )
     return await send(to, f"You're confirmed for {event_title}", body, html)

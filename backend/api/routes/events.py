@@ -16,7 +16,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from clients import database
 from config import settings
 from models.auth import AuthSession, GuestDetails
-from services import purchase
+from services import confirmations, purchase, tickets
 from services import sync as sync_service
 from services.identity import is_imperial, resolve_or_create_user
 from utils import email as mailer
@@ -178,6 +178,19 @@ async def get_event(
     # a ticket is one click from paying for it.
     links = await purchase.links_for_event(event)
 
+    # The sponsors the committee linked to this event. Published sponsors only:
+    # a company still in the pipeline has not signed, and must not appear on a
+    # public page because somebody linked an event early.
+    sponsors = [
+        {
+            "name": l["sponsor_name"],
+            "slug": l["sponsor_slug"],
+            "logoUrl": l.get("sponsor_logo_url"),
+        }
+        for l in await database.get("/sponsors/links/confirmed", {"event_id": event["id"]}) or []
+        if l.get("sponsor_active")
+    ]
+
     card = event_card(event)
     # The calendar/link fields live here and not in `event_card`: cards never
     # need them, and other sections depend on that shape staying put. The map
@@ -193,6 +206,7 @@ async def get_event(
     )
     card.update(
         {
+            "sponsors": sponsors,
             "description": event.get("description", ""),
             "capacity": event.get("capacity"),
             "remaining": event.get("remaining"),
@@ -215,6 +229,9 @@ async def get_event(
                     "orderNumber": r.get("order_number"),
                     "requiresPurchase": r.get("requires_purchase", True),
                     "purchaseUrl": links.get(r["ticket_type_id"]) or links.get(None),
+                    # The QR ticket for the door. Only ever the caller's own
+                    # bookings reach this list, so the token is theirs to see.
+                    "ticketToken": tickets.token_for(r["id"]),
                 }
                 for r in mine
                 if r["status"] in ("held", "confirmed")
@@ -637,6 +654,8 @@ async def set_order_number(
         "/reservations/match", params={"academic_year": academic_year()}
     )
     updated = await database.get(f"/reservations/{reservation_id}")
+    if updated["status"] == "confirmed":
+        confirmations.trigger()
     return {
         "ok": True,
         "status": updated["status"],

@@ -18,6 +18,7 @@ from clients import database, union
 from config import settings
 from routes.admin import router as admin_router
 from routes.auth import router as auth_router
+from routes.checkin import router as checkin_router
 from routes.committee import router as committee_router
 from routes.email import router as email_router
 from routes.events import router as events_router
@@ -154,6 +155,7 @@ app.include_router(sponsors_router)
 app.include_router(search_router)
 app.include_router(seo_router)
 app.include_router(admin_router)
+app.include_router(checkin_router)
 
 
 @app.get("/health")

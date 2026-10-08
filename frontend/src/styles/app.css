@@ -11,6 +11,10 @@
   --type-2xs:400 var(--text-2xs)/var(--leading-normal) var(--font-mono);
   /* Alias: several views reached for a fainter rule than --border-hairline. */
   --border-faint:var(--border-hairline);
+  /* Alias: every error message on the site is coloured var(--danger), which the
+     design system never defined — it names it --status-danger — so they all
+     rendered in body text colour, indistinguishable from a notice. */
+  --danger:var(--status-danger);
 }
 
 *,*::before,*::after{box-sizing:border-box}

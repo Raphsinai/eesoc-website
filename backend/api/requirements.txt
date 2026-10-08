@@ -8,3 +8,6 @@ boto3==1.35.36
 # Resize and re-encode uploaded images. The old site served originals and
 # the handover reports it was 'extremely slow, especially on mobile'.
 Pillow==11.0.0
+# Renders ticket QR codes (the confirmation email's image, the ticket page).
+# Pure-python encoder drawing through Pillow, imported lazily in the route.
+qrcode==8.0

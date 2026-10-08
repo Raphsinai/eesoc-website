@@ -10,7 +10,14 @@ from models.sponsors import (
     JobListingWrite,
     Sponsor,
     SponsorAsset,
+    SponsorContact,
+    SponsorLink,
+    SponsorMarketing,
+    SponsorMarketingUpdate,
+    SponsorNote,
     SponsorRequest,
+    SponsorRequestUpdate,
+    SponsorTerm,
 )
 from postgres import get_pool
 
@@ -24,7 +31,19 @@ SPONSOR_COLUMNS = """
 
 LISTING_COLUMNS = """
     id, sponsor_id, title, location, body, apply_url, closes_on, applications,
-    status, created_at, updated_at
+    status, announced_at, created_at, updated_at
+"""
+
+CLAIM_COLUMNS = "id, event_id, sponsor_id, status, note, clause, created_at, updated_at"
+
+REQUEST_COLUMNS = (
+    "id, sponsor_id, format, body, timing, status, response, created_at, updated_at"
+)
+
+MARKETING_COLUMNS = """
+    id, sponsor_id, academic_year, subject, body, media, audiences, channels,
+    preferred_date, status, response, campaign_id, emailed_at, posted_at,
+    created_by, decided_by, created_at, updated_at
 """
 
 
@@ -190,6 +209,10 @@ async def update_listing(listing_id: int, listing: JobListingWrite) -> JobListin
             f"""
             UPDATE public.job_listings SET
                 title=$2, location=$3, body=$4, apply_url=$5, closes_on=$6,
+                -- Reopening a closed or draft listing makes it news again, so
+                -- it goes back into the next "new roles" email.
+                announced_at = CASE WHEN $7 = 'live' AND status <> 'live'
+                                    THEN NULL ELSE announced_at END,
                 status=$7, updated_at=NOW()
              WHERE id=$1
             RETURNING {LISTING_COLUMNS};
@@ -232,6 +255,35 @@ async def delete_listing(listing_id: int) -> None:
         await conn.execute("DELETE FROM public.job_listings WHERE id = $1;", listing_id)
 
 
+@router.get("/listings/unannounced")
+async def unannounced_listings() -> list[dict]:
+    """Live roles members have not yet been emailed about."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT l.id, l.title, l.location, l.closes_on, l.apply_url,
+                   l.created_at, s.name AS sponsor_name, s.slug AS sponsor_slug
+              FROM public.job_listings l
+              JOIN public.sponsors s ON s.id = l.sponsor_id
+             WHERE l.status = 'live' AND l.announced_at IS NULL AND s.active
+               AND (l.closes_on IS NULL OR l.closes_on >= CURRENT_DATE)
+             ORDER BY l.created_at;
+            """
+        )
+    return [dict(r) for r in rows]
+
+
+@router.post("/listings/announced", status_code=204)
+async def mark_announced(ids: list[int]) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE public.job_listings SET announced_at = NOW() WHERE id = ANY($1::bigint[]);",
+            ids,
+        )
+
+
 @router.get("/listings/all")
 async def list_all_listings(status: str = "live") -> list[dict]:
     """Live roles across every sponsor, for the public careers list."""
@@ -255,34 +307,88 @@ async def list_all_listings(status: str = "live") -> list[dict]:
 
 
 @router.get("/{sponsor_id}/claims")
-async def list_claims(sponsor_id: int) -> list[EventSponsorship]:
+async def list_claims(sponsor_id: int) -> list[dict]:
+    """Every event this sponsor has registered interest in or been linked to,
+    with enough of the event to show it — one query rather than one per row."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, event_id, sponsor_id, status, note, created_at
-              FROM public.event_sponsorships WHERE sponsor_id = $1 ORDER BY created_at DESC;
+            SELECT es.id, es.event_id, es.sponsor_id, es.status, es.note,
+                   es.clause, es.created_at, es.updated_at,
+                   e.slug, e.title, e.starts_at, e.venue, e.published,
+                   e.academic_year
+              FROM public.event_sponsorships es
+              JOIN public.events e ON e.id = es.event_id
+             WHERE es.sponsor_id = $1
+             ORDER BY e.starts_at DESC;
             """,
             sponsor_id,
         )
-    return [EventSponsorship(**dict(r)) for r in rows]
+    return [dict(r) for r in rows]
 
 
 @router.post("/{sponsor_id}/claims/{event_id}", status_code=201)
-async def claim_event(sponsor_id: int, event_id: int, note: str | None = None) -> EventSponsorship:
+async def register_interest(
+    sponsor_id: int, event_id: int, note: str | None = None
+) -> EventSponsorship:
     pool = await get_pool()
     async with pool.acquire() as conn:
         try:
             row = await conn.fetchrow(
-                """
+                f"""
                 INSERT INTO public.event_sponsorships (event_id, sponsor_id, note)
                 VALUES ($1,$2,$3)
-                RETURNING id, event_id, sponsor_id, status, note, created_at;
+                RETURNING {CLAIM_COLUMNS};
                 """,
                 event_id, sponsor_id, note,
             )
         except UniqueViolationError:
-            raise HTTPException(409, "You have already claimed this event")
+            raise HTTPException(409, "You have already registered interest in this event")
+    return EventSponsorship(**dict(row))
+
+
+@router.delete("/{sponsor_id}/claims/{event_id}", status_code=204)
+async def remove_claim(sponsor_id: int, event_id: int, only_interest: bool = False) -> None:
+    """Withdraw interest, or unlink an event.
+
+    `only_interest` is what the sponsor's own withdraw sends: they may take back
+    an expression of interest, never undo a link the committee made.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            DELETE FROM public.event_sponsorships
+             WHERE sponsor_id = $1 AND event_id = $2
+               AND ($3::bool IS NOT TRUE OR status = 'interested');
+            """,
+            sponsor_id, event_id, only_interest,
+        )
+
+
+@router.put("/{sponsor_id}/links/{event_id}")
+async def link_event(sponsor_id: int, event_id: int, link: SponsorLink) -> EventSponsorship:
+    """Attach an existing event to a sponsor, confirmed.
+
+    An upsert: if the sponsor had registered interest, that row becomes the
+    link, so the history of who asked first is not lost to a second row.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"""
+            INSERT INTO public.event_sponsorships
+                (event_id, sponsor_id, status, clause, note)
+            VALUES ($1, $2, 'confirmed', $3, $4)
+            ON CONFLICT (event_id, sponsor_id) DO UPDATE
+               SET status = 'confirmed', clause = EXCLUDED.clause,
+                   note = COALESCE(EXCLUDED.note, public.event_sponsorships.note),
+                   updated_at = NOW()
+            RETURNING {CLAIM_COLUMNS};
+            """,
+            event_id, sponsor_id, link.clause, link.note,
+        )
     return EventSponsorship(**dict(row))
 
 
@@ -291,9 +397,10 @@ async def set_claim_status(claim_id: int, status: str) -> EventSponsorship:
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """
-            UPDATE public.event_sponsorships SET status = $2 WHERE id = $1
-            RETURNING id, event_id, sponsor_id, status, note, created_at;
+            f"""
+            UPDATE public.event_sponsorships SET status = $2, updated_at = NOW()
+             WHERE id = $1
+            RETURNING {CLAIM_COLUMNS};
             """,
             claim_id, status,
         )
@@ -302,20 +409,80 @@ async def set_claim_status(claim_id: int, status: str) -> EventSponsorship:
     return EventSponsorship(**dict(row))
 
 
-@router.get("/claims/claimable")
-async def claimable_events(sponsor_id: int | None = None) -> list[dict]:
-    """Future events the committee has opted in to sponsorship, unclaimed.
+@router.get("/links/confirmed")
+async def confirmed_links(event_id: int | None = None) -> list[dict]:
+    """Confirmed sponsor-event links, with the sponsor's public face.
 
-    Three conditions, all necessary: published, explicitly marked claimable, and
-    not already claimed. An event created from a sponsor's own request is also
-    excluded — that arrangement is already being negotiated, and putting it back
-    in the queue would let somebody else take it.
+    Feeds the "with" line on an event page, the events on a sponsor's card and
+    the badges in the admin event list. `sponsor_active` is returned so a public
+    caller can drop drafts: an unsigned company must not appear on an event.
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT e.id, e.slug, e.title, e.starts_at, e.venue, e.capacity
+            SELECT es.event_id, es.sponsor_id, es.clause,
+                   s.slug AS sponsor_slug, s.name AS sponsor_name,
+                   s.logo_url AS sponsor_logo_url, s.active AS sponsor_active,
+                   e.slug AS event_slug, e.title AS event_title,
+                   e.starts_at AS event_starts_at, e.published AS event_published,
+                   e.academic_year AS event_academic_year
+              FROM public.event_sponsorships es
+              JOIN public.sponsors s ON s.id = es.sponsor_id
+              JOIN public.events e   ON e.id = es.event_id
+             WHERE es.status = 'confirmed'
+               AND ($1::bigint IS NULL OR es.event_id = $1)
+             ORDER BY e.starts_at, s.sort_order, s.name;
+            """,
+            event_id,
+        )
+    return [dict(r) for r in rows]
+
+
+@router.get("/interest/open")
+async def open_interest() -> list[dict]:
+    """Interest waiting on a committee decision, across every sponsor."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT es.id, es.event_id, es.sponsor_id, es.note, es.created_at,
+                   s.name AS sponsor_name, e.title AS event_title,
+                   e.starts_at AS event_starts_at
+              FROM public.event_sponsorships es
+              JOIN public.sponsors s ON s.id = es.sponsor_id
+              JOIN public.events e   ON e.id = es.event_id
+             WHERE es.status = 'interested'
+             ORDER BY es.created_at;
+            """
+        )
+    return [dict(r) for r in rows]
+
+
+@router.get("/claims/claimable")
+async def claimable_events(sponsor_id: int | None = None) -> list[dict]:
+    """Future events the committee has opened to sponsorship and not yet given
+    to anyone.
+
+    Published, explicitly marked sponsorable, in the future, and with no
+    confirmed sponsor. Several sponsors may register interest in the same event
+    — the committee chooses — so interest does not take an event off the list;
+    a confirmed link does. An event created from a sponsor's own request is
+    excluded too: that arrangement is already being negotiated.
+
+    With `sponsor_id`, each row says whether that sponsor has already
+    registered interest, so the button can say so instead of erroring.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT e.id, e.slug, e.title, e.starts_at, e.venue, e.capacity,
+                   e.category,
+                   EXISTS (SELECT 1 FROM public.event_sponsorships mine
+                            WHERE mine.event_id = e.id
+                              AND mine.sponsor_id = $1
+                              AND mine.status = 'interested') AS interested
               FROM public.events e
              WHERE e.published
                AND e.sponsorship_claimable
@@ -323,32 +490,36 @@ async def claimable_events(sponsor_id: int | None = None) -> list[dict]:
                AND e.requested_by_sponsor_id IS NULL
                AND NOT EXISTS (
                      SELECT 1 FROM public.event_sponsorships es
-                      WHERE es.event_id = e.id AND es.status <> 'declined'
+                      WHERE es.event_id = e.id AND es.status = 'confirmed'
                    )
              ORDER BY e.starts_at;
-            """
+            """,
+            sponsor_id,
         )
     return [dict(r) for r in rows]
 
 
 @router.get("/claims/is-claimable/{event_id}")
-async def is_claimable(event_id: int) -> dict:
-    """Whether a specific event may be claimed, and why not.
+async def is_claimable(event_id: int, sponsor_id: int | None = None) -> dict:
+    """Whether a sponsor may register interest in an event, and why not.
 
-    Checked server-side at claim time: the list the sponsor was shown may be
-    minutes stale, and a hidden button is not a control.
+    Checked server-side at the moment of asking: the list the sponsor was shown
+    may be minutes stale, and a hidden button is not a control.
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT e.published, e.sponsorship_claimable, e.starts_at,
+            SELECT e.published, e.sponsorship_claimable,
+                   e.starts_at < NOW() AS past,
                    e.requested_by_sponsor_id,
                    EXISTS (SELECT 1 FROM public.event_sponsorships es
-                            WHERE es.event_id = e.id AND es.status <> 'declined') AS taken
+                            WHERE es.event_id = e.id AND es.status = 'confirmed') AS taken,
+                   EXISTS (SELECT 1 FROM public.event_sponsorships es
+                            WHERE es.event_id = e.id AND es.sponsor_id = $2) AS asked
               FROM public.events e WHERE e.id = $1;
             """,
-            event_id,
+            event_id, sponsor_id,
         )
     if row is None:
         raise HTTPException(404, "No such event")
@@ -357,10 +528,14 @@ async def is_claimable(event_id: int) -> dict:
         return {"claimable": False, "reason": "not_published"}
     if not row["sponsorship_claimable"]:
         return {"claimable": False, "reason": "not_offered"}
+    if row["past"]:
+        return {"claimable": False, "reason": "past"}
     if row["requested_by_sponsor_id"] is not None:
         return {"claimable": False, "reason": "already_arranged"}
     if row["taken"]:
         return {"claimable": False, "reason": "taken"}
+    if row["asked"]:
+        return {"claimable": False, "reason": "already_interested"}
     return {"claimable": True, "reason": None}
 
 
@@ -372,12 +547,12 @@ async def create_request(sponsor_id: int, req: SponsorRequest) -> SponsorRequest
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """
-            INSERT INTO public.sponsor_requests (sponsor_id, format, body)
-            VALUES ($1,$2,$3)
-            RETURNING id, sponsor_id, format, body, status, created_at;
+            f"""
+            INSERT INTO public.sponsor_requests (sponsor_id, format, body, timing)
+            VALUES ($1,$2,$3,$4)
+            RETURNING {REQUEST_COLUMNS};
             """,
-            sponsor_id, req.format, req.body,
+            sponsor_id, req.format, req.body, req.timing,
         )
     return SponsorRequest(**dict(row))
 
@@ -387,13 +562,366 @@ async def list_requests(sponsor_id: int) -> list[SponsorRequest]:
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """
-            SELECT id, sponsor_id, format, body, status, created_at
+            f"""
+            SELECT {REQUEST_COLUMNS}
               FROM public.sponsor_requests WHERE sponsor_id = $1 ORDER BY created_at DESC;
             """,
             sponsor_id,
         )
     return [SponsorRequest(**dict(r)) for r in rows]
+
+
+@router.get("/requests/all")
+async def all_requests(open_only: bool = False) -> list[dict]:
+    """Requests across every sponsor, newest first, with the sponsor's name."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT r.id, r.sponsor_id, r.format, r.body, r.timing, r.status,
+                   r.response, r.created_at, r.updated_at, s.name AS sponsor_name
+              FROM public.sponsor_requests r
+              JOIN public.sponsors s ON s.id = r.sponsor_id
+             WHERE ($1::bool IS NOT TRUE OR r.status <> 'closed')
+             ORDER BY r.created_at DESC;
+            """,
+            open_only,
+        )
+    return [dict(r) for r in rows]
+
+
+@router.patch("/requests/{request_id}")
+async def update_request(request_id: int, update: SponsorRequestUpdate) -> SponsorRequest:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"""
+            UPDATE public.sponsor_requests SET
+                status   = COALESCE($2, status),
+                response = COALESCE($3, response),
+                updated_at = NOW()
+             WHERE id = $1
+            RETURNING {REQUEST_COLUMNS};
+            """,
+            request_id, update.status, update.response,
+        )
+    if row is None:
+        raise HTTPException(404, "No such request")
+    return SponsorRequest(**dict(row))
+
+
+# ---------------------------------------------------------------- contacts
+
+
+@router.get("/{sponsor_id}/contacts")
+async def list_contacts(sponsor_id: int) -> list[SponsorContact]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, sponsor_id, kind, value, label, note, sort_order
+              FROM public.sponsor_contacts WHERE sponsor_id = $1
+             ORDER BY sort_order, id;
+            """,
+            sponsor_id,
+        )
+    return [SponsorContact(**dict(r)) for r in rows]
+
+
+@router.put("/{sponsor_id}/contacts")
+async def replace_contacts(sponsor_id: int, contacts: list[SponsorContact]) -> list[SponsorContact]:
+    """Replace the whole list in one transaction.
+
+    The portal edits the list as a list — add, remove, reorder — so storing it
+    the same way means there is no partial state where half a save landed.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "DELETE FROM public.sponsor_contacts WHERE sponsor_id = $1;", sponsor_id
+            )
+            for index, c in enumerate(contacts):
+                await conn.execute(
+                    """
+                    INSERT INTO public.sponsor_contacts
+                        (sponsor_id, kind, value, label, note, sort_order)
+                    VALUES ($1,$2,$3,$4,$5,$6);
+                    """,
+                    sponsor_id, c.kind, c.value, c.label, c.note, index,
+                )
+    return await list_contacts(sponsor_id)
+
+
+@router.get("/contacts/all")
+async def all_contacts() -> list[SponsorContact]:
+    """Every sponsor's contacts, for the public list in one query."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, sponsor_id, kind, value, label, note, sort_order
+              FROM public.sponsor_contacts ORDER BY sponsor_id, sort_order, id;
+            """
+        )
+    return [SponsorContact(**dict(r)) for r in rows]
+
+
+# ------------------------------------------------------------------- terms
+
+
+@router.get("/{sponsor_id}/terms")
+async def list_terms(sponsor_id: int) -> list[SponsorTerm]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT clause, agreed, allowance, note, done_at, updated_at, updated_by
+              FROM public.sponsor_terms WHERE sponsor_id = $1;
+            """,
+            sponsor_id,
+        )
+    return [SponsorTerm(**dict(r)) for r in rows]
+
+
+@router.get("/terms/all")
+async def all_terms() -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT sponsor_id, clause, agreed, allowance FROM public.sponsor_terms;"
+        )
+    return [dict(r) for r in rows]
+
+
+@router.put("/{sponsor_id}/terms/{clause}")
+async def set_term(sponsor_id: int, clause: str, term: SponsorTerm) -> SponsorTerm:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO public.sponsor_terms
+                (sponsor_id, clause, agreed, allowance, note, done_at, updated_by)
+            VALUES ($1,$2,$3,$4,$5,$6,$7)
+            ON CONFLICT (sponsor_id, clause) DO UPDATE SET
+                agreed = EXCLUDED.agreed, allowance = EXCLUDED.allowance,
+                note = EXCLUDED.note, done_at = EXCLUDED.done_at,
+                updated_by = EXCLUDED.updated_by, updated_at = NOW()
+            RETURNING clause, agreed, allowance, note, done_at, updated_at, updated_by;
+            """,
+            sponsor_id, clause, term.agreed, term.allowance, term.note,
+            term.done_at, term.updated_by,
+        )
+    return SponsorTerm(**dict(row))
+
+
+@router.get("/{sponsor_id}/usage")
+async def usage(sponsor_id: int, academic_year: str) -> dict:
+    """How much of each countable clause has been used this year.
+
+    Events count by the year of the event, not of the link: a workshop agreed in
+    July for October belongs to October's year. Marketing counts anything not
+    declined or withdrawn — a pending request has already spent the allowance,
+    or a sponsor could queue ten and have them all approved.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        events = await conn.fetch(
+            """
+            SELECT es.clause, COUNT(*) AS n
+              FROM public.event_sponsorships es
+              JOIN public.events e ON e.id = es.event_id
+             WHERE es.sponsor_id = $1 AND es.status = 'confirmed'
+               AND es.clause IS NOT NULL AND e.academic_year = $2
+             GROUP BY es.clause;
+            """,
+            sponsor_id, academic_year,
+        )
+        marketing = await conn.fetchval(
+            """
+            SELECT COUNT(*) FROM public.sponsor_marketing
+             WHERE sponsor_id = $1 AND academic_year = $2
+               AND status IN ('pending', 'shared');
+            """,
+            sponsor_id, academic_year,
+        )
+    out = {r["clause"]: r["n"] for r in events}
+    out["marketing"] = marketing
+    return out
+
+
+# ------------------------------------------------------------------- notes
+
+
+@router.post("/{sponsor_id}/notes", status_code=201)
+async def add_note(sponsor_id: int, note: SponsorNote) -> SponsorNote:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO public.sponsor_notes
+                (sponsor_id, topic, topic_label, body, from_committee, author_id)
+            VALUES ($1,$2,$3,$4,$5,$6)
+            RETURNING id, sponsor_id, topic, topic_label, body, from_committee,
+                      author_id, read_at, created_at;
+            """,
+            sponsor_id, note.topic, note.topic_label, note.body,
+            note.from_committee, note.author_id,
+        )
+    return SponsorNote(**dict(row))
+
+
+@router.get("/{sponsor_id}/notes")
+async def list_notes(sponsor_id: int, topic: str | None = None) -> list[dict]:
+    """A sponsor's notes, oldest first, with who wrote each."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT n.id, n.sponsor_id, n.topic, n.topic_label, n.body,
+                   n.from_committee, n.author_id, n.read_at, n.created_at,
+                   u.email AS author_email, u.first_name AS author_first_name,
+                   u.last_name AS author_last_name
+              FROM public.sponsor_notes n
+              LEFT JOIN public.users u ON u.id = n.author_id
+             WHERE n.sponsor_id = $1 AND ($2::varchar IS NULL OR n.topic = $2)
+             ORDER BY n.created_at, n.id;
+            """,
+            sponsor_id, topic,
+        )
+    return [dict(r) for r in rows]
+
+
+@router.post("/{sponsor_id}/notes/read", status_code=204)
+async def mark_notes_read(
+    sponsor_id: int, from_committee: bool, topic: str | None = None
+) -> None:
+    """Mark one side's notes as read by the other — the committee reading a
+    sponsor's notes passes from_committee=false, and the reverse."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE public.sponsor_notes SET read_at = NOW()
+             WHERE sponsor_id = $1 AND from_committee = $2 AND read_at IS NULL
+               AND ($3::varchar IS NULL OR topic = $3);
+            """,
+            sponsor_id, from_committee, topic,
+        )
+
+
+@router.get("/notes/unread")
+async def unread_notes() -> list[dict]:
+    """Sponsor notes the committee has not read yet, across every sponsor."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT n.id, n.sponsor_id, n.topic, n.topic_label, n.body,
+                   n.created_at, s.name AS sponsor_name
+              FROM public.sponsor_notes n
+              JOIN public.sponsors s ON s.id = n.sponsor_id
+             WHERE n.read_at IS NULL AND NOT n.from_committee
+             ORDER BY n.created_at;
+            """
+        )
+    return [dict(r) for r in rows]
+
+
+# --------------------------------------------------------------- marketing
+
+
+@router.post("/{sponsor_id}/marketing", status_code=201)
+async def create_marketing(sponsor_id: int, item: SponsorMarketing) -> SponsorMarketing:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"""
+            INSERT INTO public.sponsor_marketing
+                (sponsor_id, academic_year, subject, body, media, audiences,
+                 channels, preferred_date, created_by)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            RETURNING {MARKETING_COLUMNS};
+            """,
+            sponsor_id, item.academic_year, item.subject, item.body, item.media,
+            item.audiences, item.channels, item.preferred_date, item.created_by,
+        )
+    return SponsorMarketing(**dict(row))
+
+
+@router.get("/{sponsor_id}/marketing")
+async def list_marketing(sponsor_id: int) -> list[SponsorMarketing]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT {MARKETING_COLUMNS} FROM public.sponsor_marketing
+             WHERE sponsor_id = $1 ORDER BY created_at DESC;
+            """,
+            sponsor_id,
+        )
+    return [SponsorMarketing(**dict(r)) for r in rows]
+
+
+@router.get("/marketing/all")
+async def all_marketing(status: str | None = None) -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT {", ".join("m." + c.strip() for c in MARKETING_COLUMNS.split(","))},
+                   s.name AS sponsor_name
+              FROM public.sponsor_marketing m
+              JOIN public.sponsors s ON s.id = m.sponsor_id
+             WHERE ($1::varchar IS NULL OR m.status = $1)
+             ORDER BY m.created_at;
+            """,
+            status,
+        )
+    return [dict(r) for r in rows]
+
+
+@router.get("/marketing/{marketing_id}")
+async def get_marketing(marketing_id: int) -> SponsorMarketing:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"SELECT {MARKETING_COLUMNS} FROM public.sponsor_marketing WHERE id = $1;",
+            marketing_id,
+        )
+    if row is None:
+        raise HTTPException(404, "No such marketing request")
+    return SponsorMarketing(**dict(row))
+
+
+@router.patch("/marketing/{marketing_id}")
+async def update_marketing(
+    marketing_id: int, update: SponsorMarketingUpdate
+) -> SponsorMarketing:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"""
+            UPDATE public.sponsor_marketing SET
+                subject     = COALESCE($2, subject),
+                body        = COALESCE($3, body),
+                status      = COALESCE($4, status),
+                response    = COALESCE($5, response),
+                campaign_id = COALESCE($6, campaign_id),
+                decided_by  = COALESCE($7, decided_by),
+                emailed_at  = CASE WHEN $8 THEN NOW() ELSE emailed_at END,
+                posted_at   = CASE WHEN $9 THEN NOW() ELSE posted_at END,
+                updated_at  = NOW()
+             WHERE id = $1
+            RETURNING {MARKETING_COLUMNS};
+            """,
+            marketing_id, update.subject, update.body, update.status,
+            update.response, update.campaign_id, update.decided_by,
+            update.mark_emailed, update.mark_posted,
+        )
+    if row is None:
+        raise HTTPException(404, "No such marketing request")
+    return SponsorMarketing(**dict(row))
 
 
 @router.post("/{sponsor_id}/assets", status_code=201)
@@ -449,11 +977,17 @@ async def sponsor_stats(sponsor_id: int) -> dict:
               (SELECT COALESCE(SUM(applications), 0) FROM public.job_listings
                 WHERE sponsor_id = $1)                                      AS applications,
               (SELECT COUNT(*) FROM public.event_sponsorships
-                WHERE sponsor_id = $1 AND status IN ('claimed','confirmed')) AS events_claimed,
+                WHERE sponsor_id = $1 AND status = 'confirmed')             AS events_linked,
+              (SELECT COUNT(*) FROM public.event_sponsorships
+                WHERE sponsor_id = $1 AND status = 'interested')            AS events_interested,
+              -- The same conditions as the sponsorable list, so the tile and
+              -- the list under it cannot disagree.
               (SELECT COUNT(*) FROM public.events e
-                WHERE e.published AND e.starts_at >= NOW()
+                WHERE e.published AND e.sponsorship_claimable
+                  AND e.starts_at >= NOW()
+                  AND e.requested_by_sponsor_id IS NULL
                   AND NOT EXISTS (SELECT 1 FROM public.event_sponsorships es
-                                   WHERE es.event_id = e.id AND es.status <> 'declined')
+                                   WHERE es.event_id = e.id AND es.status = 'confirmed')
               )                                                             AS events_open,
               (SELECT COUNT(*) FROM public.members)                         AS members_reached;
             """,

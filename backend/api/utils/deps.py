@@ -225,6 +225,23 @@ async def committee_card(session: AuthSession | None) -> dict | None:
     return None
 
 
+async def require_committee(
+    session: AuthSession = Depends(require_session),
+) -> AuthSession:
+    """Anybody on this year's committee — a role in the admin area *or* simply
+    a card on the committee roster.
+
+    Door duty falls to whoever is free, not to whoever holds a dashboard role,
+    so check-in asks only "are you committee?". Wider than `require_admin` on
+    purpose; nothing behind it changes events, prices or people.
+    """
+    if session.is_admin:
+        return session
+    if await committee_card(session) is not None:
+        return session
+    raise HTTPException(403, "Committee only")
+
+
 async def verify_csrf(request: Request) -> None:
     """Double-submit check on unsafe methods.
 

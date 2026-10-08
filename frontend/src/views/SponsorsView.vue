@@ -37,6 +37,10 @@ function siteUrl(site) {
   return site?.startsWith('http') ? site : `https://${site}`
 }
 
+function contactHref(c) {
+  return c.kind === 'email' ? `mailto:${c.value}?subject=EESoc` : c.value
+}
+
 onMounted(async () => {
   try {
     const [data, jobData] = await Promise.all([
@@ -137,6 +141,16 @@ onMounted(async () => {
               <Tag v-for="(w, wi) in current.withUs" :key="wi">{{ w }}</Tag>
             </div>
           </div>
+
+          <div v-if="current.events?.length" style="display:grid; gap:var(--space-2)">
+            <span class="label-muted">Events with us</span>
+            <router-link
+              v-for="ev in current.events"
+              :key="ev.slug"
+              :to="`/events/${ev.slug}`"
+              style="font-family:var(--font-mono); font-size:var(--text-sm)"
+            >{{ ev.title }}<span style="color:var(--text-faint)"> · {{ ev.date }}</span></router-link>
+          </div>
         </div>
 
         <div class="sponsor-detail__side">
@@ -148,15 +162,19 @@ onMounted(async () => {
             rel="noopener"
             style="font-family:var(--font-mono); font-size:var(--text-sm)"
           >{{ current.site }}</a>
-          <a
-            v-if="current.cvContact"
-            :href="`mailto:${current.cvContact}?subject=EESoc%20CV`"
-            style="font-family:var(--font-mono); font-size:var(--text-sm)"
-          >Send a CV{{ current.cvContactName ? ` (${current.cvContactName})` : '' }}</a>
-          <span
-            v-if="current.cvContactNote"
-            style="font:var(--type-2xs); color:var(--text-faint)"
-          >{{ current.cvContactNote }}</span>
+          <!-- The sponsor's own contact points: CV addresses, careers pages,
+               booking links. Members write to them directly; EESoc never
+               handles a CV. -->
+          <div v-for="(c, ci) in current.contacts" :key="ci" style="display:grid; gap:2px">
+            <a
+              :href="contactHref(c)"
+              :target="c.kind === 'link' ? '_blank' : undefined"
+              :rel="c.kind === 'link' ? 'noopener' : undefined"
+              style="font-family:var(--font-mono); font-size:var(--text-sm)"
+            >{{ c.label || c.value }}</a>
+            <span v-if="c.label && c.kind === 'email'" style="font:var(--type-2xs); color:var(--text-muted)">{{ c.value }}</span>
+            <span v-if="c.note" style="font:var(--type-2xs); color:var(--text-faint)">{{ c.note }}</span>
+          </div>
           <router-link
             to="/jobs"
             style="font-family:var(--font-mono); font-size:var(--text-sm)"
@@ -179,7 +197,7 @@ onMounted(async () => {
         <div style="display:grid; gap:var(--space-3)">
           <h2 style="margin:0; font:var(--type-h2); letter-spacing:var(--tracking-heading); color:var(--text-strong)">Hire the people who build the hardware.</h2>
           <p style="margin:0; font:var(--type-small); color:var(--text-muted); max-width:62ch">
-            One package, £4,000 a year, all of it negotiable. Sponsors get the portal, the CV book and a named event.
+            One package, £4,000 a year, all of it negotiable. Sponsors get a workshop, a named event, a careers fair stall and the portal.
           </p>
         </div>
         <Button variant="accent" size="lg" @click="router.push('/portal')">Sponsor us</Button>

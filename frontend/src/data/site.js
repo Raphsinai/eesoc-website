@@ -61,79 +61,12 @@ export const content = {
     { meta: 'Template', title: 'The EESoc CV', desc: 'One page, LaTeX and Word versions, annotated with what recruiters skim.', icon: 'file-text' },
     { meta: 'Notes', title: 'Interview notes by firm', desc: 'Crowd-sourced rounds for 24 firms. Add yours after you interview.', icon: 'users' },
     { meta: 'Timeline', title: 'Internship calendar', desc: 'When applications open for each stream, month by month.', icon: 'calendar' },
-    { meta: 'Members only', title: 'CV book', desc: 'Opt in and your CV goes to every package sponsor in November.', icon: 'mail' },
   ],
   lab: [
     { meta: 'Cheat sheet', title: 'Oscilloscope in ten minutes', desc: 'Triggering, probes, and why your signal looks like that.', icon: 'zap' },
     { meta: 'Cupboard', title: 'What you can borrow', desc: 'Irons, meters, breadboards, two logic analysers. Sign out in EEE 403.', icon: 'cpu' },
     { meta: 'Safety', title: 'Lab rules, short version', desc: 'The four things that get you sent home. Read before your first session.', icon: 'check' },
   ],
-}
-
-export const claimable = [
-  { title: 'The Shard', meta: 'Fri 13 Mar · 280 places · naming rights available' },
-  { title: 'Hackathon weekend', meta: 'Sat 25 Apr · 120 places · brief open' },
-  { title: 'Careers Fair 2026', meta: 'Thu 22 Oct · 40 stands · 12 left' },
-]
-
-export const listings = [
-  { title: 'Graduate Hardware Engineer', meta: 'London · closes 30 Nov · 84 applications', status: 'Live', tone: 'success' },
-  { title: 'FPGA Internship 2027', meta: 'London · closes 12 Jan · 41 applications', status: 'Live', tone: 'success' },
-  { title: 'Quant Developer, Placement', meta: 'Amsterdam · closes 05 Dec · 63 applications', status: 'Closing', tone: 'accent' },
-  { title: 'Verification Engineer', meta: 'Bristol · closed 14 Oct · 130 applications', status: 'Closed', tone: 'neutral' },
-]
-
-export const panels = {
-  jobs: {
-    eyebrow: 'Job listings', heading: 'Six roles live, two closing this week.', label: 'Your listings',
-    rows: [
-      { title: 'Graduate Hardware Engineer', meta: 'London · closes 30 Nov · 84 applications', action: 'Edit' },
-      { title: 'FPGA Internship 2027', meta: 'London · closes 12 Jan · 41 applications', action: 'Edit' },
-      { title: 'Quant Developer, Placement', meta: 'Amsterdam · closes 05 Dec · 63 applications', action: 'Edit' },
-      { title: 'Verification Engineer', meta: 'Bristol · closed 14 Oct · 130 applications', action: 'Repost' },
-    ],
-    asideLabel: 'Post a role', aside: "Listings go into the members' newsletter the Monday after you post, and sit on the site until the closing date.", cta: 'Post a job',
-  },
-  calendar: {
-    eyebrow: 'Event calendar', heading: 'The term as we are planning it.', label: 'Autumn 2026',
-    rows: [
-      { title: 'Careers Fair 2026', meta: 'Thu 22 Oct · EEE Foyer · 40 stands', action: 'Claim' },
-      { title: 'Soldering Clinic', meta: 'Wed 12 Nov · EEE 403 · 24 places', action: 'Claim' },
-      { title: 'Silicon After Moore', meta: 'Tue 18 Nov · LT 508 · talk slot open', action: 'Claim' },
-      { title: 'The Shard', meta: 'Fri 13 Mar · Level 33 · naming rights', action: 'Claim' },
-    ],
-    asideLabel: 'How claiming works', aside: 'Claim a slot and we hold it for five working days while we agree the details by email. Nothing is public until you say so.', cta: 'Book a call',
-  },
-  request: {
-    eyebrow: 'Request an event', heading: 'Tell us the outcome you want.', label: 'Formats other sponsors have asked for',
-    rows: [
-      { title: 'Sponsored workshop', meta: 'Your brief, our room and students · half or full day', action: 'Request' },
-      { title: 'Hackathon challenge', meta: 'You set it, you judge it, you hire from the shortlist', action: 'Request' },
-      { title: 'Site visit', meta: 'Your office or lab · 20–40 students', action: 'Request' },
-      { title: 'Named prize', meta: 'Attached to a project or a module', action: 'Request' },
-    ],
-    asideLabel: 'Anything else', aside: 'If it is not on the list, send two lines to eesoc.vp@imperial.ac.uk and we will tell you whether we can fill the room.', cta: 'Start a request',
-  },
-  merch: {
-    eyebrow: 'Merch & assets', heading: 'Logos in, merch out.', label: 'Files and slots',
-    rows: [
-      { title: 'Your logo on our tee', meta: 'Spring print · artwork due 14 Feb', action: 'Upload' },
-      { title: 'Lanyards, 400 units', meta: 'Handed out at the Careers Fair', action: 'Upload' },
-      { title: 'Sticker sheet', meta: 'Shared with the hackathon kit', action: 'Upload' },
-      { title: 'EESoc brand pack', meta: 'Logos, colours and type for your own material', action: 'Download' },
-    ],
-    asideLabel: 'Specs', aside: 'Vector only, 300dpi minimum for raster. We proof everything with you before it goes to print.', cta: 'Download specs',
-  },
-  cv: {
-    eyebrow: 'CV book', heading: '318 opted-in CVs, updated weekly.', label: 'Filters',
-    rows: [
-      { title: 'Final year · EEE', meta: '112 CVs · graduating June 2027', action: 'Open' },
-      { title: 'Final year · EIE', meta: '68 CVs · graduating June 2027', action: 'Open' },
-      { title: 'Penultimate year', meta: '94 CVs · seeking summer internships', action: 'Open' },
-      { title: 'MSc cohort', meta: '44 CVs · seeking graduate roles', action: 'Open' },
-    ],
-    asideLabel: 'Terms', aside: 'The book is opt-in and for recruiting only. Do not pass it outside your hiring team.', cta: 'Download book',
-  },
 }
 
 // Primary site navigation → maps to router routes.
@@ -153,8 +86,10 @@ export const portalNav = [
   { id: 'jobs', label: 'Job listings' },
   { id: 'calendar', label: 'Event calendar' },
   { id: 'request', label: 'Request an event' },
-  { id: 'merch', label: 'Merch & assets' },
-  { id: 'cv', label: 'CV book' },
+  { id: 'marketing', label: 'Marketing' },
+  { id: 'contacts', label: 'Contacts' },
+  { id: 'merch', label: 'Brand & merch' },
+  { id: 'messages', label: 'Messages' },
 ]
 
 // Flat search index across the whole site — powers the header search.

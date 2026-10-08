@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 from clients import database, union
-from services import announce, purchase
+from services import announce, confirmations, purchase
 from utils import email as mailer
 from config import settings
 from utils.present import format_date, format_time_range, london
@@ -191,6 +191,8 @@ async def reconcile_only() -> dict:
     )
     promoted = await database.post("/waitlist/promote")
     notified = await notify_waitlist_offers((promoted or {}).get("offered", []))
+    if (matched or {}).get("confirmed"):
+        confirmations.trigger()
     return {
         "expired": expired,
         **(matched or {}),

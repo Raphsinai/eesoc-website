@@ -150,6 +150,7 @@ async function load() {
 
 onMounted(async () => {
   await load()
+  loadSponsorInbox()
   // Arriving from an event's page with "Email everyone who hasn't bought".
   const id = Number(route.query.announce)
   if (id) {
@@ -873,6 +874,99 @@ const sponsorDraft = reactive(blankSponsor())
 const editingSponsor = ref(null)
 const sponsorUserEmail = reactive({})
 
+// What sponsors are waiting on, across all of them: marketing to approve,
+// requests to answer, interest to decide, new roles members have not heard of.
+const sponsorInbox = ref(null)
+const rolesDigest = ref(null)
+
+async function loadSponsorInbox() {
+  if (!can('sponsors')) return
+  try {
+    const [inbox, digest] = await Promise.all([
+      api.get('/admin/sponsors/inbox'),
+      api.get('/admin/sponsors/roles-digest'),
+    ])
+    sponsorInbox.value = inbox
+    rolesDigest.value = digest
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+// The same inbox, summarised for the Overview: one line per kind of thing
+// waiting, with the first few items, so nobody has to open the Sponsors tab to
+// find out whether a sponsor is waiting on them.
+const sponsorPending = computed(() => {
+  const inbox = sponsorInbox.value
+  if (!inbox) return []
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
+  const groups = [
+    {
+      key: 'notes',
+      label: plural(inbox.notes.length, 'question or note from a sponsor', 'questions and notes from sponsors'),
+      items: inbox.notes.map((n) => ({
+        to: `/admin/sponsors/${n.sponsorId}#notes`,
+        text: `${n.sponsor} · ${n.label}${n.count > 1 ? ` (${n.count})` : ''}`,
+      })),
+    },
+    {
+      key: 'marketing',
+      label: plural(inbox.marketing.length, 'marketing request to share', 'marketing requests to share'),
+      items: inbox.marketing.map((m) => ({
+        to: `/admin/sponsors/${m.sponsorId}#marketing`,
+        text: `${m.sponsor} · ${m.subject}`,
+      })),
+    },
+    {
+      key: 'requests',
+      label: plural(inbox.requests.length, 'event request to answer', 'event requests to answer'),
+      items: inbox.requests.map((r) => ({
+        to: `/admin/sponsors/${r.sponsorId}#requests`,
+        text: `${r.sponsor} · ${r.format}${r.status === 'open' ? '' : ' · in discussion'}`,
+      })),
+    },
+    {
+      key: 'interest',
+      label: plural(inbox.interest.length, 'event interest to decide', 'event interests to decide'),
+      items: inbox.interest.map((x) => ({
+        to: `/admin/sponsors/${x.sponsorId}#events`,
+        text: `${x.sponsor} · ${x.event}`,
+      })),
+    },
+    {
+      key: 'listings',
+      label: plural(inbox.listings.length, 'new role members haven\'t been told about', 'new roles members haven\'t been told about'),
+      items: inbox.listings.map((l) => ({ to: null, text: `${l.sponsor} · ${l.title}` })),
+    },
+  ]
+  return groups.filter((g) => g.items.length)
+})
+const sponsorPendingTotal = computed(() =>
+  sponsorPending.value.reduce((n, g) => n + g.items.length, 0),
+)
+
+// Coming back to the Overview or the Sponsors tab shows the current state,
+// not whatever it was when the page first loaded.
+watch(tab, (t) => {
+  if (t === 'overview' || t === 'sponsors') loadSponsorInbox()
+})
+
+async function sendRolesDigest() {
+  const d = rolesDigest.value
+  if (!d?.count) return
+  if (!confirm(`Email ${d.count} new role(s) to ${d.recipients} member(s) subscribed to jobs and internships?`)) return
+  busy.value = true
+  try {
+    const res = await api.post('/admin/sponsors/roles-digest')
+    flash(res.message)
+    await loadSponsorInbox()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
+}
+
 function editSponsor(sp) {
   editingSponsor.value = sp.id
   Object.assign(sponsorDraft, { ...blankSponsor(), ...sp, with_us: sp.with_us || [] })
@@ -955,7 +1049,12 @@ async function addAdmin() {
       role: newRole.value,
     })
     newAdminEmail.value = ''
-    flash(`${res.role} access granted.`)
+    // An account that has never signed in may be a typo, so say whose it is.
+    flash(
+      res.neverSignedIn
+        ? `${res.role} access granted to ${res.email}. That account has never signed in — check the address is right; they sign in with the usual emailed code.`
+        : `${res.role} access granted to ${res.email}.`,
+    )
     await load()
   } catch (e) {
     error.value = e.message
@@ -992,8 +1091,9 @@ async function impersonate() {
   const email = impersonateEmail.value.trim()
   if (!email) return
   if (!confirm(
-    `Sign in as ${email}?\n\nYou will be them until you press Stop in the `
-    + 'red banner. Anything you do is recorded as them.',
+    `Sign in as ${email}?\n\nIf there is no account for that address, one is `
+    + 'made. You will be them until you press Stop in the red banner. Anything '
+    + 'you do is recorded as them.',
   )) return
   busy.value = true
   try {
@@ -1162,9 +1262,13 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
   <main class="admin">
     <div style="display:flex; align-items:baseline; justify-content:space-between; gap:var(--space-6); flex-wrap:wrap">
       <h1 style="margin:0; font:var(--type-h1)">Committee admin</h1>
-      <span v-if="dash" style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">
-        {{ dash.academicYear }} · {{ dash.environment }}
-      </span>
+      <div style="display:flex; gap:var(--space-4); align-items:center">
+        <!-- Every committee member can work the door, role or not. -->
+        <Button v-if="hasAdminArea" size="sm" variant="secondary" @click="router.push('/checkin')">Door check-in</Button>
+        <span v-if="dash" style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">
+          {{ dash.academicYear }} · {{ dash.environment }}
+        </span>
+      </div>
     </div>
 
     <p v-if="!hasAdminArea" style="font:var(--type-small); color:var(--danger)">
@@ -1237,6 +1341,30 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
       </template>
 
       <template v-if="tab === 'overview' && dash">
+        <!-- Sponsors waiting on the committee. First on the page, because it is
+             the one thing here somebody outside the committee is waiting on. -->
+        <Card v-if="sponsorPendingTotal" variant="raised" class="pending-card">
+          <div style="display:grid; gap:var(--space-4)">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:var(--space-4); flex-wrap:wrap">
+              <h2 style="margin:0; font:var(--type-h4); display:flex; gap:var(--space-3); align-items:center">
+                Awaiting the committee
+                <Badge tone="danger">{{ sponsorPendingTotal }}</Badge>
+              </h2>
+              <Button @click="tab = 'sponsors'">Open Sponsors</Button>
+            </div>
+            <div v-for="g in sponsorPending" :key="g.key" style="display:grid; gap:var(--space-1, 4px)">
+              <strong style="font:var(--type-small)">{{ g.label }}</strong>
+              <template v-for="(it, i) in g.items.slice(0, 3)" :key="i">
+                <RouterLink v-if="it.to" :to="it.to" class="pending-item">{{ it.text }}</RouterLink>
+                <span v-else class="pending-item">{{ it.text }}</span>
+              </template>
+              <span v-if="g.items.length > 3" class="pending-item" style="color:var(--text-faint)">
+                and {{ g.items.length - 3 }} more
+              </span>
+            </div>
+          </div>
+        </Card>
+
         <div v-if="dash.warnings.length" style="display:grid; gap:var(--space-3); margin-bottom:var(--space-8)">
           <Card v-for="(w, i) in dash.warnings" :key="i" variant="outline">
             <div style="display:flex; align-items:center; gap:var(--space-3); flex-wrap:wrap">
@@ -1326,6 +1454,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                     <Badge :tone="e.published ? 'success' : 'neutral'">{{ e.published ? 'Live' : 'Draft' }}</Badge>
                     <Badge v-if="e.industry" tone="accent">Industry</Badge>
                     <Badge v-if="e.sponsorship_claimable" tone="brand">Sponsorable</Badge>
+                    <Badge v-if="e.sponsors?.length" tone="accent">With {{ e.sponsors.join(', ') }}</Badge>
                   </div>
                   <p style="margin:var(--space-2) 0 0; font:var(--type-2xs); color:var(--text-faint)">
                     {{ new Date(e.starts_at).toLocaleString() }} ·
@@ -1595,8 +1724,10 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 Open to sponsorship
               </label>
               <p style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
-                Off by default. Only events ticked here appear in a sponsor's
-                claimable list — an event a sponsor requested is never offered back.
+                Off by default. Only events ticked here appear in sponsors' event
+                calendars for them to register interest. Link the sponsor who takes
+                it from their page under Sponsors, which takes it off everyone
+                else's list.
               </p>
               <div style="display:flex; gap:var(--space-3)">
                 <Button :disabled="busy" @click="saveEvent">{{ editingId ? 'Save changes' : 'Create event' }}</Button>
@@ -2104,7 +2235,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
 
             <template v-if="canManageUsers">
               <TraceRule style="margin:var(--space-5) 0" />
-              <Field label="Give somebody access" help="They must have signed in at least once.">
+              <Field label="Give somebody access" help="Any address. If there is no account yet, one is made; it works once they sign in with the emailed code.">
                 <Input v-model="newAdminEmail" placeholder="name@imperial.ac.uk" />
               </Field>
               <Field label="As" style="margin-top:var(--space-3)">
@@ -2158,6 +2289,55 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           <span style="color:var(--text-faint)">Committee only — never shown publicly.</span>
         </p>
 
+        <Card v-if="sponsorInbox" variant="offset" style="margin-bottom:var(--space-6)">
+          <div style="display:grid; gap:var(--space-4)">
+            <h2 style="margin:0; font:var(--type-h4)">Waiting on the committee</h2>
+            <p
+              v-if="!sponsorInbox.notes.length && !sponsorInbox.marketing.length && !sponsorInbox.requests.length && !sponsorInbox.interest.length && !rolesDigest?.count"
+              style="margin:0; font:var(--type-small); color:var(--text-faint)"
+            >Nothing — every sponsor has an answer.</p>
+            <div v-if="sponsorInbox.notes.length" class="inbox-group">
+              <span class="inbox-label">Questions and notes from sponsors ({{ sponsorInbox.notes.length }})</span>
+              <RouterLink v-for="n in sponsorInbox.notes" :key="`n${n.sponsorId}-${n.topic}`" :to="`/admin/sponsors/${n.sponsorId}#notes`" class="inbox-row">
+                <strong>{{ n.sponsor }}</strong> · {{ n.label }}<template v-if="n.count > 1"> ({{ n.count }})</template> — “{{ n.latest }}”
+              </RouterLink>
+            </div>
+            <div v-if="sponsorInbox.marketing.length" class="inbox-group">
+              <span class="inbox-label">Marketing to share ({{ sponsorInbox.marketing.length }})</span>
+              <RouterLink v-for="m in sponsorInbox.marketing" :key="`m${m.id}`" :to="`/admin/sponsors/${m.sponsorId}#marketing`" class="inbox-row">
+                <strong>{{ m.sponsor }}</strong> · {{ m.subject }}
+              </RouterLink>
+            </div>
+            <div v-if="sponsorInbox.requests.length" class="inbox-group">
+              <span class="inbox-label">Event requests ({{ sponsorInbox.requests.length }})</span>
+              <RouterLink v-for="r in sponsorInbox.requests" :key="`r${r.id}`" :to="`/admin/sponsors/${r.sponsorId}#requests`" class="inbox-row">
+                <strong>{{ r.sponsor }}</strong> · {{ r.format }} · {{ r.status === 'open' ? 'not answered' : 'in discussion' }}
+              </RouterLink>
+            </div>
+            <div v-if="sponsorInbox.interest.length" class="inbox-group">
+              <span class="inbox-label">Interest in events ({{ sponsorInbox.interest.length }})</span>
+              <RouterLink v-for="x in sponsorInbox.interest" :key="`i${x.id}`" :to="`/admin/sponsors/${x.sponsorId}#events`" class="inbox-row">
+                <strong>{{ x.sponsor }}</strong> · {{ x.event }} · {{ x.date }}
+              </RouterLink>
+            </div>
+            <div v-if="rolesDigest?.count" class="inbox-group">
+              <span class="inbox-label">New roles members haven't heard about ({{ rolesDigest.count }})</span>
+              <span v-for="l in sponsorInbox.listings" :key="`l${l.id}`" class="inbox-row">
+                <strong>{{ l.sponsor }}</strong> · {{ l.title }}<template v-if="l.location"> · {{ l.location }}</template>
+              </span>
+              <div style="display:flex; gap:var(--space-3); align-items:center; flex-wrap:wrap">
+                <Button size="sm" :disabled="busy || !can('site')" @click="sendRolesDigest">
+                  Email {{ rolesDigest.recipients }} jobs subscriber(s)
+                </Button>
+                <span style="font:var(--type-2xs); color:var(--text-faint)">
+                  <template v-if="can('site')">One email listing every new role, to members who opted in to jobs and internships.</template>
+                  <template v-else>Sending needs a committee member with email access.</template>
+                </span>
+              </div>
+            </div>
+          </div>
+        </Card>
+
         <div class="admin-cols admin-cols--wide">
           <div style="display:grid; gap:var(--space-3)">
             <Card v-for="(sp, i) in sponsors" :key="sp.id" variant="outline">
@@ -2175,10 +2355,11 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                     {{ sp.internal_note }}
                   </span>
                 </div>
-                <div style="display:flex; gap:4px">
+                <div style="display:flex; gap:4px; flex-wrap:wrap">
                   <Button size="sm" variant="ghost" @click="moveSponsor(sp, -1)">↑</Button>
                   <Button size="sm" variant="ghost" @click="moveSponsor(sp, 1)">↓</Button>
                   <Button size="sm" variant="ghost" @click="toggleSponsorActive(sp)">{{ sp.active ? 'Unpublish' : 'Publish' }}</Button>
+                  <Button size="sm" variant="secondary" @click="router.push(`/admin/sponsors/${sp.id}`)">Agreement &amp; activity</Button>
                   <Button size="sm" variant="ghost" @click="editSponsor(sp)">Edit</Button>
                   <Button size="sm" variant="danger" @click="removeSponsor(sp)">Delete</Button>
                 </div>
@@ -2203,7 +2384,8 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                   <Button size="sm" @click="grantSponsorAccess(sp)">Grant</Button>
                 </div>
                 <p style="margin:var(--space-2) 0 0; font:var(--type-2xs); color:var(--text-faint)">
-                  They must have signed in once first, which proves they control that address.
+                  They sign in with that address using the usual emailed code, which is
+                  what proves they control it.
                 </p>
               </div>
             </Card>
@@ -2225,9 +2407,10 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               </Field>
               <Field label="Website"><Input v-model="sponsorDraft.site" /></Field>
               <Field label="Logo URL" help="Upload under Files, then paste."><Input v-model="sponsorDraft.logo_url" /></Field>
-              <Field label="CV contact email" help="Published so members can send CVs straight to them — EESoc never handles CVs.">
-                <Input v-model="sponsorDraft.cv_contact_email" type="email" />
-              </Field>
+              <p style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
+                Contact points (CV addresses, careers pages) are edited in the sponsor's
+                portal under Contacts — open it from Agreement &amp; activity.
+              </p>
 
               <TraceRule />
               <span style="font-family:var(--font-mono); font-size:var(--text-2xs); text-transform:uppercase; letter-spacing:var(--tracking-label); color:var(--danger)">
@@ -2439,5 +2622,29 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
   .admin-cols--sidebar {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+.inbox-group {
+  display: grid;
+  gap: var(--space-2);
+}
+.inbox-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  color: var(--text-muted);
+}
+.inbox-row {
+  font: var(--type-small);
+  color: var(--text-body);
+}
+.pending-card {
+  margin-bottom: var(--space-8);
+  border-left: 4px solid var(--danger);
+}
+.pending-item {
+  font: var(--type-2xs);
+  color: var(--text-body);
+  padding-left: var(--space-3);
 }
 </style>

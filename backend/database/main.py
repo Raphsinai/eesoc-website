@@ -9,6 +9,7 @@ log = logging.getLogger("database")
 import migrate
 from postgres import connect, disconnect, get_pool
 from routes.auth import router as auth_router
+from routes.checkin import router as checkin_router
 from routes.email import router as email_router
 from routes.jobs import router as jobs_router
 from routes.events import router as events_router
@@ -55,6 +56,7 @@ app.include_router(resources_router)
 app.include_router(sponsors_router)
 app.include_router(email_router)
 app.include_router(jobs_router)
+app.include_router(checkin_router)
 
 
 @app.get("/health")

@@ -151,6 +151,66 @@ UPDATE public.sponsors SET
                             ELSE 'Sponsor Contact' END,
     cv_contact_note  = NULL;
 
+-- Sponsor contact points (migration 058) replace the single CV address above.
+-- Same rule: the companies are public, the people answering are not. Every
+-- email becomes a per-row .invalid address; links are kept unless they carry
+-- an address, and the free-text note goes.
+DO $$
+BEGIN
+    IF to_regclass('public.sponsor_contacts') IS NOT NULL THEN
+        UPDATE public.sponsor_contacts SET
+            value = CASE WHEN kind = 'email'
+                         THEN 'sponsor' || sponsor_id || '-' || id || '@staging.invalid'
+                         WHEN value ~ '@' THEN 'https://example.invalid/contact-' || id
+                         ELSE value END,
+            note  = '';
+    END IF;
+END $$;
+
+-- Free text a sponsor or the committee typed: a request, a listing, a
+-- marketing email, a question or note, a note on a linked event. An address in one is a
+-- recruiter's, and real; rewriting just the address keeps the text worth
+-- testing with. Guarded per column, because several arrive with migration 058
+-- and the snapshot is of production's schema.
+DO $$
+DECLARE
+    target text;
+    tbl    text;
+    col    text;
+BEGIN
+    FOREACH target IN ARRAY ARRAY[
+        'job_listings.body', 'sponsor_requests.body', 'sponsor_requests.response',
+        'event_sponsorships.note', 'sponsor_terms.note',
+        'sponsor_marketing.subject', 'sponsor_marketing.body',
+        'sponsor_marketing.response', 'sponsor_notes.body'
+    ]
+    LOOP
+        tbl := split_part(target, '.', 1);
+        col := split_part(target, '.', 2);
+        IF EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = tbl AND column_name = col) THEN
+            EXECUTE format(
+                'UPDATE public.%I SET %I = regexp_replace(%I, '
+                '''[[:alnum:]._%%+-]+@[[:alnum:].-]+\.[[:alpha:]]{2,}'', '
+                '''contact@staging.invalid'', ''g'') '
+                'WHERE %I ~ ''@''',
+                tbl, col, col, col
+            );
+        END IF;
+    END LOOP;
+END $$;
+
+-- Who walked through the door, and when (migration 060). Not text a verify
+-- pass would catch, but attendance is personal and staging has no use for
+-- production's — check-ins are made on staging, not copied to it.
+DO $$
+BEGIN
+    IF to_regclass('public.reservation_checkins') IS NOT NULL THEN
+        TRUNCATE TABLE public.reservation_checkins;
+    END IF;
+END $$;
+
 -- Locker grants are keyed by college shortcode, which identifies a person.
 UPDATE public.locker_grants SET
     shortcode = 'grant' || abs(hashtext(shortcode)),

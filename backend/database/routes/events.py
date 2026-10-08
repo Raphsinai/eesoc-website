@@ -27,11 +27,20 @@ from postgres import get_pool
 
 router = APIRouter()
 
+
+def _target_years_text(years: list[int]) -> str:
+    """The column's canonical form: a comma-separated string of year numbers.
+    Empty (not NULL — the migration treats both as "everyone") so a cleared
+    checkbox round-trips back as an empty list."""
+    return ",".join(str(y) for y in years)
+
+
 EVENT_COLUMNS = """
     id, slug, title, category, description, image_url, venue, starts_at, ends_at,
     capacity, hold_hours, published, sponsorship_claimable,
     requested_by_sponsor_id, academic_year, created_by, created_at, updated_at,
-    sales_open_at, sales_announced_at, purchase_url, industry, signup_url
+    sales_open_at, sales_announced_at, purchase_url, industry, signup_url,
+    map_url, meeting_url, meeting_url_private, target_years
 """
 
 TT_COLUMNS = """
@@ -128,6 +137,9 @@ async def _availability(conn, event_id: int) -> tuple[list[TicketTypeAvailabilit
 
 async def _detail(conn, row) -> EventDetail:
     types, taken = await _availability(conn, row["id"])
+    # `target_years` arrives here as the stored comma string ("1,2"); the
+    # model's before-validator turns it back into the sorted list of ints the
+    # API speaks, so every reader of this row gets the same normalised form.
     detail = EventDetail(**dict(row), ticket_types=types, taken=taken)
     if detail.capacity is not None:
         detail.remaining = max(detail.capacity - taken, 0)
@@ -147,22 +159,27 @@ async def list_events(
     upcoming: bool = False,
     academic_year: str | None = None,
     limit: int = 100,
+    offset: int = 0,
 ) -> list[EventDetail]:
     pool = await get_pool()
     async with pool.acquire() as conn:
+        # `id` breaks `starts_at` ties so `OFFSET` paging is deterministic:
+        # two events can share a start time, and without it a page boundary
+        # could repeat or skip a row.
         rows = await conn.fetch(
             f"""
             SELECT {EVENT_COLUMNS} FROM public.events
              WHERE ($1::bool IS NOT TRUE OR published)
                AND ($2::bool IS NOT TRUE OR starts_at >= NOW())
                AND ($3::varchar IS NULL OR academic_year = $3)
-             ORDER BY starts_at
-             LIMIT $4;
+             ORDER BY starts_at, id
+             LIMIT $4 OFFSET $5;
             """,
             published_only,
             upcoming,
             academic_year,
             limit,
+            offset,
         )
         return [await _detail(conn, r) for r in rows]
 
@@ -250,8 +267,10 @@ async def create_event(event: EventWrite, created_by: int | None = None) -> Even
                     (slug, title, category, description, image_url, venue, starts_at,
                      ends_at, capacity, hold_hours, published, sponsorship_claimable,
                      requested_by_sponsor_id, academic_year, created_by, sales_open_at,
-                     purchase_url, industry, signup_url)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+                     purchase_url, industry, signup_url,
+                     map_url, meeting_url, meeting_url_private, target_years)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
+                        $20,$21,$22,$23)
                 RETURNING {EVENT_COLUMNS};
                 """,
                 event.slug, event.title, event.category, event.description,
@@ -260,6 +279,8 @@ async def create_event(event: EventWrite, created_by: int | None = None) -> Even
                 event.sponsorship_claimable, event.requested_by_sponsor_id,
                 event.academic_year or "", created_by, event.sales_open_at,
                 event.purchase_url, event.industry, event.signup_url,
+                event.map_url, event.meeting_url, event.meeting_url_private,
+                _target_years_text(event.target_years),
             )
         except UniqueViolationError:
             raise HTTPException(409, f"An event with slug '{event.slug}' already exists")
@@ -296,6 +317,10 @@ async def update_event(event_id: int, event: EventWrite) -> EventDetail:
                 purchase_url=$17,
                 industry=$18,
                 signup_url=$19,
+                map_url=$20,
+                meeting_url=$21,
+                meeting_url_private=$22,
+                target_years=$23,
                 updated_at=NOW()
              WHERE id=$1
             RETURNING {EVENT_COLUMNS};
@@ -306,6 +331,8 @@ async def update_event(event_id: int, event: EventWrite) -> EventDetail:
             event.sponsorship_claimable, event.requested_by_sponsor_id,
             event.academic_year, event.sales_open_at, event.purchase_url,
             event.industry, event.signup_url,
+            event.map_url, event.meeting_url, event.meeting_url_private,
+            _target_years_text(event.target_years),
         )
         if row is None:
             raise HTTPException(404, "No such event")

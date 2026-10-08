@@ -26,6 +26,7 @@ from utils.auth import (
     hash_token,
     normalise_email,
 )
+from utils.ics import build_calendar_ics, build_event_ics
 from utils.deps import (
     current_session,
     require_feature,
@@ -178,12 +179,28 @@ async def get_event(
     links = await purchase.links_for_event(event)
 
     card = event_card(event)
+    # The calendar/link fields live here and not in `event_card`: cards never
+    # need them, and other sections depend on that shape staying put. The map
+    # is public (a venue map helps anybody find the room); the meeting link
+    # follows the event's own privacy flag — a live booking on THIS event
+    # unlocks it, because the person holding one is exactly who the link is
+    # for. `mine` is already computed above and covers a signed-in user or,
+    # for a guest, the browser that made the booking.
+    show_meeting_url = (
+        not event.get("meeting_url_private")
+        or is_admin
+        or any(r["status"] in ("held", "confirmed") for r in mine)
+    )
     card.update(
         {
             "description": event.get("description", ""),
             "capacity": event.get("capacity"),
             "remaining": event.get("remaining"),
             "holdHours": event.get("hold_hours"),
+            "mapUrl": event.get("map_url"),
+            "meetingUrl": event.get("meeting_url") if show_meeting_url else None,
+            "meetingUrlPrivate": bool(event.get("meeting_url_private")),
+            "targetYears": event.get("target_years") or [],
             "ticketTypes": [
                 _ticket_view(t, is_member) for t in event.get("ticket_types", [])
             ],
@@ -205,6 +222,82 @@ async def get_event(
         }
     )
     return card
+
+
+ICS_MEDIA_TYPE = "text/calendar; charset=utf-8"
+
+
+@router.get("/events/{slug}/calendar.ics")
+async def event_calendar_ics(slug: str) -> Response:
+    """One event as a downloadable calendar file.
+
+    No session dependency: calendar clients fetch URLs with no cookie jar, so
+    anything behind auth would simply fail to import. What that costs is
+    nothing — the file carries only fields already public on the event page,
+    and the meeting link never enters it at all (see utils/ics). Unpublished
+    events 404, the same rule as the page itself, so a draft's existence is
+    not confirmed by its calendar file.
+    """
+    event = await database.get(f"/events/by-slug/{slug}")
+    if event is None or not event["published"]:
+        raise HTTPException(404, "No such event")
+    return Response(
+        build_event_ics(event, settings.site_origin), media_type=ICS_MEDIA_TYPE
+    )
+
+
+@router.get("/events.ics")
+async def events_calendar_ics(category: str | None = None) -> Response:
+    """The subscribable feed: every published event, any date (past included).
+
+    A calendar client shows history as readily as the future, and cutting the
+    feed at "today" would make a subscribed calendar silently drop events the
+    moment they happened — so `upcoming=False` here.
+
+    No auth, and the category is a plain query param rather than a secret URL:
+    category names are already printed on every event card on the public
+    listing, so the parameter leaks nothing a calendar client could not have
+    read off the page — and a client that cannot authenticate could not use a
+    secret URL anyway. The category comparison is case-insensitive because
+    this is a URL somebody pastes by hand.
+
+    The database service cannot filter by category, so the feed pages the whole
+    archive out of it and filters here in Python.
+    """
+    # Page through the archive rather than fetching it under one hard cap: the
+    # adapter applies its limit after the order-by, so the day the archive
+    # outgrew the cap the feed would start silently omitting its oldest events
+    # — and a subscribed calendar would never notice the rows it never
+    # received. A full page means more rows may follow; a short page means the
+    # archive is exhausted.
+    events: list[dict] = []
+    page_size = 500
+    offset = 0
+    while True:
+        page = (
+            await database.get(
+                "/events",
+                {
+                    "published_only": True,
+                    "upcoming": False,
+                    "limit": page_size,
+                    "offset": offset,
+                },
+            )
+            or []
+        )
+        events.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+    if category:
+        wanted = category.strip().lower()
+        events = [e for e in events if (e.get("category") or "").lower() == wanted]
+    name = "EESoc events" if not category else f"EESoc events ({category.strip()})"
+    return Response(
+        build_calendar_ics(events, settings.site_origin, name),
+        media_type=ICS_MEDIA_TYPE,
+    )
 
 
 @router.post(

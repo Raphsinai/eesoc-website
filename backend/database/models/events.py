@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class TicketType(BaseModel):
@@ -28,6 +28,20 @@ class TicketTypeAvailability(TicketType):
     taken: int = 0
     remaining: int | None = None       # None = uncapped
     sold_out: bool = False
+
+
+def _normalise_target_years(value):
+    """The database stores the year groups as the canonical comma string
+    ("1,2"), while the admin form may send a list and the API always speaks a
+    list of ints. Accept a comma-separated string, a list of ints, or None and
+    normalise to a sorted list so the same event never round-trips into two
+    different orders. An empty string means "aimed at everyone", as it does in
+    the column itself."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [part.strip() for part in value.split(",") if part.strip()]
+    return sorted({int(item) for item in value})
 
 
 class Event(BaseModel):
@@ -63,10 +77,27 @@ class Event(BaseModel):
     # the industry role is allowed to edit, so it is a stored fact rather than
     # a reading of the free-text category.
     industry: bool = False
+    # A map of the venue and the online-meeting link. The meeting link can be
+    # private: a sponsor's Zoom link is often only for people who booked, so
+    # the flag tells the public event payload to withhold it.
+    map_url: str | None = None
+    meeting_url: str | None = None
+    meeting_url_private: bool = False
+    # Which year groups this is aimed at; empty = everyone. The API speaks a
+    # list of ints and the database route serialises to the canonical comma
+    # string, so both forms are accepted here (see the validator below).
+    target_years: list[int] = []
     academic_year: str
     created_by: int | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+    # Runs before field validation so a row's stored comma string ("1,2") and
+    # an admin form's list both arrive as the same sorted list of ints.
+    @field_validator("target_years", mode="before")
+    @classmethod
+    def _norm_target_years(cls, value):
+        return _normalise_target_years(value)
 
 
 class EventDetail(Event):
@@ -102,8 +133,22 @@ class EventWrite(BaseModel):
     # Must be on the write model too, not just on Event: the api decides it
     # from the caller's role and sends it with every create and update.
     industry: bool = False
+    # The calendar/link and year-group fields must be writable too, or the
+    # admin form could never set them: the api layer forwards the whole body
+    # and the database serialises these onto the row.
+    map_url: str | None = None
+    meeting_url: str | None = None
+    meeting_url_private: bool = False
+    # Sent as a list of ints by the form; a comma string is also accepted so
+    # a client speaking the storage format keeps working.
+    target_years: list[int] = []
     academic_year: str | None = None
     ticket_types: list[TicketType] = []
+
+    @field_validator("target_years", mode="before")
+    @classmethod
+    def _norm_target_years(cls, value):
+        return _normalise_target_years(value)
 
 
 

@@ -209,6 +209,17 @@ const blank = () => ({
   // A sign-up form of somebody else's — usually a sponsor's. When set, the
   // event page links there instead of offering our booking.
   signup_url: '',
+  // A map of the venue and the online-meeting link. The meeting link can be
+  // restricted to booked attendees: a sponsor's Zoom link is often only for
+  // the people who actually booked, and the event page then withholds it from
+  // everyone else.
+  map_url: '',
+  meeting_url: '',
+  meeting_url_private: false,
+  // Which year groups the event is aimed at; empty = everyone. Nothing sends
+  // emails from this form yet — the year list is what the (future) targeted
+  // announcements will read.
+  target_years: [],
   sponsorship_claimable: false,
   // An industry event — careers fair, sponsor talk, site visit. It is what
   // decides whether the industry officers can edit it, so it is ticked
@@ -244,6 +255,10 @@ function editEvent(e) {
     sales_scheduled: Boolean(e.sales_open_at),
     sales_open_at: toLocalInput(e.sales_open_at),
     signup_url: e.signup_url ?? '',
+    map_url: e.map_url ?? '',
+    meeting_url: e.meeting_url ?? '',
+    meeting_url_private: Boolean(e.meeting_url_private),
+    target_years: e.target_years ?? [],
     ticket_types: e.ticket_types ?? [],
   })
   // Prefill the product and per-ticket line selects from existing links.
@@ -281,6 +296,12 @@ async function saveEvent() {
           ? new Date(draft.sales_open_at).toISOString()
           : null,
       signup_url: draft.signup_url.trim() || null,
+      map_url: draft.map_url.trim() || null,
+      meeting_url: draft.meeting_url.trim() || null,
+      meeting_url_private: Boolean(draft.meeting_url_private),
+      // Sent as a list — the backend stores the canonical comma string and
+      // returns a list, so an untouched save round-trips unchanged.
+      target_years: draft.target_years,
       ticket_types: draft.ticket_types.filter((t) => t.name.trim())
         .map((t) => ({ ...t, capacity: t.capacity || null })),
     }
@@ -1416,6 +1437,44 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               >
                 <Input v-model="draft.purchase_url" placeholder="https://www-s.imperialcollegeunion.org/shop/product/…" />
               </Field>
+
+              <Field
+                label="Venue map link (optional)"
+                help="A map for the venue, shown on the event page. Google Maps links to a place work best: they open correctly on phones."
+              >
+                <Input v-model="draft.map_url" type="url" placeholder="https://maps.app.goo.gl/…" />
+              </Field>
+
+              <Field
+                label="Online meeting link (optional)"
+                help="For online events — Zoom, Teams, Meet. Tick the box below to show it only to people who have booked."
+              >
+                <Input v-model="draft.meeting_url" type="url" placeholder="https://imperial.zoom.us/j/…" />
+              </Field>
+              <label style="font:var(--type-small); color:var(--text-body); display:flex; gap:var(--space-2); align-items:center">
+                <input v-model="draft.meeting_url_private" type="checkbox" />
+                Meeting link visible to booked attendees only
+              </label>
+
+              <!-- Who the event is for. Nothing is emailed from here — the
+                   year groups are recorded so a future announcement can aim
+                   at the right department lists; blank means everyone. -->
+              <fieldset style="margin:0; padding:0; border:0; display:grid; gap:var(--space-2)">
+                <legend style="padding:0; font:var(--type-label); color:var(--text-muted)">Aimed at year groups</legend>
+                <div style="display:flex; gap:var(--space-4); flex-wrap:wrap">
+                  <label
+                    v-for="y in 4"
+                    :key="y"
+                    style="font:var(--type-small); color:var(--text-body); display:flex; gap:var(--space-2); align-items:center"
+                  >
+                    <input v-model="draft.target_years" type="checkbox" :value="y" />
+                    {{ ['1st', '2nd', '3rd', '4th'][y - 1] }} year
+                  </label>
+                </div>
+                <p style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
+                  None ticked = aimed at everyone.
+                </p>
+              </fieldset>
 
               <TraceRule />
               <h3 style="margin:0; font:var(--type-h5)">Union product (optional)</h3>

@@ -279,6 +279,37 @@ async function notifyMe() {
     alertBusy.value = false
   }
 }
+
+// Calendar and links. Plain anchors, not api() calls: both are GETs a browser
+// opens directly, and the .ics endpoint is deliberately session-free so a
+// calendar client can fetch the same URL.
+const icsHref = computed(() => `/api/events/${route.params.slug}/calendar.ics`)
+
+const gcalHref = computed(() => {
+  // Google's template link wants both ends of the event. Without an end we
+  // leave the link off rather than invent a duration — the .ics handles the
+  // no-end case honestly, so there is still a calendar route in.
+  if (!event.value?.startsAt || !event.value?.endsAt) return ''
+  const stamp = (iso) =>
+    new Date(iso).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
+  const params = new URLSearchParams({
+    action: 'TEMPLATE',
+    text: event.value.title || '',
+    dates: `${stamp(event.value.startsAt)}/${stamp(event.value.endsAt)}`,
+    details: event.value.description || '',
+    location: event.value.venue || '',
+  })
+  return `https://calendar.google.com/calendar/render?${params}`
+})
+
+// "Aimed at: 2nd, 3rd years". An empty list means everyone, which is the
+// default and not worth a line on the page.
+const YEAR_NAMES = { 1: '1st', 2: '2nd', 3: '3rd', 4: '4th' }
+const aimedAt = computed(() => {
+  const years = event.value?.targetYears || []
+  if (!years.length) return ''
+  return years.map((y) => YEAR_NAMES[y] || `${y}th`).join(', ')
+})
 </script>
 
 
@@ -333,6 +364,50 @@ const salesOpensText = computed(() => {
           </header>
 
           <p style="margin:0; font:var(--type-body); white-space:pre-line">{{ event.description }}</p>
+
+          <!-- Calendar and links: the things somebody wants to do with an
+               event that are not booking it. The .ics link is always shown —
+               every published event has one — and the rest appear only when
+               the API sent them. -->
+          <div class="calendar-links">
+            <h2 style="margin:0; font:var(--type-h5)">Calendar &amp; links</h2>
+            <div class="calendar-links__row">
+              <a data-testid="event-ics-link" :href="icsHref">Add to calendar (.ics) ↓</a>
+              <a
+                v-if="gcalHref"
+                data-testid="event-gcal-link"
+                :href="gcalHref"
+                target="_blank"
+                rel="noopener"
+              >Google Calendar ↗</a>
+              <a
+                v-if="event.mapUrl"
+                data-testid="event-map-link"
+                :href="event.mapUrl"
+                target="_blank"
+                rel="noopener"
+              >Venue map ↗</a>
+              <a
+                v-if="event.meetingUrl"
+                data-testid="event-meeting-link"
+                :href="event.meetingUrl"
+                target="_blank"
+                rel="noopener"
+              >Join online ↗</a>
+            </div>
+            <!-- The API withheld the link because it is for booked attendees
+                 only: say so rather than leaving nothing, which reads as
+                 "there is no online option". -->
+            <p
+              v-if="event.meetingUrlPrivate && !event.meetingUrl"
+              style="margin:0; font:var(--type-small); color:var(--text-faint)"
+            >
+              The joining link appears here once you've booked.
+            </p>
+            <p v-if="aimedAt" style="margin:0; font:var(--type-small); color:var(--text-muted)">
+              Aimed at: {{ aimedAt }} years
+            </p>
+          </div>
         </div>
 
         <!-- No ticket types means no booking: a drop-in event gets a short
@@ -622,6 +697,24 @@ const salesOpensText = computed(() => {
   border: 1px solid var(--border-faint);
   border-radius: var(--radius-md);
   background: var(--surface-sunken);
+}
+
+/* Calendar & links: a quiet row of small links under the description. */
+.calendar-links {
+  display: grid;
+  gap: var(--space-3);
+}
+.calendar-links__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+}
+.calendar-links__row a {
+  font: var(--type-small);
+  color: var(--text-muted);
+}
+.calendar-links__row a:hover {
+  color: var(--text-strong);
 }
 
 /* Separated from the "on sale soon" copy above it by a rule rather than space

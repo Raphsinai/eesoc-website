@@ -101,6 +101,34 @@ Admins also see drafts.
 Adds `description`, `ticketTypes[]` (with `price`, `remaining`, `soldOut`,
 `membersOnly`, `selectable`) and `myReservations[]` when signed in.
 
+Also the calendar/link fields: `mapUrl` (always — a venue map is public) and
+`meetingUrl`, which the event can mark private for its meeting link
+(`meetingUrlPrivate` says whether it did). A private link is returned only to
+a viewer holding a live hold/confirmed booking on this event or an admin;
+everybody else gets `null`. `targetYears` lists the year groups the event is
+aimed at (`[1, 2]`); empty means everyone.
+
+### `GET /events/{slug}/calendar.ics`
+The event as an iCalendar file. No session — calendar clients cannot
+authenticate. 404 when unpublished, the same rule as the page. `text/calendar;
+charset=utf-8`, times are the stored UTC instants in Z form (an absolute time
+needs no VTIMEZONE). Never contains the meeting link or any attendee data.
+
+### `GET /events.ics` · `GET /events.ics?category=Workshops`
+The subscribable feed: every published event, past ones included (a calendar
+shows history), ordered by start. No auth, and the category is a plain query
+param — category names are already printed on every public event card, so the
+parameter leaks nothing, and a calendar client could not use an authenticated
+URL anyway. The category match is case-insensitive. Same content rules as the
+single-event file: no private meeting links, no drafts.
+
+**Admin write fields** (`POST/PUT /admin/events`): `map_url`, `meeting_url`,
+`meeting_url_private`, `target_years` — alongside the existing event fields.
+`target_years` is a list of ints in the API (`[1, 2]`), stored as the
+comma string `"1,2"`; no emails are sent from it yet, but the targeted
+announcement queue will read it to aim an event's message at the right
+department year-group lists.
+
 ### `POST /events/{slug}/reserve` 🔒
 ```json
 { "ticket_type_id": 4, "quantity": 1 }

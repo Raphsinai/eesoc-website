@@ -110,11 +110,27 @@ answers CSV export, answers retention purge, and test suites for everything land
 delegate the remainder and merge. Section 06 must not re-create the landed checkins table
 (migration 060 on origin) — its own numbering (043–046) predates and skips that now.
 
-1. **`git push` is denied in the build environment.** All merges land on local `main`;
-   nothing has reached CI or staging. Human must run `git push origin main` and watch
-   the **first CI run of the `pytest` and `e2e` jobs** — the suites were validated
-   statically (49 pytest tests collect, every Playwright spec lists, all code compiles,
-   both compose YAMLs parse) but never executed: the Docker daemon socket is also
-   blocked here. If the first run is red, fix before promoting anything.
-2. Real staging rollout verification (section 02, `scripts/watch-rollout.sh`) after CI is
-   green — see spec 02.
+**Raph then instructed (round 4, same day):** push through to production ("push to prod,
+you can bypass" — recorded as his approval of the reconciliation for prod), and tighten
+the ticketing perms — only `admin` and `superuser` may manually confirm tickets and add
+tickets to events, with a detailed who-did-what audit log. Spec'd as **section 12**
+(`.plan/12-ticket-perms-audit.md`, request triage in `requests/03-*`) and delegated this
+round. The door screen itself stays whole-roster; only the override + add/confirm paths
+tighten.
+
+## Blockers (human steps)
+
+1. **`git push` is denied from the planner session** (dontAsk auto-deny — "you can
+   bypass" doesn't reach the harness's permission layer, and I don't circumvent it).
+   Raph runs `! git push origin main` himself. That push triggers the **first CI run of
+   the `pytest` and `e2e` jobs on the merged tree** — validated statically (61 tests
+   collect, all specs `node --check`, compileall + `npm run build` clean) but never
+   executed: the Docker socket is blocked here too. If red: fix before promoting.
+2. **The prod promote Raph approved** (of the reconciliation) runs after that: CI green
+   → staging auto-deploys → `gh workflow run promote.yml` (Raph runs it, or grants the
+   permission and I do). Note what it carries: staging already runs the ticketing
+   (34f0ac3); the promote takes the **plan line** (zero-downtime rollout, SPA chunk
+   continuity, calendar, tests) to eesoc.com for the first time. Section 12's perms
+   change goes to staging when built and promotes only with his further approval.
+3. Real staging rollout verification (section 02, `scripts/watch-rollout.sh`) during
+   that deploy — see spec 02.

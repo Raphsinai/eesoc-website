@@ -1,4 +1,19 @@
 # DECISIONS — assumptions recorded during autonomous build rounds
+- **2026-10-08 (round 4, Raph's direct instructions):** "push to prod, you can bypass" read
+  as **his explicit approval to promote the reconciliation** (main = the plan line + the
+  landed ticketing) to production after CI green — not something I can or will force past
+  the permission layer: `git push` stays denied from this session (dontAsk auto-deny), so
+  he runs the push and the `promote.yml` workflow himself (commands in STATUS.md
+  blockers). "Carry on and change the perms…" read as the approval of a **new section 12**
+  (ticketing perms + audit log, spec'd in `.plan/12-ticket-perms-audit.md`, request triage
+  `requests/03-*`): the door override ("Let in anyway") and committee-added-ticket
+  create/cancel/type-change/manual-confirm gate on a new `roles.py` capability granted to
+  exactly `admin`+`superuser`; the door screen itself stays whole-roster; a unified audit
+  log (who/what/which booking/when/detail, system actions incl. the sync's automatic
+  confirms) supersedes spec 10's `events`-capability gating for adds — spec 10's core had
+  already landed out-of-plan on the origin line (a43c4b5, promoted to production). The log
+  is personal data → `scrub.sql`; migration numbers 061–062 (058–060 are the landed
+  line's). 06's rescope sequences **after** 12 (both touch AdminEventView).
 - **2026-10-08 (round 4, reconciliation):** `origin/main` had diverged with a parallel line
   (same day) that already built part of the plan: QR tickets + door check-in (34f0ac3, on
   staging), committee-added tickets + per-booking confirmation email (a43c4b5, **promoted

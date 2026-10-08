@@ -144,7 +144,7 @@ function upsert(attendee) {
 
 async function checkIn(a, override = false) {
   if (!override && !a.paid) {
-    if (!confirm(`${a.name}'s booking is not paid. Let them in anyway?`)) return
+    if (!confirm(`${a.name}'s ${a.ticketType} booking is not paid. Let them in anyway?`)) return
     override = true
   }
   busy.value = true
@@ -152,7 +152,8 @@ async function checkIn(a, override = false) {
   try {
     const res = await api.post(`/checkin/reservations/${a.id}`, { event_id: eventId.value, override })
     upsert(res.attendee)
-    if (res.outcome === 'already') flashResult(res)
+    // Every check-in from the list flashes the panel too, camera or not.
+    flashResult(res)
   } catch (e) {
     error.value = e.message
   } finally {
@@ -307,10 +308,11 @@ function flashResult(res) {
   result.value = res
   navigator.vibrate?.(res.outcome === 'checked_in' ? 80 : [60, 60, 60])
   clearTimeout(resultTimer)
-  // A good scan clears itself so the line keeps moving; anything that needs a
-  // decision stays until somebody makes it.
+  // A good result clears itself — long enough to read the name and type — so
+  // the line keeps moving; anything that needs a decision stays until
+  // somebody makes it.
   if (res.outcome === 'checked_in' || res.outcome === 'already') {
-    resultTimer = setTimeout(dismissResult, 2500)
+    resultTimer = setTimeout(dismissResult, 3500)
   }
 }
 
@@ -423,33 +425,40 @@ onBeforeUnmount(() => {
           <div class="scan__frame">
             <video ref="video" class="scan__video" playsinline muted />
             <div class="scan__target" />
-            <div v-if="result" class="scan__result" :class="`is-${TONES[result.outcome]}`" @click="dismissResult">
-              <strong class="scan__headline">
-                {{ {
-                  checked_in: 'Checked in',
-                  already: 'Already in',
-                  unpaid: 'Not paid',
-                  invalid: 'Not valid',
-                  wrong_event: 'Wrong event',
-                  error: 'Not a ticket',
-                }[result.outcome] }}
-              </strong>
-              <template v-if="result.attendee">
-                <span class="scan__name">{{ result.attendee.name }}</span>
-                <span class="scan__ticket">
-                  {{ result.attendee.ticketType }}<template v-if="result.attendee.quantity > 1"> · <b>× {{ result.attendee.quantity }} people</b></template>
-                </span>
-              </template>
-              <span v-if="result.message" class="scan__msg">{{ result.message }}</span>
-              <div v-if="result.outcome === 'unpaid' || result.outcome === 'invalid'" class="scan__actions" @click.stop>
-                <Button size="sm" variant="secondary" :disabled="busy" @click="letInAnyway">Let in anyway</Button>
-                <Button size="sm" variant="ghost" @click="dismissResult">Don't</Button>
-              </div>
-              <span v-else class="scan__hint">Tap to scan the next one</span>
-            </div>
           </div>
           <Button block variant="secondary" @click="stopScan">Stop scanning</Button>
         </template>
+        <!-- The one result panel: an overlay covering the camera while scanning,
+             a standalone panel above the list the rest of the time. -->
+        <div
+          v-if="result"
+          class="scan__result"
+          :class="[`is-${TONES[result.outcome]}`, { 'is-overlay': scanning }]"
+          @click="dismissResult"
+        >
+          <strong class="scan__headline">
+            {{ {
+              checked_in: 'Checked in',
+              already: 'Already in',
+              unpaid: 'Not paid',
+              invalid: 'Not valid',
+              wrong_event: 'Wrong event',
+              error: 'Not a ticket',
+            }[result.outcome] }}
+          </strong>
+          <template v-if="result.attendee">
+            <span class="scan__name">{{ result.attendee.name }}</span>
+            <span class="scan__ticket">
+              {{ result.attendee.ticketType }}<template v-if="result.attendee.quantity > 1"> · × {{ result.attendee.quantity }} people</template>
+            </span>
+          </template>
+          <span v-if="result.message" class="scan__msg">{{ result.message }}</span>
+          <div v-if="result.outcome === 'unpaid' || result.outcome === 'invalid'" class="scan__actions" @click.stop>
+            <Button size="sm" variant="secondary" :disabled="busy" @click="letInAnyway">Let in anyway</Button>
+            <Button size="sm" variant="ghost" @click="dismissResult">Don't</Button>
+          </div>
+          <span v-else class="scan__hint">Tap to scan the next one</span>
+        </div>
       </div>
 
       <!-- List -->
@@ -467,12 +476,13 @@ onBeforeUnmount(() => {
         <li v-for="a in visible" :key="a.id" class="person" :class="{ 'is-in': a.checkedInAt }">
           <div class="person__who">
             <span class="person__name">{{ a.name }}</span>
-            <span class="person__meta">
-              {{ a.ticketType }}<template v-if="a.quantity > 1"> × {{ a.quantity }}</template>
-              <template v-if="a.shortcode"> · {{ a.shortcode }}</template>
-              <template v-else-if="a.email && a.email !== a.name"> · {{ a.email }}</template>
+            <span v-if="a.shortcode || (a.email && a.email !== a.name)" class="person__meta">
+              <template v-if="a.shortcode">{{ a.shortcode }}</template>
+              <template v-else>{{ a.email }}</template>
             </span>
             <span class="person__tags">
+              <Badge v-if="a.ticketType" tone="accent">{{ a.ticketType }}</Badge>
+              <Badge v-if="a.quantity > 1" tone="neutral">× {{ a.quantity }}</Badge>
               <Badge v-if="!a.paid" tone="danger">Not paid</Badge>
               <Badge v-if="a.status === 'cancelled' || a.status === 'expired'" tone="neutral">{{ a.status }}</Badge>
               <Badge v-if="a.guest" tone="neutral">Guest</Badge>
@@ -585,6 +595,7 @@ onBeforeUnmount(() => {
   color: var(--danger);
 }
 .scan {
+  position: relative;
   display: grid;
   gap: var(--space-3);
 }
@@ -609,17 +620,29 @@ onBeforeUnmount(() => {
   border-radius: 14px;
   pointer-events: none;
 }
+/* `safe center` falls back to start when the content is taller than the
+   panel, so a very long name is never clipped — the panel scrolls instead. */
 .scan__result {
-  position: absolute;
-  inset: 0;
   display: grid;
-  align-content: center;
+  align-content: safe center;
   justify-items: center;
   gap: var(--space-2);
   padding: var(--space-6);
   text-align: center;
   color: #fff;
   cursor: pointer;
+  border-radius: var(--radius-md);
+  overflow-y: auto;
+}
+/* Over the camera the panel exactly covers the frame — the first element
+   of .scan, with these same metrics. */
+.scan__result.is-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  aspect-ratio: 1 / 1;
+  max-height: 60vh;
 }
 .scan__result.is-ok {
   background: rgba(22, 128, 61, 0.94);
@@ -635,11 +658,25 @@ onBeforeUnmount(() => {
   font-size: 34px;
   line-height: 1.1;
 }
+/* Big enough to read at arm's length: the name wraps anywhere rather than
+   truncating, the ticket type sits in a high-contrast pill under it. */
 .scan__name {
-  font-size: 22px;
+  max-width: 100%;
+  font-size: 32px;
   font-weight: 700;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
 }
-.scan__ticket,
+.scan__ticket {
+  max-width: 100%;
+  padding: var(--space-2) var(--space-5);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink-900, #0b0d12);
+  font-size: 20px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
 .scan__msg {
   font-size: 16px;
 }

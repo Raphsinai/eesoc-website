@@ -872,6 +872,64 @@ async function loadSponsorInbox() {
   }
 }
 
+// The same inbox, summarised for the Overview: one line per kind of thing
+// waiting, with the first few items, so nobody has to open the Sponsors tab to
+// find out whether a sponsor is waiting on them.
+const sponsorPending = computed(() => {
+  const inbox = sponsorInbox.value
+  if (!inbox) return []
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
+  const groups = [
+    {
+      key: 'notes',
+      label: plural(inbox.notes.length, 'question or note from a sponsor', 'questions and notes from sponsors'),
+      items: inbox.notes.map((n) => ({
+        to: `/admin/sponsors/${n.sponsorId}#notes`,
+        text: `${n.sponsor} · ${n.label}${n.count > 1 ? ` (${n.count})` : ''}`,
+      })),
+    },
+    {
+      key: 'marketing',
+      label: plural(inbox.marketing.length, 'marketing request to share', 'marketing requests to share'),
+      items: inbox.marketing.map((m) => ({
+        to: `/admin/sponsors/${m.sponsorId}#marketing`,
+        text: `${m.sponsor} · ${m.subject}`,
+      })),
+    },
+    {
+      key: 'requests',
+      label: plural(inbox.requests.length, 'event request to answer', 'event requests to answer'),
+      items: inbox.requests.map((r) => ({
+        to: `/admin/sponsors/${r.sponsorId}#requests`,
+        text: `${r.sponsor} · ${r.format}${r.status === 'open' ? '' : ' · in discussion'}`,
+      })),
+    },
+    {
+      key: 'interest',
+      label: plural(inbox.interest.length, 'event interest to decide', 'event interests to decide'),
+      items: inbox.interest.map((x) => ({
+        to: `/admin/sponsors/${x.sponsorId}#events`,
+        text: `${x.sponsor} · ${x.event}`,
+      })),
+    },
+    {
+      key: 'listings',
+      label: plural(inbox.listings.length, 'new role members haven\'t been told about', 'new roles members haven\'t been told about'),
+      items: inbox.listings.map((l) => ({ to: null, text: `${l.sponsor} · ${l.title}` })),
+    },
+  ]
+  return groups.filter((g) => g.items.length)
+})
+const sponsorPendingTotal = computed(() =>
+  sponsorPending.value.reduce((n, g) => n + g.items.length, 0),
+)
+
+// Coming back to the Overview or the Sponsors tab shows the current state,
+// not whatever it was when the page first loaded.
+watch(tab, (t) => {
+  if (t === 'overview' || t === 'sponsors') loadSponsorInbox()
+})
+
 async function sendRolesDigest() {
   const d = rolesDigest.value
   if (!d?.count) return
@@ -1252,6 +1310,30 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
       </template>
 
       <template v-if="tab === 'overview' && dash">
+        <!-- Sponsors waiting on the committee. First on the page, because it is
+             the one thing here somebody outside the committee is waiting on. -->
+        <Card v-if="sponsorPendingTotal" variant="raised" class="pending-card">
+          <div style="display:grid; gap:var(--space-4)">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:var(--space-4); flex-wrap:wrap">
+              <h2 style="margin:0; font:var(--type-h4); display:flex; gap:var(--space-3); align-items:center">
+                Awaiting the committee
+                <Badge tone="danger">{{ sponsorPendingTotal }}</Badge>
+              </h2>
+              <Button @click="tab = 'sponsors'">Open Sponsors</Button>
+            </div>
+            <div v-for="g in sponsorPending" :key="g.key" style="display:grid; gap:var(--space-1, 4px)">
+              <strong style="font:var(--type-small)">{{ g.label }}</strong>
+              <template v-for="(it, i) in g.items.slice(0, 3)" :key="i">
+                <RouterLink v-if="it.to" :to="it.to" class="pending-item">{{ it.text }}</RouterLink>
+                <span v-else class="pending-item">{{ it.text }}</span>
+              </template>
+              <span v-if="g.items.length > 3" class="pending-item" style="color:var(--text-faint)">
+                and {{ g.items.length - 3 }} more
+              </span>
+            </div>
+          </div>
+        </Card>
+
         <div v-if="dash.warnings.length" style="display:grid; gap:var(--space-3); margin-bottom:var(--space-8)">
           <Card v-for="(w, i) in dash.warnings" :key="i" variant="outline">
             <div style="display:flex; align-items:center; gap:var(--space-3); flex-wrap:wrap">
@@ -2486,5 +2568,14 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
 .inbox-row {
   font: var(--type-small);
   color: var(--text-body);
+}
+.pending-card {
+  margin-bottom: var(--space-8);
+  border-left: 4px solid var(--danger);
+}
+.pending-item {
+  font: var(--type-2xs);
+  color: var(--text-body);
+  padding-left: var(--space-3);
 }
 </style>

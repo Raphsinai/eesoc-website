@@ -17,8 +17,9 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Response
 from clients import database, union
 from models.auth import AuthSession
 from config import settings
+from services import agreement as agreement_service
 from services import announce as announce_service
-from services import emailing, purchase, storage
+from services import emailing, purchase, sponsor_notes, storage
 from services.identity import resolve_or_create_user
 from utils.auth import (
     generate_token,
@@ -214,7 +215,14 @@ async def list_all_events(
     says so.
     """
     events = await database.get("/events", {"published_only": False, "limit": 500}) or []
-    return [{**e, "can_edit": may_edit_event(session, e)} for e in events]
+    # Which sponsors each event is linked to, for the badge in the list.
+    sponsors: dict[int, list[str]] = {}
+    for link in await database.get("/sponsors/links/confirmed") or []:
+        sponsors.setdefault(link["event_id"], []).append(link["sponsor_name"])
+    return [
+        {**e, "can_edit": may_edit_event(session, e), "sponsors": sponsors.get(e["id"], [])}
+        for e in events
+    ]
 
 
 async def _editable_event(event_id: int, session: AuthSession) -> dict:
@@ -526,13 +534,9 @@ async def _reservation_in_scope(reservation_id: int, session: AuthSession) -> di
 async def sponsor_requests(
     _: AuthSession = Depends(require_sponsors),
 ) -> list[dict]:
-    """Open requests across all sponsors, for the committee to work through."""
-    sponsors = await database.get("/sponsors", {"active_only": False}) or []
-    out = []
-    for sponsor in sponsors:
-        for req in await database.get(f"/sponsors/{sponsor['id']}/requests") or []:
-            out.append({**req, "sponsor_name": sponsor["name"]})
-    return sorted(out, key=lambda r: r.get("created_at") or "", reverse=True)
+    """Requests across all sponsors, newest first, for the committee to work
+    through. One query: this used to fetch every sponsor's list in turn."""
+    return await database.get("/sponsors/requests/all") or []
 
 
 @router.get("/waitlist")
@@ -991,6 +995,499 @@ async def sponsor_users(
     sponsor_id: int, _: AuthSession = Depends(require_sponsors)
 ) -> list[dict]:
     return await database.get(f"/sponsors/{sponsor_id}/users") or []
+
+
+# ------------------------------------------------------- sponsor agreements
+#
+# The per-sponsor page: which clauses they signed, the events linked to them,
+# what they have asked for, and the marketing waiting to go out. All of it on
+# `sponsors`, except actually emailing members, which is bulk mail and so stays
+# on `site` like every other send.
+
+
+@router.get("/sponsors/inbox")
+async def sponsor_inbox(_: AuthSession = Depends(require_sponsors)) -> dict:
+    """Everything across all sponsors that is waiting on the committee."""
+    marketing = await database.get("/sponsors/marketing/all", {"status": "pending"}) or []
+    requests = await database.get("/sponsors/requests/all", {"open_only": True}) or []
+    interest = await database.get("/sponsors/interest/open") or []
+    listings = await database.get("/sponsors/listings/unannounced") or []
+    notes = await database.get("/sponsors/notes/unread") or []
+    # One line per thread, not per note: three notes about one event are one
+    # thing to answer.
+    threads: dict[tuple[int, str], dict] = {}
+    for n in notes:
+        key = (n["sponsor_id"], n["topic"])
+        t = threads.setdefault(key, {
+            "sponsorId": n["sponsor_id"], "sponsor": n["sponsor_name"],
+            "topic": n["topic"], "label": n.get("topic_label") or "", "count": 0,
+        })
+        t["count"] += 1
+        t["latest"] = " ".join((n.get("body") or "").split())[:120]
+    return {
+        "notes": list(threads.values()),
+        "marketing": [
+            {"id": m["id"], "sponsorId": m["sponsor_id"], "sponsor": m["sponsor_name"],
+             "subject": m["subject"], "created": m.get("created_at")}
+            for m in marketing
+        ],
+        "requests": [
+            {"id": r["id"], "sponsorId": r["sponsor_id"], "sponsor": r["sponsor_name"],
+             "format": r.get("format"), "status": r["status"], "created": r.get("created_at")}
+            for r in requests
+        ],
+        "interest": [
+            {"id": i["id"], "sponsorId": i["sponsor_id"], "sponsor": i["sponsor_name"],
+             "event": i["event_title"], "eventId": i["event_id"],
+             "date": format_date(_parse_dt(i.get("event_starts_at")))}
+            for i in interest
+        ],
+        "listings": [
+            {"id": l["id"], "title": l["title"], "sponsor": l["sponsor_name"],
+             "location": l.get("location")}
+            for l in listings
+        ],
+    }
+
+
+async def _sponsor_or_404(sponsor_id: int) -> dict:
+    sponsor = await database.get(f"/sponsors/{sponsor_id}")
+    if sponsor is None:
+        raise HTTPException(404, "No such sponsor")
+    return sponsor
+
+
+@router.get("/sponsors/{sponsor_id}/detail")
+async def sponsor_detail(
+    sponsor_id: int, session: AuthSession = Depends(require_sponsors)
+) -> dict:
+    sponsor = await _sponsor_or_404(sponsor_id)
+    claims = await database.get(f"/sponsors/{sponsor_id}/claims") or []
+    events = await database.get("/events", {"published_only": False, "limit": 500}) or []
+    year = academic_year()
+    notes = await database.get(f"/sponsors/{sponsor_id}/notes") or []
+    note_threads = sponsor_notes.threads(notes, "committee")
+    # Opening the sponsor's page is reading their notes: it is where they are
+    # shown in full and answered.
+    if any(t["unread"] for t in note_threads):
+        await database.post(
+            f"/sponsors/{sponsor_id}/notes/read", params={"from_committee": False}
+        )
+    return {
+        "notes": note_threads,
+        "sponsor": {
+            **sponsor,
+            "amount": format_price(sponsor.get("amount_pence", 0)),
+        },
+        "year": year,
+        "terms": await agreement_service.terms(sponsor_id),
+        "claims": [
+            {
+                "eventId": c["event_id"],
+                "slug": c["slug"],
+                "title": c["title"],
+                "date": format_date(_parse_dt(c.get("starts_at"))),
+                "status": c["status"],
+                "clause": c.get("clause"),
+                "note": c.get("note"),
+                "published": c.get("published"),
+                "thisYear": c.get("academic_year") == year,
+            }
+            for c in claims
+        ],
+        "requests": await database.get(f"/sponsors/{sponsor_id}/requests") or [],
+        "marketing": await database.get(f"/sponsors/{sponsor_id}/marketing") or [],
+        "contacts": await database.get(f"/sponsors/{sponsor_id}/contacts") or [],
+        "users": await database.get(f"/sponsors/{sponsor_id}/users") or [],
+        # Every event, newest first, for the "link an event" picker.
+        "events": [
+            {
+                "id": e["id"],
+                "title": e["title"],
+                "date": format_date(_parse_dt(e.get("starts_at"))),
+                "published": e.get("published"),
+            }
+            for e in sorted(events, key=lambda e: str(e.get("starts_at") or ""), reverse=True)
+        ],
+        "eventClauses": [
+            {"key": k, "label": agreement_service.BY_KEY[k]["label"]}
+            for k in agreement_service.EVENT_CLAUSES
+        ],
+        "audiences": agreement_service.MARKETING_AUDIENCES,
+        "canEmail": session.can("site"),
+    }
+
+
+@router.post("/sponsors/{sponsor_id}/notes", dependencies=[Depends(verify_csrf)])
+async def reply_to_sponsor(
+    sponsor_id: int,
+    topic: str = Body(default="general", embed=True),
+    body: str = Body(embed=True),
+    session: AuthSession = Depends(require_sponsors),
+) -> dict:
+    """Reply in a thread, or start one. The sponsor's portal users are emailed
+    to say there is a reply; the reply itself is read in the portal."""
+    await _sponsor_or_404(sponsor_id)
+    label = await sponsor_notes.resolve_topic(sponsor_id, topic, committee=True)
+    await database.post(
+        f"/sponsors/{sponsor_id}/notes",
+        {
+            "topic": topic,
+            "topic_label": label,
+            "body": sponsor_notes.clean_body(body),
+            "from_committee": True,
+            "author_id": session.user.id,
+        },
+    )
+    sponsor_notes.alert_sponsor(sponsor_id, topic, label)
+    return {"ok": True, "message": "Reply sent. The sponsor has been emailed to say so."}
+
+
+@router.put("/sponsors/{sponsor_id}/terms/{clause}", dependencies=[Depends(verify_csrf)])
+async def set_sponsor_term(
+    sponsor_id: int,
+    clause: str,
+    agreed: bool = Body(embed=True),
+    allowance: int | None = Body(default=None, embed=True),
+    note: str = Body(default="", embed=True),
+    done: bool = Body(default=False, embed=True),
+    session: AuthSession = Depends(require_sponsors),
+) -> dict:
+    """Record what this sponsor's agreement says about one clause."""
+    spec = agreement_service.BY_KEY.get(clause)
+    if spec is None:
+        raise HTTPException(404, "No such clause")
+    await _sponsor_or_404(sponsor_id)
+    if allowance is not None and allowance < 0:
+        raise HTTPException(400, "An allowance can't be negative.")
+    existing = {
+        r["clause"]: r for r in await database.get(f"/sponsors/{sponsor_id}/terms") or []
+    }.get(clause)
+    # Keep the original date when something already marked done is saved again,
+    # so "done on 3 Nov" does not become "done today" on every save.
+    done_at = None
+    if done:
+        done_at = (existing or {}).get("done_at") or datetime.now(timezone.utc).isoformat()
+    await database.put(
+        f"/sponsors/{sponsor_id}/terms/{clause}",
+        {
+            "clause": clause,
+            "agreed": agreed,
+            "allowance": allowance if spec.get("countable") else None,
+            "note": note.strip(),
+            "done_at": done_at,
+            "updated_by": session.user.id,
+        },
+    )
+    return {"ok": True, "terms": await agreement_service.terms(sponsor_id)}
+
+
+@router.put("/sponsors/{sponsor_id}/events/{event_id}", dependencies=[Depends(verify_csrf)])
+async def link_sponsor_event(
+    sponsor_id: int,
+    event_id: int,
+    clause: str | None = Body(default=None, embed=True),
+    note: str | None = Body(default=None, embed=True),
+    _: AuthSession = Depends(require_sponsors),
+) -> dict:
+    """Link an existing event to a sponsor — or confirm the interest they
+    registered in it — recording which clause of the agreement it delivers.
+
+    A confirmed link takes the event off every other sponsor's sponsorable list
+    and, once the sponsor is published, shows them on the event page.
+    """
+    await _sponsor_or_404(sponsor_id)
+    if await database.get(f"/events/{event_id}") is None:
+        raise HTTPException(404, "No such event")
+    if clause and clause not in agreement_service.EVENT_CLAUSES:
+        raise HTTPException(400, "An event can't deliver that clause.")
+    await database.put(
+        f"/sponsors/{sponsor_id}/links/{event_id}",
+        {"clause": clause or None, "note": (note or "").strip() or None},
+    )
+    return {"ok": True, "message": "Linked."}
+
+
+@router.delete("/sponsors/{sponsor_id}/events/{event_id}", dependencies=[Depends(verify_csrf)])
+async def unlink_sponsor_event(
+    sponsor_id: int, event_id: int, _: AuthSession = Depends(require_sponsors)
+) -> dict:
+    await database.delete(f"/sponsors/{sponsor_id}/claims/{event_id}")
+    return {"ok": True}
+
+
+@router.post("/sponsors/{sponsor_id}/events/{event_id}/decline", dependencies=[Depends(verify_csrf)])
+async def decline_sponsor_interest(
+    sponsor_id: int, event_id: int, _: AuthSession = Depends(require_sponsors)
+) -> dict:
+    """Say no to a sponsor's interest. Kept as a row rather than deleted, so
+    the sponsor sees an answer instead of their request silently vanishing."""
+    claims = await database.get(f"/sponsors/{sponsor_id}/claims") or []
+    claim = next((c for c in claims if c["event_id"] == event_id), None)
+    if claim is None:
+        raise HTTPException(404, "No such interest")
+    await database.patch(f"/sponsors/claims/{claim['id']}", params={"status": "declined"})
+    return {"ok": True}
+
+
+REQUEST_STATUSES = {"open", "in_progress", "closed"}
+
+
+@router.patch("/sponsor-requests/{request_id}", dependencies=[Depends(verify_csrf)])
+async def update_sponsor_request(
+    request_id: int,
+    status: str | None = Body(default=None, embed=True),
+    response: str | None = Body(default=None, embed=True),
+    _: AuthSession = Depends(require_sponsors),
+) -> dict:
+    if status is not None and status not in REQUEST_STATUSES:
+        raise HTTPException(400, "A request is open, in progress or closed.")
+    row = await database.patch(
+        f"/sponsors/requests/{request_id}",
+        {"status": status, "response": response.strip() if response is not None else None},
+    )
+    if row is None:
+        raise HTTPException(404, "No such request")
+    return {"ok": True, "request": row}
+
+
+async def _marketing_or_404(marketing_id: int) -> dict:
+    item = await database.get(f"/sponsors/marketing/{marketing_id}")
+    if item is None:
+        raise HTTPException(404, "No such marketing request")
+    return item
+
+
+async def _finish_marketing(item: dict, session: AuthSession) -> dict:
+    """Mark a request shared once every channel it asked for is done."""
+    done_email = "email" not in item["channels"] or item.get("emailed_at")
+    done_social = "social" not in item["channels"] or item.get("posted_at")
+    if done_email and done_social and item["status"] == "pending":
+        item = await database.patch(
+            f"/sponsors/marketing/{item['id']}",
+            {"status": "shared", "decided_by": session.user.id},
+        )
+    return item
+
+
+@router.patch("/sponsor-marketing/{marketing_id}", dependencies=[Depends(verify_csrf)])
+async def edit_sponsor_marketing(
+    marketing_id: int,
+    subject: str | None = Body(default=None, embed=True),
+    body: str | None = Body(default=None, embed=True),
+    _: AuthSession = Depends(require_sponsors),
+) -> dict:
+    """Tidy a request before it goes out — a typo, a broken link."""
+    item = await _marketing_or_404(marketing_id)
+    if item["status"] != "pending":
+        raise HTTPException(409, "That request has already been dealt with.")
+    if subject is not None and not subject.strip():
+        raise HTTPException(400, "It needs a subject.")
+    row = await database.patch(
+        f"/sponsors/marketing/{marketing_id}",
+        {"subject": subject.strip() if subject else None, "body": body},
+    )
+    return {"ok": True, "item": row}
+
+
+@router.post("/sponsor-marketing/{marketing_id}/preview", dependencies=[Depends(verify_csrf)])
+async def preview_sponsor_marketing(
+    marketing_id: int, _: AuthSession = Depends(require_sponsors)
+) -> dict:
+    item = await _marketing_or_404(marketing_id)
+    sponsor = await _sponsor_or_404(item["sponsor_id"])
+    html, text = agreement_service.marketing_email(item, sponsor["name"])
+    recipients = await emailing.resolve(item["audiences"])
+    return {
+        "html": html,
+        "text": text,
+        "recipients": len(recipients),
+        "lists": [r["email"] for r in recipients if r.get("list")],
+    }
+
+
+@router.post("/sponsor-marketing/{marketing_id}/send", dependencies=[Depends(verify_csrf)])
+async def send_sponsor_marketing(
+    marketing_id: int, session: AuthSession = Depends(require_site)
+) -> dict:
+    """Email a sponsor's marketing to the audience they chose.
+
+    `site`, not `sponsors`: this is a bulk send from the publicity mailbox, and
+    who may email the whole membership is decided in one place for every kind
+    of message. Same guards as a newsletter — cap, empty audience, mailbox.
+    """
+    item = await _marketing_or_404(marketing_id)
+    if item["status"] != "pending":
+        raise HTTPException(409, "That request has already been dealt with.")
+    if "email" not in item["channels"]:
+        raise HTTPException(400, "This one was asked for on social media only.")
+    if item.get("emailed_at"):
+        raise HTTPException(409, "This has already been emailed.")
+    sponsor = await _sponsor_or_404(item["sponsor_id"])
+
+    recipients = await emailing.resolve(item["audiences"])
+    _check_sendable(item["subject"], item["audiences"], recipients)
+    html, text = agreement_service.marketing_email(item, sponsor["name"])
+
+    campaign = await database.post(
+        "/email/campaigns",
+        {
+            "subject": item["subject"],
+            "heading": item["subject"],
+            "body": item.get("body") or "",
+            # Recorded with the sponsor, so the email history says whose
+            # material it was.
+            "audiences": item["audiences"] + [f"sponsor:{sponsor['slug']}"],
+            "created_by": session.user.id,
+        },
+    )
+    # Marked before the send runs rather than after: a send takes minutes, and
+    # a second press in that window must not mail everybody twice.
+    item = await database.patch(
+        f"/sponsors/marketing/{marketing_id}",
+        {"campaign_id": campaign["id"], "mark_emailed": True},
+    )
+
+    async def build(batch: list[dict], unsubscribe: str) -> list[str]:
+        return await mailer.send_campaign(
+            [r["email"] for r in batch], item["subject"], item["subject"],
+            text, html, unsubscribe,
+        )
+
+    _dispatch(emailing.send_bulk(campaign["id"], recipients, build))
+    item = await _finish_marketing(item, session)
+    return {
+        "ok": True,
+        "status": item["status"],
+        "message": (
+            f"Sending to {len(recipients)} recipient(s). This takes about "
+            f"{_estimate_minutes(len(recipients))}."
+        ),
+    }
+
+
+@router.post("/sponsor-marketing/{marketing_id}/posted", dependencies=[Depends(verify_csrf)])
+async def mark_sponsor_marketing_posted(
+    marketing_id: int, session: AuthSession = Depends(require_sponsors)
+) -> dict:
+    """Record that it went out on social media — posted by hand, outside the site."""
+    item = await _marketing_or_404(marketing_id)
+    if item["status"] != "pending":
+        raise HTTPException(409, "That request has already been dealt with.")
+    item = await database.patch(
+        f"/sponsors/marketing/{marketing_id}", {"mark_posted": True}
+    )
+    item = await _finish_marketing(item, session)
+    return {"ok": True, "status": item["status"]}
+
+
+@router.post("/sponsor-marketing/{marketing_id}/complete", dependencies=[Depends(verify_csrf)])
+async def complete_sponsor_marketing(
+    marketing_id: int,
+    response: str = Body(default="", embed=True),
+    session: AuthSession = Depends(require_sponsors),
+) -> dict:
+    """Close a request as shared without doing every channel it asked for —
+    when it went in the newsletter instead, say. The note tells the sponsor."""
+    item = await _marketing_or_404(marketing_id)
+    if item["status"] != "pending":
+        raise HTTPException(409, "That request has already been dealt with.")
+    await database.patch(
+        f"/sponsors/marketing/{marketing_id}",
+        {"status": "shared", "response": response.strip(), "decided_by": session.user.id},
+    )
+    return {"ok": True}
+
+
+@router.post("/sponsor-marketing/{marketing_id}/decline", dependencies=[Depends(verify_csrf)])
+async def decline_sponsor_marketing(
+    marketing_id: int,
+    response: str = Body(default="", embed=True),
+    session: AuthSession = Depends(require_sponsors),
+) -> dict:
+    """Decline, with the reason the sponsor will read. Gives the share back."""
+    item = await _marketing_or_404(marketing_id)
+    if item["status"] != "pending":
+        raise HTTPException(409, "That request has already been dealt with.")
+    if item.get("emailed_at"):
+        raise HTTPException(409, "This has already been emailed, so it can't be declined.")
+    if not response.strip():
+        raise HTTPException(400, "Tell them why — they'll see this.")
+    await database.patch(
+        f"/sponsors/marketing/{marketing_id}",
+        {"status": "declined", "response": response.strip(), "decided_by": session.user.id},
+    )
+    return {"ok": True}
+
+
+# ---------------------------------------------------- new roles to members
+#
+# The portal tells sponsors members are notified of what they post. This is
+# how: one email listing every live role members have not yet heard about, to
+# the people who opted in to "Jobs and internships". Pressed by the committee
+# rather than sent on post, so a sponsor posting six roles in an afternoon
+# sends one email, not six — and nothing reaches members unseen.
+
+
+def _roles_digest(listings: list[dict]) -> str:
+    lines = ["New roles from the companies that sponsor EESoc:", ""]
+    for l in listings:
+        bits = [f"**{l['title']}** — {l['sponsor_name']}"]
+        if l.get("location"):
+            bits.append(l["location"])
+        if l.get("closes_on"):
+            bits.append(f"closes {format_date(_parse_dt(l['closes_on']))}")
+        line = " · ".join(bits)
+        if l.get("apply_url"):
+            line += f" · [apply]({l['apply_url']})"
+        lines.append(f"- {line}")
+    lines += ["", "Every open role is at [eesoc.com/jobs](/jobs)."]
+    return "\n".join(lines)
+
+
+@router.get("/sponsors/roles-digest")
+async def roles_digest_preview(_: AuthSession = Depends(require_sponsors)) -> dict:
+    listings = await database.get("/sponsors/listings/unannounced") or []
+    recipients = await emailing.resolve(["topic:roles"]) if listings else []
+    html, _text = emailing.render_body(_roles_digest(listings)) if listings else ("", "")
+    return {"count": len(listings), "recipients": len(recipients), "html": html}
+
+
+@router.post("/sponsors/roles-digest", dependencies=[Depends(verify_csrf)])
+async def send_roles_digest(session: AuthSession = Depends(require_site)) -> dict:
+    listings = await database.get("/sponsors/listings/unannounced") or []
+    if not listings:
+        raise HTTPException(400, "There are no new roles to tell members about.")
+    audiences = ["topic:roles"]
+    recipients = await emailing.resolve(audiences)
+    subject = (
+        f"New role: {listings[0]['title']} at {listings[0]['sponsor_name']}"
+        if len(listings) == 1
+        else f"{len(listings)} new roles from our sponsors"
+    )
+    _check_sendable(subject, audiences, recipients)
+
+    body = _roles_digest(listings)
+    html, text = emailing.render_body(body)
+    campaign = await database.post(
+        "/email/campaigns",
+        {"subject": subject, "heading": subject, "body": body,
+         "audiences": audiences + ["jobs-digest"], "created_by": session.user.id},
+    )
+    # Marked now for the same reason as marketing: a second press during a
+    # minutes-long send must not repeat it.
+    await database.post("/sponsors/listings/announced", [l["id"] for l in listings])
+
+    async def build(batch: list[dict], unsubscribe: str) -> list[str]:
+        return await mailer.send_campaign(
+            [r["email"] for r in batch], subject, subject, text, html, unsubscribe
+        )
+
+    _dispatch(emailing.send_bulk(campaign["id"], recipients, build))
+    return {
+        "ok": True,
+        "message": f"Sending {len(listings)} role(s) to {len(recipients)} subscriber(s).",
+    }
 
 
 # ------------------------------------------------------------------- lockers

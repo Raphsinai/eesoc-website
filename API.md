@@ -162,19 +162,30 @@ Name and post are read-only — they belong to the Union's records.
 ## Sponsors
 
 `GET /sponsors` · `GET /jobs` (public, live roles across all sponsors).
+`GET /sponsors` carries each sponsor's `contacts` (emails and links — empty when
+the committee struck the contact clause) and `events` (published events linked
+to them this year). `GET /events/{slug}` carries `sponsors`: the published
+sponsors linked to that event.
 
 **Portal** 🏢 — every endpoint is scoped to the sponsors the account is linked
-to, so changing an id in the URL cannot reach a competitor's data:
+to, so changing an id in the URL cannot reach a competitor's data. What a
+sponsor may do is bounded by their agreement (`services/agreement.py`): a clause
+the committee struck is refused with 403, and countable clauses are enforced
+against the allowance (marketing: 409 when used up).
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /portal/dashboard` | Stat tiles, claimable events, your events, listings |
-| `GET /portal/panels/{jobs\|calendar\|request\|merch\|cv}` | Panel content |
-| `POST /portal/jobs`, `PUT /portal/jobs/{id}` | Manage listings |
-| `POST /portal/events/{id}/claim` | Claim a sponsorable slot |
-| `POST /portal/requests` | Request an event format |
-| `POST /portal/merch/upload` | Record artwork **by URL** (no object store wired up) |
-| `GET /portal/cv-book` | Opt-in CV book |
+| `GET /portal/dashboard` | Stat tiles, sponsorable events, your events, listings, your package, unread replies |
+| `GET /portal/panels/{jobs\|calendar\|request\|marketing\|contacts\|merch\|messages}` | Panel content |
+| `POST /portal/jobs`, `PUT /portal/jobs/{id}` | Manage listings (`status` draft / live / closed) |
+| `POST/DELETE /portal/events/{id}/interest` | Register / withdraw interest in a sponsorable event (`/claim` is the old name for POST) |
+| `POST /portal/requests` | Request an event: `format` id, `body`, optional `timing` |
+| `POST /portal/marketing/media` | Upload an image or PDF for a marketing request |
+| `POST /portal/marketing`, `POST /portal/marketing/{id}/withdraw` | Ask EESoc to share something (subject, body, media, audiences, channels); withdraw while pending |
+| `PUT /portal/contacts` | Replace the contact list: `{contacts: [{kind: email\|link, value, label, note}]}` |
+| `GET /portal/notes?topic=`, `POST /portal/notes` | A thread / a question or note — `topic` is `general`, `event:ID`, `request:ID`, `marketing:ID`, `listing:ID` or `clause:KEY`. Emails the committee (`SPONSOR_NOTIFY_EMAIL`) |
+| `POST /portal/merch/upload`, `DELETE /portal/merch/{id}` | Brand assets and artwork |
+| `GET/PUT /portal/profile`, `POST /portal/profile/logo` | The public card |
 
 ---
 
@@ -194,6 +205,14 @@ to, so changing an id in the URL cannot reach a competitor's data:
 | `POST/DELETE /admin/admins` | Grant, change or revoke a role — **superuser only** |
 | `POST /admin/impersonate` | Open a session as another account — **superuser only** |
 | `GET/POST/PUT /admin/sponsors`, `POST /admin/sponsors/{id}/users` | Sponsors and portal access |
+| `GET /admin/sponsors/inbox` | Everything waiting on the committee across sponsors: notes, marketing, requests, interest, new roles |
+| `GET /admin/sponsors/{id}/detail` | One sponsor's agreement, usage, events, requests, marketing, notes (opening it marks their notes read) |
+| `PUT /admin/sponsors/{id}/terms/{clause}` | Agreed / allowance / note / done for one clause |
+| `PUT/DELETE /admin/sponsors/{id}/events/{event_id}` | Link an existing event (with the clause it delivers) / unlink; `POST …/decline` refuses interest |
+| `POST /admin/sponsors/{id}/notes` | Reply to a sponsor's thread; emails their portal users |
+| `PATCH /admin/sponsor-requests/{id}` | Request status and the reply the sponsor sees |
+| `PATCH /admin/sponsor-marketing/{id}`, `POST …/preview`, `…/send` (**site**), `…/posted`, `…/complete`, `…/decline` | Work a marketing request |
+| `GET/POST /admin/sponsors/roles-digest` | Preview / send (**site**) one email of new roles to the "Jobs and internships" subscribers |
 | `GET/PATCH /admin/lockers`, `GET /admin/locker-bookings` | Locker estate |
 | `GET /admin/email/audiences` | Who can be mailed, with live counts, plus both mailboxes' state |
 | `POST /admin/email/preview` | Render the message and count the audience — **sends nothing** |

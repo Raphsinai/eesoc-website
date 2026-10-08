@@ -9,6 +9,7 @@ import EventsView from '@/views/EventsView.vue'
 import EventView from '@/views/EventView.vue'
 import AdminView from '@/views/AdminView.vue'
 import AdminEventView from '@/views/AdminEventView.vue'
+import AdminSponsorView from '@/views/AdminSponsorView.vue'
 import JobsView from '@/views/JobsView.vue'
 import EmailView from '@/views/EmailView.vue'
 import SubscribeView from '@/views/SubscribeView.vue'
@@ -44,6 +45,7 @@ const routes = [
   { path: '/subscribe', name: 'subscribe', component: SubscribeView, meta: { title: 'Newsletter', noindex: true } },
   { path: '/portal', name: 'portal', component: PortalView, meta: { title: 'Sponsor portal', requires: 'sponsor', noindex: true } },
   { path: '/admin/events/:id', name: 'admin-event', component: AdminEventView, meta: { title: 'Event bookings', requires: 'committee', noindex: true } },
+  { path: '/admin/sponsors/:id', name: 'admin-sponsor', component: AdminSponsorView, meta: { title: 'Sponsor agreement', requires: 'committee', noindex: true } },
   { path: '/admin', name: 'admin', component: AdminView, meta: { title: 'Committee admin', requires: 'committee', noindex: true } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]

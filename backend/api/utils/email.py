@@ -702,6 +702,64 @@ async def send_waitlist_offer(
     return await send(to, f"A place has come free for {event_title}", body, html)
 
 
+async def send_sponsor_note(
+    to: list[str],
+    sponsor: str,
+    topic: str,
+    note: str,
+    author: str,
+    url: str,
+) -> list[str]:
+    """A sponsor asked a question or left a note in the portal.
+
+    To the committee, so it goes from the transactional mailbox like any other
+    single message — not bulk, no unsubscribe. The note is quoted in full so it
+    can be read, and often answered, from the inbox; the reply itself goes in
+    the portal so the sponsor sees it where they asked.
+    """
+    who, what = escape(sponsor), escape(topic)
+    quoted = "<br>".join(escape(line) for line in note.splitlines())
+    body = (
+        f"{sponsor} left a note in the sponsor portal.\n\n"
+        f"About:  {topic}\n"
+        f"From:   {author}\n\n"
+        f"{note}\n\n"
+        f"Reply in the admin page: {url}\n"
+    )
+    html = _shell(
+        f"{who}: a note about {what}",
+        escape(" ".join(note.split())[:140]),
+        _detail_rows([("Sponsor", who), ("About", what), ("From", escape(author))])
+        + f'<blockquote style="margin:0 0 18px;padding:12px 16px;border-left:3px solid {GOLD};'
+        f'background:{SUNKEN};font-family:{SANS};font-size:15px;line-height:1.6;color:{BODY_TEXT};">'
+        f"{quoted}</blockquote>"
+        + _button("Reply in the admin page", url),
+    )
+    return await send_many(to, f"Sponsor note from {sponsor}: {topic}", body, html)
+
+
+async def send_sponsor_reply(
+    to: list[str], topic: str, url: str
+) -> list[str]:
+    """The committee answered a sponsor's note.
+
+    Says that there is a reply, not what it is: the conversation lives in the
+    portal, and copying it into email means two places to keep track of.
+    """
+    what = escape(topic)
+    body = (
+        f"The EESoc committee has replied to your note about {topic}.\n\n"
+        f"Read it in the sponsor portal: {url}\n"
+    )
+    html = _shell(
+        "EESoc has replied",
+        f"About {what}",
+        _p(f"The committee has replied to your note about <strong>{what}</strong>.")
+        + _button("Read it in the portal", url),
+    )
+    return await send_many(to, f"EESoc replied: {topic}", body, html)
+
+
 async def send_purchase_reminder(
     to: str,
     event_title: str,

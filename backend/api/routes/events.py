@@ -177,9 +177,23 @@ async def get_event(
     # a ticket is one click from paying for it.
     links = await purchase.links_for_event(event)
 
+    # The sponsors the committee linked to this event. Published sponsors only:
+    # a company still in the pipeline has not signed, and must not appear on a
+    # public page because somebody linked an event early.
+    sponsors = [
+        {
+            "name": l["sponsor_name"],
+            "slug": l["sponsor_slug"],
+            "logoUrl": l.get("sponsor_logo_url"),
+        }
+        for l in await database.get("/sponsors/links/confirmed", {"event_id": event["id"]}) or []
+        if l.get("sponsor_active")
+    ]
+
     card = event_card(event)
     card.update(
         {
+            "sponsors": sponsors,
             "description": event.get("description", ""),
             "capacity": event.get("capacity"),
             "remaining": event.get("remaining"),

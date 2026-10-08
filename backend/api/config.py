@@ -119,6 +119,13 @@ class Settings(BaseSettings):
     # sign. Set it explicitly to keep links working across a password reset.
     email_token_secret: str = ""
 
+    # Where a sponsor's question or note is announced, comma separated. The
+    # sponsorship officer's address — the one the portal tells sponsors to
+    # write to — so a question asked in the portal lands in the same inbox as
+    # one sent by email. Sent from the transactional mailbox, one message per
+    # note, throttled per thread (see services/sponsor_notes.py).
+    sponsor_notify_email: str = "eesoc.vp@imperial.ac.uk"
+
     # --- automated reminders ---
     # How long before a hold expires the "last chance" email goes out. 24h by
     # default against a 48h hold: late enough that most people have already

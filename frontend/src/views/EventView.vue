@@ -330,6 +330,21 @@ const salesOpensText = computed(() => {
             <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
               {{ event.date }} · {{ event.time }}<span v-if="event.venue"> · {{ event.venue }}</span>
             </p>
+            <!-- Sponsors the committee linked to this event. Published sponsors
+                 only — the API drops anyone still in the pipeline. -->
+            <div v-if="event.sponsors?.length" class="event-sponsors">
+              <span class="event-sponsors__label">With</span>
+              <router-link
+                v-for="sp in event.sponsors"
+                :key="sp.slug"
+                to="/sponsors"
+                class="event-sponsors__item"
+                :title="sp.name"
+              >
+                <img v-if="sp.logoUrl" :src="sp.logoUrl" :alt="sp.name" class="event-sponsors__logo" />
+                <span v-else>{{ sp.name }}</span>
+              </router-link>
+            </div>
           </header>
 
           <p style="margin:0; font:var(--type-body); white-space:pre-line">{{ event.description }}</p>
@@ -637,5 +652,35 @@ const salesOpensText = computed(() => {
   .event-layout {
     grid-template-columns: 1fr;
   }
+}
+.event-sponsors {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  flex-wrap: wrap;
+}
+.event-sponsors__label {
+  font: var(--type-eyebrow);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.event-sponsors__item {
+  display: inline-flex;
+  align-items: center;
+  height: 40px;
+  padding: 4px 10px;
+  background: var(--white);
+  border: 1px solid var(--border-hairline);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-strong);
+  text-decoration: none;
+}
+.event-sponsors__logo {
+  height: 28px;
+  max-width: 120px;
+  object-fit: contain;
 }
 </style>

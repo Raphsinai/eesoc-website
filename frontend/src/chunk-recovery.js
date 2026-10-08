@@ -18,8 +18,18 @@
 // same way. It cannot come from anything but a preload of our own assets.
 const CHUNK_LOAD_FAILURE = /dynamically imported module|importing a module script failed|error loading dynamically imported module|unable to preload/i
 
-// sessionStorage key holding the epoch ms of the last recovery reload.
+// Key holding the epoch ms of the last recovery reload. Two channels carry
+// it, written together and read wherever it is readable (see writeLastReload):
+// sessionStorage, the natural home — it survives a reload and dies with the
+// tab — but it THROWS in private-browsing modes and under policies that
+// disable storage, exactly where a reload-loop guard matters most; and
+// window.name, a plain property that ALSO survives a same-origin reload
+// (browsers clear it on cross-origin navigation instead), needs no
+// permission, and cannot be disabled. Nothing else in the app uses
+// window.name, and the prefix keys it to this hook, so the two channels
+// never collide with anything.
 const RELOAD_KEY = 'eesoc.chunk-reload'
+const RELOAD_NAME_PREFIX = `${RELOAD_KEY}:`
 
 // A recovery reload is rate-limited to one per 10 seconds rather than being a
 // one-shot flag: a tab that recovered once can recover again later (a second
@@ -32,27 +42,51 @@ function isChunkLoadFailure(message) {
   return typeof message === 'string' && CHUNK_LOAD_FAILURE.test(message)
 }
 
+// The last recovery-reload timestamp from whichever channel still holds one:
+// 0 (long before `now`) means "never recovered".
+function readLastReload() {
+  let stamp = ''
+  try {
+    stamp = sessionStorage.getItem(RELOAD_KEY) || ''
+  } catch {
+    // Storage unavailable — fall through and read window.name instead.
+  }
+  if (!stamp && window.name.startsWith(RELOAD_NAME_PREFIX)) {
+    stamp = window.name.slice(RELOAD_NAME_PREFIX.length)
+  }
+  return Number(stamp) || 0
+}
+
+function writeLastReload(ts) {
+  try {
+    sessionStorage.setItem(RELOAD_KEY, String(ts))
+  } catch {
+    // Storage unavailable or full — the window.name write below still
+    // carries the guard, so the cooldown keeps holding after the reload.
+  }
+  try {
+    // Written unconditionally (not only on the storage failure above): a
+    // storage-less browser reads it back after the reload, and the
+    // no-reload-loop guarantee then holds exactly as it does with storage.
+    window.name = RELOAD_NAME_PREFIX + ts
+  } catch {
+    // A page that froze window.name cannot be guarded — but it is
+    // pathological, and the reload this enables is the point of this
+    // function, so it goes ahead regardless.
+  }
+}
+
 function maybeRecover(err) {
   const message = err && (err.message || String(err))
   if (!isChunkLoadFailure(message)) return false
 
   const now = Date.now()
-  let lastReload = 0
-  try {
-    lastReload = Number(sessionStorage.getItem(RELOAD_KEY)) || 0
-  } catch {
-    // sessionStorage can throw (privacy mode, disabled storage); treat it as
-    // "no previous reload" so recovery still happens once.
-  }
-  if (now - lastReload <= RELOAD_COOLDOWN_MS) return false
+  if (now - readLastReload() <= RELOAD_COOLDOWN_MS) return false
 
   // Write the timestamp right before reloading: if the reload lands on a
-  // still-broken bundle, the guard is already set for the next attempt.
-  try {
-    sessionStorage.setItem(RELOAD_KEY, String(now))
-  } catch {
-    // Same reasoning as above — proceed with the reload regardless.
-  }
+  // still-broken bundle, the guard is already set for the next attempt —
+  // through whichever channel survives the reload.
+  writeLastReload(now)
   window.location.reload()
   return true
 }

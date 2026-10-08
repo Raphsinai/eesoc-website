@@ -1,19 +1,39 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
+// The home page is the only eagerly imported view: it is the first paint of
+// every visit, so splitting it into its own chunk would buy nothing and
+// would add a round trip before anything appears on screen.
 import HomeView from '@/views/HomeView.vue'
-import ResourcesView from '@/views/ResourcesView.vue'
-import SponsorsView from '@/views/SponsorsView.vue'
-import LockersView from '@/views/LockersView.vue'
-import PortalView from '@/views/PortalView.vue'
-import EventsView from '@/views/EventsView.vue'
-import EventView from '@/views/EventView.vue'
-import AdminView from '@/views/AdminView.vue'
-import AdminEventView from '@/views/AdminEventView.vue'
-import JobsView from '@/views/JobsView.vue'
-import EmailView from '@/views/EmailView.vue'
-import SubscribeView from '@/views/SubscribeView.vue'
 import session, { hasAdminArea, refresh } from '@/stores/session'
 import { applySeo } from '@/seo'
+
+// Route-level code splitting: every other route below loads its view with a
+// dynamic import, so each one compiles to its own hashed chunk under
+// /assets/ that the browser fetches on first navigation. This is what makes
+// this section's two halves meaningful rather than theoretical: chunk
+// continuity (the frontend image unions the previous builds' /assets, see
+// the Dockerfile) and chunk-load recovery (src/chunk-recovery.js) are both
+// exactly the case of a surviving tab lazily importing a chunk from before
+// a deploy — if everything were eagerly bundled into the entry chunk there
+// would be nothing to 404 after a deploy and nothing for either mechanism
+// to do. It is also a genuine first-load win: AdminView alone is ~2.4k
+// lines, which nobody reading the home page should have to download.
+//
+// Routes that share a view (/resources and /resources/:slug, /email and
+// /unsubscribe) share one loader, so a view is always exactly one chunk and
+// one fetch no matter which path reaches it.
+
+const ResourcesView = () => import('@/views/ResourcesView.vue')
+const SponsorsView = () => import('@/views/SponsorsView.vue')
+const LockersView = () => import('@/views/LockersView.vue')
+const PortalView = () => import('@/views/PortalView.vue')
+const EventsView = () => import('@/views/EventsView.vue')
+const EventView = () => import('@/views/EventView.vue')
+const AdminView = () => import('@/views/AdminView.vue')
+const AdminEventView = () => import('@/views/AdminEventView.vue')
+const JobsView = () => import('@/views/JobsView.vue')
+const EmailView = () => import('@/views/EmailView.vue')
+const SubscribeView = () => import('@/views/SubscribeView.vue')
 
 const routes = [
   // `title` is the page half of eesoc.com's "<Page> | EESoc - Imperial College

@@ -1,13 +1,12 @@
+# This image builds from the lockfile, not from the developer's working tree.
+# `COPY . .` in the Dockerfile runs AFTER `RUN npm ci`, so a host node_modules
+# would silently overwrite the container's freshly installed, platform-correct
+# dependencies with the host's binaries (vite build would then run against
+# darwin binaries inside a linux image). A host dist is emptied by the vite
+# build anyway and only bloats the context upload. Vite also reads a
+# frontend-local .env automatically during build, so anything under that name
+# must never ride into the image on a machine that happens to have one.
 node_modules
 dist
-dist-ssr
-.git
-.gitignore
-.vite
-.DS_Store
-*.local
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-Dockerfile
-.dockerignore
+.env
+.env.*

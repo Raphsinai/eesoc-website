@@ -22,11 +22,15 @@ ENV VITE_API_BASE=$VITE_API_BASE
 COPY package.json package-lock.json ./
 RUN npm ci
 
-# Build-variant tag baked into the bundle (see vite.config.js). Declared and
-# exported AFTER the npm ci layer on purpose: changing the variant only
-# invalidates the vite build layer, so docker layer caching still skips the
-# dependency install when the variant changes.
-ARG EESOC_BUILD_VARIANT=default
+# Build-variant tag baked into the bundle (see vite.config.js). EMPTY by
+# default, and only ever set by the test suite: CI passes no such build-arg,
+# so an unset variant must reach vite as the empty string — vite.config.js
+# treats empty as "no variant" and leaves Vite's own default asset filenames
+# untouched, which is what production builds get. Declared and exported
+# AFTER the npm ci layer on purpose: changing the variant only invalidates
+# the vite build layer, so docker layer caching still skips the dependency
+# install when the variant changes.
+ARG EESOC_BUILD_VARIANT=
 ENV EESOC_BUILD_VARIANT=$EESOC_BUILD_VARIANT
 
 # Build the static site -> /app/dist
@@ -44,9 +48,21 @@ COPY --from=build /app/dist /usr/share/nginx/html
 
 # Merge the previous build's hashed assets under /assets/ into this image.
 # Only assets/ is merged, never the previous index.html: the app shell must
-# always be the current one so a reload picks up the new deploy. `cp -an`
-# (archive + no-clobber) makes the current build win any name collision,
-# which in practice cannot happen anyway since filenames are content-hashed.
+# always be the current one so a reload picks up the new deploy.
+#
+# `cp -an` (archive + no-clobber): BusyBox cp in this alpine image supports
+# both -a (recursive, preserves mtime) and -n, so the current build wins any
+# name collision — which in practice cannot happen anyway, since filenames
+# are content-hashed and vite.config.js gives variant builds fully disjoint
+# names too.
+#
+# `2>/dev/null || true` is deliberate, not a swallowed error. The default
+# previous image (a stock nginx) has no /assets/ directory at all, so a cold
+# first build fails this cp by design with nothing to union; and a genuinely
+# broken union cannot pass silently, because the asset-continuity e2e suite
+# asserts that the previous build's asset URLs stay fetchable from the new
+# image — a cp that dropped files fails the build in CI rather than shipping.
+#
 # Prune files older than 14 days by mtime: Docker COPY and `cp -a` preserve
 # build-time mtimes, so each asset ages out ~two weeks after the build that
 # produced it. Why 14 days: deploys land several times a day on staging, and

@@ -189,6 +189,27 @@ against the allowance (marketing: 409 when used up).
 
 ---
 
+## Tickets and door check-in
+
+A ticket token is `<booking id>.<hmac>` (`services/tickets.py`); the QR encodes
+`/ticket/<token>`. Own bookings on `GET /events/{slug}` carry `ticketToken`, and
+every confirmation email links the ticket and shows its QR.
+
+| Endpoint | Who | Purpose |
+|---|---|---|
+| `GET /tickets/{token}` | anyone with the link | The ticket: event, holder, status, `checkedInAt`; `mayCheckIn` for committee |
+| `GET /qr/{token}.png` | anyone with the link | The QR image (verified first; immutable) |
+| `GET /checkin/events` | committee | Events from yesterday on, with booked / checked-in counts |
+| `GET /checkin/events/{id}` | committee | The door list: attendees, counts, bookings fingerprint |
+| `GET /checkin/events/{id}/state` | committee | Polled every ~2s by every door screen: all check-ins + bookings fingerprint |
+| `POST /checkin/scan` | committee | `{token, event_id}` → `checked_in` / `already` / `unpaid` / `invalid` / `wrong_event` |
+| `POST /checkin/reservations/{id}` | committee | Check in from the list; `override: true` for unpaid or lapsed (never another event's) |
+| `DELETE /checkin/reservations/{id}` | committee | Undo a check-in |
+
+"Committee" here is anyone on this year's roster, with or without an admin role
+(`deps.require_committee`). Check-in is idempotent per booking: a second scan
+reports who let them in and when.
+
 ## Admin 🛠
 
 | Endpoint | Purpose |

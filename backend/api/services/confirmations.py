@@ -21,6 +21,7 @@ from datetime import datetime
 
 from clients import database
 from config import settings
+from services import tickets
 from utils import email as mailer
 from utils.present import format_date, format_time_range
 
@@ -81,6 +82,8 @@ async def send_pending() -> dict:
                             venue=r.get("venue"),
                             quantity=r.get("quantity") or 1,
                             url=f"{settings.site_origin}/events/{r['event_slug']}",
+                            ticket_url=tickets.ticket_url(r["id"]),
+                            qr_url=tickets.qr_url(r["id"]),
                         )
                     except Exception:  # noqa: BLE001 — recorded, retried
                         log.exception("Confirmation email for booking %s failed", r["id"])

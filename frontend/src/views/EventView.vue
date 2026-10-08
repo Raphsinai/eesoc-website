@@ -552,6 +552,13 @@ const salesOpensText = computed(() => {
                 Held until {{ new Date(r.expiresAt).toLocaleString() }}
               </p>
 
+              <!-- The QR the door scans. A paid booking, or a free one (which
+                   stays held until the event) — an unpaid hold has nothing
+                   for the door to accept yet. -->
+              <div v-if="r.ticketToken && (r.status === 'confirmed' || !r.requiresPurchase)">
+                <Button size="sm" variant="secondary" :href="`/ticket/${r.ticketToken}`">Show your ticket</Button>
+              </div>
+
               <!-- The one thing left to do with an unpaid booking. -->
               <div v-if="r.status === 'held' && r.requiresPurchase && r.purchaseUrl">
                 <Button size="sm" :href="r.purchaseUrl" target="_blank" rel="noopener">

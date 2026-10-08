@@ -16,7 +16,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from clients import database
 from config import settings
 from models.auth import AuthSession, GuestDetails
-from services import confirmations, purchase
+from services import confirmations, purchase, tickets
 from services import sync as sync_service
 from services.identity import is_imperial, resolve_or_create_user
 from utils import email as mailer
@@ -212,6 +212,9 @@ async def get_event(
                     "orderNumber": r.get("order_number"),
                     "requiresPurchase": r.get("requires_purchase", True),
                     "purchaseUrl": links.get(r["ticket_type_id"]) or links.get(None),
+                    # The QR ticket for the door. Only ever the caller's own
+                    # bookings reach this list, so the token is theirs to see.
+                    "ticketToken": tickets.token_for(r["id"]),
                 }
                 for r in mine
                 if r["status"] in ("held", "confirmed")

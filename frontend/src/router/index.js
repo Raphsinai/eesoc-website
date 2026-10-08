@@ -10,6 +10,8 @@ import EventView from '@/views/EventView.vue'
 import AdminView from '@/views/AdminView.vue'
 import AdminEventView from '@/views/AdminEventView.vue'
 import AdminSponsorView from '@/views/AdminSponsorView.vue'
+import CheckinView from '@/views/CheckinView.vue'
+import TicketView from '@/views/TicketView.vue'
 import JobsView from '@/views/JobsView.vue'
 import EmailView from '@/views/EmailView.vue'
 import SubscribeView from '@/views/SubscribeView.vue'
@@ -47,6 +49,12 @@ const routes = [
   { path: '/admin/events/:id', name: 'admin-event', component: AdminEventView, meta: { title: 'Event bookings', requires: 'committee', noindex: true } },
   { path: '/admin/sponsors/:id', name: 'admin-sponsor', component: AdminSponsorView, meta: { title: 'Sponsor agreement', requires: 'committee', noindex: true } },
   { path: '/admin', name: 'admin', component: AdminView, meta: { title: 'Committee admin', requires: 'committee', noindex: true } },
+  // The door. 'committee' covers anybody on the roster, role or not — the API
+  // checks the same thing.
+  { path: '/checkin', name: 'checkin', component: CheckinView, meta: { title: 'Door check-in', requires: 'committee', noindex: true } },
+  { path: '/checkin/:eventId', name: 'checkin-event', component: CheckinView, meta: { title: 'Door check-in', requires: 'committee', noindex: true } },
+  // A ticket. Public — the token in the URL is the credential.
+  { path: '/ticket/:token', name: 'ticket', component: TicketView, meta: { title: 'Your ticket', noindex: true } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 

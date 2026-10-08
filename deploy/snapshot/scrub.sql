@@ -201,6 +201,16 @@ BEGIN
     END LOOP;
 END $$;
 
+-- Who walked through the door, and when (migration 060). Not text a verify
+-- pass would catch, but attendance is personal and staging has no use for
+-- production's — check-ins are made on staging, not copied to it.
+DO $$
+BEGIN
+    IF to_regclass('public.reservation_checkins') IS NOT NULL THEN
+        TRUNCATE TABLE public.reservation_checkins;
+    END IF;
+END $$;
+
 -- Locker grants are keyed by college shortcode, which identifies a person.
 UPDATE public.locker_grants SET
     shortcode = 'grant' || abs(hashtext(shortcode)),

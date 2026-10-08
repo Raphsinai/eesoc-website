@@ -809,11 +809,15 @@ async def send_booking_confirmed(
     venue: str | None = None,
     quantity: int = 1,
     url: str | None = None,
+    ticket_url: str | None = None,
+    qr_url: str | None = None,
 ) -> bool:
     """Their booking has gone from held to confirmed — or the committee added it.
 
     The one email that says "you have a place", so it carries everything they
-    would otherwise have to look up: what, when, where, how many.
+    would otherwise have to look up: what, when, where, how many — and the QR
+    the door scans. The QR is an image on our own domain, which a client may
+    hold back until asked; the ticket link under it always works.
     """
     ticket = f"{ticket_type} × {quantity}" if quantity > 1 else ticket_type
     rows = [("Ticket", escape(ticket)), ("When", escape(starts))]
@@ -825,15 +829,26 @@ async def send_booking_confirmed(
         f"Your place at {event_title} is confirmed.\n\n"
         + "\n".join(lines)
         + "\n\n"
-        + (f"Event details: {url}\n\n" if url else "")
-        + "See you there.\n"
+        + (f"Your ticket (show this at the door): {ticket_url}\n" if ticket_url else "")
+        + (f"Event details: {url}\n" if url else "")
+        + "\nSee you there.\n"
+    )
+    qr = (
+        f'<p style="margin:4px 0 6px;text-align:center;">'
+        f'<img src="{escape(qr_url)}" alt="Your ticket QR code" width="200" height="200" '
+        f'style="display:inline-block;width:200px;height:200px;border:0;"></p>'
+        f'<p style="margin:0 0 14px;text-align:center;font-family:{SANS};font-size:13px;'
+        f'color:{MUTED};">Show this at the door.</p>'
+        if qr_url else ""
     )
     html = _shell(
         f"You're confirmed for {escape(event_title)}",
         f"{escape(ticket)} · {escape(starts)}",
         _p(f"Your place at <strong>{escape(event_title)}</strong> is confirmed.")
         + _detail_rows(rows)
-        + (_button("Event details", url) if url else "")
+        + qr
+        + (_button("Open your ticket", ticket_url) if ticket_url else "")
+        + (_note(f'<a href="{url}" style="color:{MUTED};">Event details</a>') if url else "")
         + _p("See you there."),
     )
     return await send(to, f"You're confirmed for {event_title}", body, html)

@@ -1241,9 +1241,13 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
   <main class="admin">
     <div style="display:flex; align-items:baseline; justify-content:space-between; gap:var(--space-6); flex-wrap:wrap">
       <h1 style="margin:0; font:var(--type-h1)">Committee admin</h1>
-      <span v-if="dash" style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">
-        {{ dash.academicYear }} · {{ dash.environment }}
-      </span>
+      <div style="display:flex; gap:var(--space-4); align-items:center">
+        <!-- Every committee member can work the door, role or not. -->
+        <Button v-if="hasAdminArea" size="sm" variant="secondary" @click="router.push('/checkin')">Door check-in</Button>
+        <span v-if="dash" style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">
+          {{ dash.academicYear }} · {{ dash.environment }}
+        </span>
+      </div>
     </div>
 
     <p v-if="!hasAdminArea" style="font:var(--type-small); color:var(--danger)">

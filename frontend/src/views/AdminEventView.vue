@@ -195,6 +195,13 @@ function emailState(r) {
 }
 
 async function resend(row) {
+  const who = row.name || row.email
+  const again = row.confirmationEmail === 'sent'
+  if (!confirm(
+    again
+      ? `Send ${who} their confirmation email again? They already got one${row.confirmationSentAt ? ` on ${when(row.confirmationSentAt)}` : ''}.`
+      : `Send ${who} a confirmation email now?`,
+  )) return
   busy.value = true
   error.value = ''
   try {
@@ -250,6 +257,7 @@ function csv() {
           · capacity {{ data.event.capacity ?? '∞' }}
           <Badge :tone="data.event.published ? 'success' : 'neutral'">{{ data.event.published ? 'Live' : 'Draft' }}</Badge>
         </span>
+        <div><Button size="sm" variant="secondary" @click="router.push(`/checkin/${data.event.id}`)">Open door check-in</Button></div>
       </header>
 
       <div class="summary">

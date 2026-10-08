@@ -199,6 +199,8 @@ against the allowance (marketing: 409 when used up).
 | `GET/POST /admin/events`, `PUT/DELETE /admin/events/{id}` | Event CRUD |
 | `POST /admin/events/{id}/ticket-types`, `PUT/DELETE /admin/ticket-types/{id}` | Ticket types |
 | `GET /admin/events/{id}/reservations` | Door list, split held/confirmed |
+| `POST /admin/events/{id}/tickets` | Add a ticket for someone (`ticket_type_id`, `email`, names, `quantity`, `note`, `send_confirmation`) — lands **confirmed**, `source = committee`, refused when full, never expired or matched by the sync |
+| `POST /admin/reservations/{id}/confirmation` | Send a confirmed booking's "you're confirmed" email again |
 | `POST /admin/reservations/{id}/ticket-type` | Move a live booking to another ticket type of the same event (`{ticket_type_id}`); refused if that type is full |
 | `GET /admin/union/products` | Synced product list for the link dropdown |
 | `GET/POST/DELETE /admin/product-links` | **Map a Union product to a ticket type, locker or membership** |

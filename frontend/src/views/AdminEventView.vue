@@ -1,13 +1,14 @@
 <script setup>
 // One event's bookings: who is holding, who has bought, who dropped out, who is
 // waiting — with the actions that go with each, and a way to email any group.
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import api from '@/api'
 import Badge from '@/components/ds/Badge.vue'
 import Button from '@/components/ds/Button.vue'
 import Card from '@/components/ds/Card.vue'
+import Field from '@/components/ds/Field.vue'
 import Input from '@/components/ds/Input.vue'
 import TraceRule from '@/components/ds/TraceRule.vue'
 import { can } from '@/stores/session'
@@ -139,6 +140,75 @@ async function changeTicket(row, event) {
   }
 }
 
+// ------------------------------------------------------------ add a ticket
+// For somebody who paid in cash or by transfer, or a comp: lands confirmed and
+// takes a place like any booking.
+const adding = ref(false)
+const blankTicket = () => ({
+  ticket_type_id: '', email: '', first_name: '', last_name: '', quantity: 1, note: '',
+  send_confirmation: true,
+})
+const ticket = reactive(blankTicket())
+
+function openAdd() {
+  Object.assign(ticket, blankTicket(), { ticket_type_id: data.value?.summary?.[0]?.ticketTypeId ?? '' })
+  adding.value = true
+}
+
+async function addTicket() {
+  if (!ticket.ticket_type_id || !ticket.email.trim()) {
+    error.value = 'Choose a ticket type and give their email address.'
+    return
+  }
+  busy.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const res = await api.post(`/admin/events/${route.params.id}/tickets`, {
+      ...ticket,
+      ticket_type_id: Number(ticket.ticket_type_id),
+      quantity: Math.max(1, Number(ticket.quantity) || 1),
+    })
+    notice.value = res.message
+    adding.value = false
+    filter.value = 'bought'
+    await load()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
+}
+
+// ------------------------------------------------------ confirmation email
+// What happened to each confirmed booking's "you're confirmed" email.
+function emailState(r) {
+  if (r.status !== 'confirmed') return null
+  const at = r.confirmationSentAt ? ` ${when(r.confirmationSentAt)}` : ''
+  return {
+    sent: { text: `email sent${at}`, tone: 'muted' },
+    sending: { text: 'email sending…', tone: 'muted' },
+    failed: { text: `email failed (${r.confirmationAttempts} ${r.confirmationAttempts === 1 ? 'try' : 'tries'})`, tone: 'danger' },
+    skipped: { text: 'no confirmation email', tone: 'muted' },
+    suppressed: { text: 'email not delivered here (test site)', tone: 'muted' },
+  }[r.confirmationEmail] ?? { text: 'email pending', tone: 'muted' }
+}
+
+async function resend(row) {
+  busy.value = true
+  error.value = ''
+  try {
+    const res = await api.post(`/admin/reservations/${row.id}/confirmation`)
+    notice.value = res.message
+    // The send happens in the background; give it a moment before re-reading.
+    setTimeout(load, 2500)
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
+}
+
 /** Opens the event's email dialog in the dashboard with this group ticked. */
 function emailGroup(kind) {
   router.push({
@@ -148,11 +218,13 @@ function emailGroup(kind) {
 }
 
 function csv() {
-  const head = ['Name', 'Email', 'Shortcode', 'Member', 'Ticket', 'Qty', 'Status', 'Order number', 'Guest', 'Booked at', 'Hold until']
+  const head = ['Name', 'Email', 'Shortcode', 'Member', 'Ticket', 'Qty', 'Status', 'Order number', 'Guest', 'Booked at', 'Hold until', 'Added by committee', 'Confirmation email', 'Confirmation sent at']
   const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
   const lines = rows.value.map((r) =>
     [r.name, r.email, r.shortcode, r.member ? 'yes' : '', r.ticketType, r.quantity, r.status,
-      r.orderNumber, r.guest ? 'yes' : '', r.bookedAt, r.holdUntil].map(esc).join(','),
+      r.orderNumber, r.guest ? 'yes' : '', r.bookedAt, r.holdUntil,
+      r.source === 'committee' ? 'yes' : '', r.status === 'confirmed' ? (r.confirmationEmail || 'pending') : '',
+      r.confirmationSentAt || ''].map(esc).join(','),
   )
   const blob = new Blob([[head.join(','), ...lines].join('\n')], { type: 'text/csv' })
   const a = document.createElement('a')
@@ -206,6 +278,46 @@ function csv() {
         <Button variant="ghost" :disabled="!counts.waitlist" @click="emailGroup('waitlist')">Email the waitlist</Button>
       </div>
 
+      <div class="add-ticket">
+        <Button v-if="!adding" variant="secondary" :disabled="!data.summary.length" @click="openAdd">Add a ticket for someone</Button>
+        <Card v-else variant="offset">
+          <form style="display:grid; gap:var(--space-4)" @submit.prevent="addTicket">
+            <strong style="font:var(--type-h5)">Add a ticket</strong>
+            <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
+              For someone who paid in cash or by transfer, or a free place. It is confirmed
+              straight away and takes a place like any booking. A member is recognised by
+              their email or shortcode; anyone else gets an account that owns the ticket.
+            </p>
+            <div class="add-grid">
+              <Field label="Ticket type">
+                <select v-model="ticket.ticket_type_id" class="ees-select" required>
+                  <option v-for="t in data.summary" :key="t.ticketTypeId" :value="t.ticketTypeId">
+                    {{ t.name }} · {{ t.price }} · {{ t.unpaid + t.bought }}/{{ t.capacity ?? '∞' }} taken
+                  </option>
+                </select>
+              </Field>
+              <Field label="How many"><Input v-model.number="ticket.quantity" type="number" min="1" max="20" /></Field>
+            </div>
+            <div class="add-grid">
+              <Field label="Email"><Input v-model="ticket.email" type="email" placeholder="ab1234@ic.ac.uk" required /></Field>
+              <Field label="First name" help="Optional for members."><Input v-model="ticket.first_name" /></Field>
+              <Field label="Last name"><Input v-model="ticket.last_name" /></Field>
+            </div>
+            <Field label="Note" help="e.g. paid £5 cash at the stall. Committee only.">
+              <Input v-model="ticket.note" />
+            </Field>
+            <label style="display:flex; gap:var(--space-2); align-items:center; font:var(--type-small)">
+              <input v-model="ticket.send_confirmation" type="checkbox" />
+              Email them a confirmation
+            </label>
+            <div style="display:flex; gap:var(--space-3)">
+              <Button type="submit" :disabled="busy">{{ busy ? 'Adding…' : 'Add ticket' }}</Button>
+              <Button variant="ghost" type="button" @click="adding = false">Cancel</Button>
+            </div>
+          </form>
+        </Card>
+      </div>
+
       <TraceRule style="margin:var(--space-6) 0" />
 
       <div class="filters">
@@ -240,6 +352,7 @@ function csv() {
                   <template v-if="r.name">{{ r.email }}</template>
                   <template v-if="r.shortcode"> · {{ r.shortcode }}</template>
                   <template v-if="r.guest"> · guest</template>
+                  <template v-if="r.source === 'committee'"> · added by committee</template>
                   <template v-if="r.membersOnly && !r.member"> · <span style="color:var(--danger)">no membership seen</span></template>
                 </div>
               </td>
@@ -247,6 +360,12 @@ function csv() {
               <td>
                 <Badge v-if="!r.waitlist" :tone="tone[r.status] || 'neutral'">{{ r.status === 'held' ? 'not bought' : r.status }}</Badge>
                 <span v-else class="muted">{{ r.status }}</span>
+                <div
+                  v-if="emailState(r)"
+                  class="email-state"
+                  :style="emailState(r).tone === 'danger' ? 'color:var(--danger)' : ''"
+                  :title="r.note || ''"
+                >{{ emailState(r).text }}</div>
               </td>
               <td class="mono">{{ r.orderNumber || '—' }}</td>
               <td class="muted">{{ when(r.bookedAt) }}</td>
@@ -256,6 +375,11 @@ function csv() {
                   <Button size="sm" variant="secondary" :disabled="busy" @click="act(r, 'remind')">Remind</Button>
                   <Button size="sm" variant="secondary" :disabled="busy" @click="act(r, 'confirm')">Mark bought</Button>
                 </template>
+                <Button
+                  v-if="r.status === 'confirmed' && ['sent', 'failed', 'skipped', 'suppressed'].includes(r.confirmationEmail)"
+                  size="sm" variant="ghost" :disabled="busy"
+                  @click="resend(r)"
+                >{{ r.confirmationEmail === 'sent' ? 'Resend email' : 'Send email' }}</Button>
                 <select
                   v-if="(r.status === 'held' || r.status === 'confirmed') && data.summary.length > 1"
                   class="ticket-switch"
@@ -347,5 +471,20 @@ function csv() {
   border-radius: var(--radius-sm);
   background: var(--surface-card);
   color: var(--text-strong);
+}
+.add-ticket {
+  margin-top: var(--space-6);
+  max-width: 820px;
+}
+.add-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-4);
+}
+.email-state {
+  margin-top: 4px;
+  font: var(--type-2xs);
+  color: var(--text-faint);
+  white-space: nowrap;
 }
 </style>

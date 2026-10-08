@@ -23,7 +23,7 @@ from datetime import datetime
 
 from clients import database
 from config import settings
-from services import emailing, purchase
+from services import confirmations, emailing, purchase
 from utils import email as mailer
 from utils.present import format_date, format_price, format_time_range, london
 
@@ -238,7 +238,10 @@ async def run_once() -> dict:
     async with _lock:
         announced = await announce_sales()
         chased = await chase_unpaid()
-    return {"announced": announced, "chased": chased}
+        # Retries failed confirmation emails and picks up any confirm path that
+        # did not trigger a send itself — the daily sync runs this too.
+        confirmed = await confirmations.send_pending()
+    return {"announced": announced, "chased": chased, "confirmations": confirmed}
 
 
 async def scheduler() -> None:

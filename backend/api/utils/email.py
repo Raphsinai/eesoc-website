@@ -422,6 +422,12 @@ def _warn_once(key: str, message: str, *args) -> None:
         log.error(message, *args)
 
 
+def deliverable(to: str) -> bool:
+    """Public form of `_deliverable`, for callers that record why nothing was
+    sent rather than treating an allow-listed-out address as a failure."""
+    return _deliverable(to)
+
+
 def _deliverable(to: str) -> bool:
     """Whether MAIL_ALLOWLIST lets this address receive real mail."""
     allowed = [a.strip().lower() for a in settings.mail_allowlist.split(",") if a.strip()]
@@ -796,19 +802,38 @@ async def send_purchase_reminder(
 
 
 async def send_booking_confirmed(
-    to: str, event_title: str, ticket_type: str, starts: str
+    to: str,
+    event_title: str,
+    ticket_type: str,
+    starts: str,
+    venue: str | None = None,
+    quantity: int = 1,
+    url: str | None = None,
 ) -> bool:
+    """Their booking has gone from held to confirmed — or the committee added it.
+
+    The one email that says "you have a place", so it carries everything they
+    would otherwise have to look up: what, when, where, how many.
+    """
+    ticket = f"{ticket_type} × {quantity}" if quantity > 1 else ticket_type
+    rows = [("Ticket", escape(ticket)), ("When", escape(starts))]
+    lines = [f"Ticket:  {ticket}", f"When:    {starts}"]
+    if venue:
+        rows.append(("Where", escape(venue)))
+        lines.append(f"Where:   {venue}")
     body = (
         f"Your place at {event_title} is confirmed.\n\n"
-        f"Ticket:  {ticket_type}\n"
-        f"When:    {starts}\n\n"
-        "See you there.\n"
+        + "\n".join(lines)
+        + "\n\n"
+        + (f"Event details: {url}\n\n" if url else "")
+        + "See you there.\n"
     )
     html = _shell(
         f"You're confirmed for {escape(event_title)}",
-        f"{escape(ticket_type)} · {escape(starts)}",
+        f"{escape(ticket)} · {escape(starts)}",
         _p(f"Your place at <strong>{escape(event_title)}</strong> is confirmed.")
-        + _detail_rows([("Ticket", escape(ticket_type)), ("When", escape(starts))])
+        + _detail_rows(rows)
+        + (_button("Event details", url) if url else "")
         + _p("See you there."),
     )
     return await send(to, f"You're confirmed for {event_title}", body, html)

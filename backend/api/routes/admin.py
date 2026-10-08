@@ -19,7 +19,7 @@ from models.auth import AuthSession
 from config import settings
 from services import agreement as agreement_service
 from services import announce as announce_service
-from services import emailing, purchase, sponsor_notes, storage
+from services import confirmations, emailing, purchase, sponsor_notes, storage
 from services.identity import resolve_or_create_user
 from utils.auth import (
     generate_token,
@@ -376,6 +376,11 @@ async def event_detail(
             "holdUntil": r.get("expires_at"),
             "confirmedAt": r.get("confirmed_at"),
             "cancelledAt": r.get("cancelled_at"),
+            "source": r.get("source") or "booking",
+            "note": r.get("note"),
+            "confirmationEmail": r.get("confirmation_email"),
+            "confirmationSentAt": r.get("confirmation_sent_at"),
+            "confirmationAttempts": r.get("confirmation_attempts") or 0,
         }
 
     return {
@@ -508,6 +513,7 @@ async def confirm_manually(
         f"/reservations/{reservation_id}/confirm",
         params={"order_number": order_number},
     )
+    confirmations.trigger()
     return {"ok": True, "reservation": row}
 
 
@@ -543,6 +549,88 @@ async def change_ticket_type(
         "reservation": row,
         "message": f"Moved to {names.get(ticket_type_id, 'the new ticket type')}.",
     }
+
+
+@router.post("/events/{event_id}/tickets", dependencies=[Depends(verify_csrf)])
+async def add_ticket(
+    event_id: int,
+    ticket_type_id: int = Body(embed=True),
+    email: str = Body(embed=True),
+    first_name: str | None = Body(default=None, embed=True),
+    last_name: str | None = Body(default=None, embed=True),
+    quantity: int = Body(default=1, embed=True),
+    note: str | None = Body(default=None, embed=True),
+    send_confirmation: bool = Body(default=True, embed=True),
+    session: AuthSession = Depends(require_event_editor),
+) -> dict:
+    """Add a ticket for somebody — paid in cash or by transfer, or a comp.
+
+    It lands confirmed, takes a real place (refused when the type or the event
+    is full, as a booking would be), and is never expired or paired with a
+    Union sale by the sync. The holder is found or created exactly as a guest
+    booking would be, so a member is recognised by their address or shortcode
+    and an outsider gets an unverified account that owns the ticket.
+
+    `events` or `industry` on this event, like every other change to its
+    bookings. No Union calls.
+    """
+    await _editable_event(event_id, session)
+    address = normalise_email(email)
+    if "@" not in address:
+        raise HTTPException(400, "That does not look like an email address.")
+    if not 1 <= quantity <= 20:
+        raise HTTPException(400, "Between 1 and 20 tickets at a time.")
+
+    holder = await resolve_or_create_user(
+        address,
+        first_name=(first_name or "").strip() or None,
+        last_name=(last_name or "").strip() or None,
+        verified=False,
+    )
+    who = session.user.email
+    text = (note or "").strip()
+    row = await database.post(
+        "/reservations/committee",
+        {
+            "event_id": event_id,
+            "ticket_type_id": ticket_type_id,
+            "user_id": holder["id"],
+            "quantity": quantity,
+            # The note says who added it as well as why, so the bookings page
+            # answers "where did this come from" without a second lookup.
+            "note": f"added by {who}" + (f": {text}" if text else ""),
+            "added_by": session.user.id,
+            "send_confirmation": send_confirmation,
+            "booked_as_guest": holder.get("member_id") is None,
+        },
+    )
+    # The adapter's 404s (no such event or ticket type) arrive as None.
+    if row is None:
+        raise HTTPException(404, "No such ticket type for this event")
+    log.warning(
+        "Committee ticket %s added for user %s by %s", row["id"], holder["id"], who
+    )
+    if send_confirmation:
+        confirmations.trigger()
+    return {
+        "ok": True,
+        "reservation": row,
+        "message": (
+            f"Ticket added for {holder['email']}."
+            + (" A confirmation email is on its way." if send_confirmation else "")
+        ),
+    }
+
+
+@router.post("/reservations/{reservation_id}/confirmation", dependencies=[Depends(verify_csrf)])
+async def resend_confirmation(
+    reservation_id: int, session: AuthSession = Depends(require_event_editor)
+) -> dict:
+    """Send a confirmed booking's "you're confirmed" email again."""
+    await _reservation_in_scope(reservation_id, session)
+    await database.post(f"/reservations/{reservation_id}/confirmation/resend")
+    confirmations.trigger()
+    return {"ok": True, "message": "Confirmation email queued."}
 
 
 @router.post("/reservations/{reservation_id}/cancel", dependencies=[Depends(verify_csrf)])

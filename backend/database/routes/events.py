@@ -10,6 +10,8 @@ from fastapi import APIRouter
 from fastapi.exceptions import HTTPException
 
 from models.events import (
+    CommitteeTicket,
+    ConfirmationResult,
     Event,
     EventDetail,
     EventWrite,
@@ -84,8 +86,13 @@ WAITLIST_COLUMNS = """
 RESERVATION_COLUMNS = """
     id, event_id, ticket_type_id, user_id, quantity, status, created_at,
     expires_at, confirmed_at, cancelled_at, order_number, matched_sale_id, note,
-    booked_as_guest, reminder_sent_at
+    booked_as_guest, reminder_sent_at, source, added_by, confirmation_email,
+    confirmation_sent_at, confirmation_attempts
 """
+
+# A failed confirmation email is retried this many times in all, then left for
+# the committee to resend by hand from the bookings page.
+CONFIRMATION_MAX_ATTEMPTS = 5
 
 
 async def _availability(conn, event_id: int) -> tuple[list[TicketTypeAvailability], int]:
@@ -550,6 +557,8 @@ async def list_reservations(
             SELECT r.id, r.event_id, r.ticket_type_id, r.user_id, r.quantity, r.status,
                    r.created_at, r.expires_at, r.confirmed_at, r.cancelled_at,
                    r.order_number, r.matched_sale_id, r.note, r.booked_as_guest,
+                   r.source, r.added_by, r.confirmation_email,
+                   r.confirmation_sent_at, r.confirmation_attempts,
                    e.title AS event_title, e.slug AS event_slug,
                    e.starts_at AS event_starts_at,
                    tt.name AS ticket_type_name, tt.price_pence, tt.requires_purchase,
@@ -679,7 +688,8 @@ async def get_reservation(reservation_id: int) -> Reservation:
             """
             SELECT id, event_id, ticket_type_id, user_id, quantity, status, created_at,
                    expires_at, confirmed_at, cancelled_at, order_number,
-                   matched_sale_id, note, booked_as_guest
+                   matched_sale_id, note, booked_as_guest, source, added_by,
+                   confirmation_email, confirmation_sent_at, confirmation_attempts
               FROM public.reservations WHERE id = $1;
             """,
             reservation_id,
@@ -826,6 +836,196 @@ async def change_ticket_type(reservation_id: int, ticket_type_id: int) -> Reserv
             ticket_type_id,
             f"ticket changed from {current['ticket_type_name']} to {target['name']}",
         )
+    return Reservation(**dict(row))
+
+
+@router.post("/reservations/committee")
+async def committee_ticket(req: CommitteeTicket) -> Reservation:
+    """A ticket the committee adds for somebody: confirmed from the start.
+
+    Serialised on the event row and counted exactly as `reserve` counts, so it
+    takes a real place and cannot oversell — over capacity it is refused, the
+    same answer a member gets at the booking page. The per-person limit is not
+    applied: a committee member adding a second ticket for somebody has decided
+    to.
+
+    `expires_at` is set to now only because the column is NOT NULL; a confirmed
+    booking is never expired (expiry only touches holds), and the matcher only
+    considers holds, so the daily sync can neither lapse this nor pair it with
+    a Union sale.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        event = await conn.fetchrow(
+            "SELECT id, capacity FROM public.events WHERE id = $1 FOR UPDATE;",
+            req.event_id,
+        )
+        if event is None:
+            raise HTTPException(404, "No such event")
+        tt = await conn.fetchrow(
+            f"SELECT {TT_COLUMNS} FROM public.ticket_types WHERE id = $1 AND event_id = $2;",
+            req.ticket_type_id,
+            req.event_id,
+        )
+        if tt is None:
+            raise HTTPException(404, "No such ticket type for this event")
+
+        counts = await conn.fetchrow(
+            f"""
+            SELECT COALESCE(SUM(quantity), 0)                                    AS event_taken,
+                   COALESCE(SUM(quantity) FILTER (WHERE ticket_type_id = $2), 0) AS type_taken
+              FROM public.reservations
+             WHERE event_id = $1 AND {LIVE};
+            """,
+            req.event_id,
+            req.ticket_type_id,
+        )
+        if tt["capacity"] is not None and counts["type_taken"] + req.quantity > tt["capacity"]:
+            raise HTTPException(
+                409, f"{tt['name']} is full ({counts['type_taken']} of {tt['capacity']} taken)."
+            )
+        if event["capacity"] is not None and counts["event_taken"] + req.quantity > event["capacity"]:
+            raise HTTPException(
+                409, f"The event is full ({counts['event_taken']} of {event['capacity']} taken)."
+            )
+
+        row = await conn.fetchrow(
+            f"""
+            INSERT INTO public.reservations
+                (event_id, ticket_type_id, user_id, quantity, status, confirmed_at,
+                 expires_at, note, booked_as_guest, source, added_by,
+                 confirmation_email)
+            VALUES ($1, $2, $3, $4, 'confirmed', NOW(), NOW(), $5, $6,
+                    'committee', $7, CASE WHEN $8 THEN NULL ELSE 'skipped' END)
+            RETURNING {RESERVATION_COLUMNS};
+            """,
+            req.event_id,
+            req.ticket_type_id,
+            req.user_id,
+            req.quantity,
+            req.note,
+            req.booked_as_guest,
+            req.added_by,
+            req.send_confirmation,
+        )
+    return Reservation(**dict(row))
+
+
+@router.post("/reservations/confirmations/claim")
+async def claim_confirmations(limit: int = 50) -> list[dict]:
+    """Claim confirmed bookings whose "you're confirmed" email has not gone.
+
+    Claimed by marking them 'sending' under SKIP LOCKED, so two senders — the
+    ten-minute loop and an immediate send after a confirm, or two api pods —
+    never email the same person twice. A claim that sits in 'sending' for half
+    an hour is assumed dead (the pod stopped mid-send) and reclaimed; a failure
+    waits fifteen minutes before it is retried.
+
+    A booking confirmed after its event is over gets no email: it would only
+    confuse. Marked 'skipped' so the bookings page says why.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute(
+            """
+            UPDATE public.reservations r
+               SET confirmation_email = 'skipped', confirmation_updated_at = NOW()
+              FROM public.events e
+             WHERE e.id = r.event_id AND r.status = 'confirmed'
+               AND (r.confirmation_email IS NULL OR r.confirmation_email = 'failed')
+               AND e.starts_at < NOW() - interval '12 hours';
+            """
+        )
+        claimed = await conn.fetch(
+            """
+            WITH picked AS (
+                SELECT r.id
+                  FROM public.reservations r
+                  JOIN public.events e ON e.id = r.event_id
+                 WHERE r.status = 'confirmed'
+                   AND e.starts_at >= NOW() - interval '12 hours'
+                   AND (r.confirmation_email IS NULL
+                        OR (r.confirmation_email = 'failed'
+                            AND r.confirmation_attempts < $2
+                            AND r.confirmation_updated_at < NOW() - interval '15 minutes')
+                        OR (r.confirmation_email = 'sending'
+                            AND r.confirmation_updated_at < NOW() - interval '30 minutes'))
+                 ORDER BY r.confirmed_at NULLS LAST, r.id
+                 LIMIT $1
+                   FOR UPDATE OF r SKIP LOCKED
+            )
+            UPDATE public.reservations r
+               SET confirmation_email = 'sending',
+                   confirmation_attempts = r.confirmation_attempts + 1,
+                   confirmation_updated_at = NOW()
+              FROM picked
+             WHERE r.id = picked.id
+            RETURNING r.id;
+            """,
+            limit,
+            CONFIRMATION_MAX_ATTEMPTS,
+        )
+        ids = [r["id"] for r in claimed]
+        if not ids:
+            return []
+        rows = await conn.fetch(
+            """
+            SELECT r.id, r.quantity, r.confirmation_attempts, r.source,
+                   u.email, u.first_name,
+                   e.title AS event_title, e.slug AS event_slug,
+                   e.starts_at, e.ends_at, e.venue,
+                   tt.name AS ticket_type_name
+              FROM public.reservations r
+              JOIN public.users u         ON u.id = r.user_id
+              JOIN public.events e        ON e.id = r.event_id
+              JOIN public.ticket_types tt ON tt.id = r.ticket_type_id
+             WHERE r.id = ANY($1::bigint[])
+             ORDER BY r.id;
+            """,
+            ids,
+        )
+    return [dict(r) for r in rows]
+
+
+@router.post("/reservations/confirmations/result", status_code=204)
+async def record_confirmations(results: list[ConfirmationResult]) -> None:
+    """Record how each claimed confirmation email went."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        for r in results:
+            if r.outcome not in ("sent", "failed", "suppressed"):
+                continue
+            await conn.execute(
+                """
+                UPDATE public.reservations
+                   SET confirmation_email = $2::varchar,
+                       confirmation_sent_at = CASE WHEN $2::varchar = 'sent' THEN NOW()
+                                                   ELSE confirmation_sent_at END,
+                       confirmation_updated_at = NOW()
+                 WHERE id = $1 AND confirmation_email = 'sending';
+                """,
+                r.id,
+                r.outcome,
+            )
+
+
+@router.post("/reservations/{reservation_id}/confirmation/resend")
+async def resend_confirmation(reservation_id: int) -> Reservation:
+    """Queue a confirmed booking's email to go again, attempts reset."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"""
+            UPDATE public.reservations
+               SET confirmation_email = NULL, confirmation_attempts = 0,
+                   confirmation_updated_at = NOW()
+             WHERE id = $1 AND status = 'confirmed'
+            RETURNING {RESERVATION_COLUMNS};
+            """,
+            reservation_id,
+        )
+    if row is None:
+        raise HTTPException(409, "Only a confirmed booking has a confirmation to send.")
     return Reservation(**dict(row))
 
 

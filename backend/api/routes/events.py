@@ -16,7 +16,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from clients import database
 from config import settings
 from models.auth import AuthSession, GuestDetails
-from services import purchase
+from services import confirmations, purchase
 from services import sync as sync_service
 from services.identity import is_imperial, resolve_or_create_user
 from utils import email as mailer
@@ -558,6 +558,8 @@ async def set_order_number(
         "/reservations/match", params={"academic_year": academic_year()}
     )
     updated = await database.get(f"/reservations/{reservation_id}")
+    if updated["status"] == "confirmed":
+        confirmations.trigger()
     return {
         "ok": True,
         "status": updated["status"],

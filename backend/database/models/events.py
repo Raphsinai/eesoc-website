@@ -135,6 +135,30 @@ class Reservation(BaseModel):
     note: str | None = None
     booked_as_guest: bool = False
     reminder_sent_at: datetime | None = None
+    # 'booking' for the normal flow, 'committee' for a ticket added by hand.
+    source: str = "booking"
+    added_by: int | None = None
+    # The "you're confirmed" email: see migration 059 for the states.
+    confirmation_email: str | None = None
+    confirmation_sent_at: datetime | None = None
+    confirmation_attempts: int = 0
+
+
+class CommitteeTicket(BaseModel):
+    """A ticket a committee member adds for somebody, already confirmed."""
+    event_id: int
+    ticket_type_id: int
+    user_id: int
+    quantity: int = 1
+    note: str | None = None
+    added_by: int | None = None
+    send_confirmation: bool = True
+    booked_as_guest: bool = False
+
+
+class ConfirmationResult(BaseModel):
+    id: int
+    outcome: str                    # sent | failed | suppressed
 
 
 class ReservationDetail(Reservation):

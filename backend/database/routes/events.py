@@ -754,6 +754,81 @@ async def expire_reservations() -> int:
     return int(result.split()[-1])
 
 
+@router.post("/reservations/{reservation_id}/ticket-type")
+async def change_ticket_type(reservation_id: int, ticket_type_id: int) -> Reservation:
+    """Move a live booking to another ticket type of the same event.
+
+    For the committee correcting a booking — the wrong option picked, a change of
+    mind agreed by message. The status is left alone: a held booking stays held
+    (and now needs the new type's Union product to confirm), a confirmed one
+    stays confirmed.
+
+    Serialised on the event row exactly as `reserve` is, so a move cannot
+    oversell the target type: the capacity check and the update see the same
+    snapshot of everybody else's bookings. The event total does not change —
+    the places move between types, they are not added.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        current = await conn.fetchrow(
+            """
+            SELECT r.id, r.event_id, r.ticket_type_id, r.quantity, r.status,
+                   r.expires_at > NOW() AS unexpired, tt.name AS ticket_type_name
+              FROM public.reservations r
+              JOIN public.ticket_types tt ON tt.id = r.ticket_type_id
+             WHERE r.id = $1;
+            """,
+            reservation_id,
+        )
+        if current is None:
+            raise HTTPException(404, "No such reservation")
+        if not (current["status"] == "confirmed"
+                or (current["status"] == "held" and current["unexpired"])):
+            raise HTTPException(409, "Only a live booking — held or bought — can be moved.")
+        if current["ticket_type_id"] == ticket_type_id:
+            raise HTTPException(409, "It is already that ticket type.")
+
+        await conn.execute(
+            "SELECT 1 FROM public.events WHERE id = $1 FOR UPDATE;", current["event_id"]
+        )
+        target = await conn.fetchrow(
+            f"SELECT {TT_COLUMNS} FROM public.ticket_types WHERE id = $1 AND event_id = $2;",
+            ticket_type_id,
+            current["event_id"],
+        )
+        if target is None:
+            raise HTTPException(404, "No such ticket type for this event")
+
+        taken = await conn.fetchval(
+            f"""
+            SELECT COALESCE(SUM(quantity), 0) FROM public.reservations
+             WHERE event_id = $1 AND ticket_type_id = $2 AND id <> $3 AND {LIVE};
+            """,
+            current["event_id"],
+            ticket_type_id,
+            reservation_id,
+        )
+        if target["capacity"] is not None and taken + current["quantity"] > target["capacity"]:
+            raise HTTPException(
+                409,
+                f"{target['name']} is full ({taken} of {target['capacity']} taken).",
+            )
+
+        row = await conn.fetchrow(
+            f"""
+            UPDATE public.reservations
+               SET ticket_type_id = $2,
+                   note = COALESCE(note || ' | ', '') || $3
+             WHERE id = $1
+            RETURNING {RESERVATION_COLUMNS};
+            """,
+            reservation_id,
+            ticket_type_id,
+            f"ticket changed from {current['ticket_type_name']} to {target['name']}",
+        )
+    return Reservation(**dict(row))
+
+
 @router.post("/reservations/{reservation_id}/confirm")
 async def confirm_manually(reservation_id: int, order_number: str | None = None) -> Reservation:
     """Confirm a booking by hand.

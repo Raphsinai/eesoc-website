@@ -199,11 +199,12 @@ against the allowance (marketing: 409 when used up).
 | `GET/POST /admin/events`, `PUT/DELETE /admin/events/{id}` | Event CRUD |
 | `POST /admin/events/{id}/ticket-types`, `PUT/DELETE /admin/ticket-types/{id}` | Ticket types |
 | `GET /admin/events/{id}/reservations` | Door list, split held/confirmed |
+| `POST /admin/reservations/{id}/ticket-type` | Move a live booking to another ticket type of the same event (`{ticket_type_id}`); refused if that type is full |
 | `GET /admin/union/products` | Synced product list for the link dropdown |
 | `GET/POST/DELETE /admin/product-links` | **Map a Union product to a ticket type, locker or membership** |
 | `GET /admin/admins` | Who holds what role (any committee role may read) |
-| `POST/DELETE /admin/admins` | Grant, change or revoke a role — **superuser only** |
-| `POST /admin/impersonate` | Open a session as another account — **superuser only** |
+| `POST/DELETE /admin/admins` | Grant, change or revoke a role — **superuser only**. An address with no account gets one, unverified; `neverSignedIn` flags it |
+| `POST /admin/impersonate` | Open a session as another account, creating it if there is none — **superuser only** |
 | `GET/POST/PUT /admin/sponsors`, `POST /admin/sponsors/{id}/users` | Sponsors and portal access |
 | `GET /admin/sponsors/inbox` | Everything waiting on the committee across sponsors: notes, marketing, requests, interest, new roles |
 | `GET /admin/sponsors/{id}/detail` | One sponsor's agreement, usage, events, requests, marketing, notes (opening it marks their notes read) |

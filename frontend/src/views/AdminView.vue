@@ -1028,7 +1028,12 @@ async function addAdmin() {
       role: newRole.value,
     })
     newAdminEmail.value = ''
-    flash(`${res.role} access granted.`)
+    // An account that has never signed in may be a typo, so say whose it is.
+    flash(
+      res.neverSignedIn
+        ? `${res.role} access granted to ${res.email}. That account has never signed in — check the address is right; they sign in with the usual emailed code.`
+        : `${res.role} access granted to ${res.email}.`,
+    )
     await load()
   } catch (e) {
     error.value = e.message
@@ -1065,8 +1070,9 @@ async function impersonate() {
   const email = impersonateEmail.value.trim()
   if (!email) return
   if (!confirm(
-    `Sign in as ${email}?\n\nYou will be them until you press Stop in the `
-    + 'red banner. Anything you do is recorded as them.',
+    `Sign in as ${email}?\n\nIf there is no account for that address, one is `
+    + 'made. You will be them until you press Stop in the red banner. Anything '
+    + 'you do is recorded as them.',
   )) return
   busy.value = true
   try {
@@ -2166,7 +2172,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
 
             <template v-if="canManageUsers">
               <TraceRule style="margin:var(--space-5) 0" />
-              <Field label="Give somebody access" help="They must have signed in at least once.">
+              <Field label="Give somebody access" help="Any address. If there is no account yet, one is made; it works once they sign in with the emailed code.">
                 <Input v-model="newAdminEmail" placeholder="name@imperial.ac.uk" />
               </Field>
               <Field label="As" style="margin-top:var(--space-3)">

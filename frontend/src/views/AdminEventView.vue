@@ -118,6 +118,27 @@ async function act(row, action) {
   }
 }
 
+/** Move a booking to another ticket type of this event. */
+async function changeTicket(row, event) {
+  const ticketTypeId = Number(event.target.value)
+  event.target.value = ''
+  if (!ticketTypeId) return
+  const to = data.value.summary.find((s) => s.ticketTypeId === ticketTypeId)?.name
+  if (!confirm(`Change ${row.name || row.email}'s ticket from ${row.ticketType} to ${to}?`)) return
+  busy.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const res = await api.post(`/admin/reservations/${row.id}/ticket-type`, { ticket_type_id: ticketTypeId })
+    notice.value = res.message
+    await load()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
+}
+
 /** Opens the event's email dialog in the dashboard with this group ticked. */
 function emailGroup(kind) {
   router.push({
@@ -235,6 +256,20 @@ function csv() {
                   <Button size="sm" variant="secondary" :disabled="busy" @click="act(r, 'remind')">Remind</Button>
                   <Button size="sm" variant="secondary" :disabled="busy" @click="act(r, 'confirm')">Mark bought</Button>
                 </template>
+                <select
+                  v-if="(r.status === 'held' || r.status === 'confirmed') && data.summary.length > 1"
+                  class="ticket-switch"
+                  :disabled="busy"
+                  :aria-label="`Change ${r.name || r.email}'s ticket type`"
+                  @change="changeTicket(r, $event)"
+                >
+                  <option value="">Change ticket…</option>
+                  <option
+                    v-for="t in data.summary.filter((s) => s.ticketTypeId !== r.ticketTypeId)"
+                    :key="t.ticketTypeId"
+                    :value="t.ticketTypeId"
+                  >{{ t.name }}</option>
+                </select>
                 <Button
                   v-if="r.status === 'held' || r.status === 'confirmed'"
                   size="sm" variant="ghost" :disabled="busy"
@@ -305,4 +340,12 @@ function csv() {
 .muted { color: var(--text-muted); font-size: var(--text-xs); }
 .mono { font-family: var(--font-mono); font-size: var(--text-xs); }
 .actions { display: flex; gap: var(--space-2); flex-wrap: wrap; justify-content: flex-end; }
+.ticket-switch {
+  font: var(--type-2xs);
+  padding: 4px 6px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  color: var(--text-strong);
+}
 </style>

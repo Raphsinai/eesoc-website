@@ -511,6 +511,40 @@ async def confirm_manually(
     return {"ok": True, "reservation": row}
 
 
+@router.post("/reservations/{reservation_id}/ticket-type", dependencies=[Depends(verify_csrf)])
+async def change_ticket_type(
+    reservation_id: int,
+    ticket_type_id: int = Body(embed=True),
+    session: AuthSession = Depends(require_event_editor),
+) -> dict:
+    """Move a booking to another ticket type of the same event.
+
+    Sends nothing: this is the committee correcting its own records, usually
+    after agreeing the change with the person already.
+    """
+    reservation = await _reservation_in_scope(reservation_id, session)
+    row = await database.post(
+        f"/reservations/{reservation_id}/ticket-type",
+        params={"ticket_type_id": ticket_type_id},
+    )
+    # The adapter's 404 arrives as None, not an exception.
+    if row is None:
+        raise HTTPException(404, "No such ticket type for this event")
+    names = {
+        t["id"]: t["name"]
+        for t in (await database.get(f"/events/{reservation['event_id']}") or {}).get("ticket_types", [])
+    }
+    log.warning(
+        "Reservation %s moved to ticket type %s by %s",
+        reservation_id, ticket_type_id, session.user.email,
+    )
+    return {
+        "ok": True,
+        "reservation": row,
+        "message": f"Moved to {names.get(ticket_type_id, 'the new ticket type')}.",
+    }
+
+
 @router.post("/reservations/{reservation_id}/cancel", dependencies=[Depends(verify_csrf)])
 async def cancel_reservation(
     reservation_id: int, session: AuthSession = Depends(require_event_editor)
@@ -747,19 +781,21 @@ async def add_admin(
 ) -> dict:
     """Grant a role, or change the one somebody already holds.
 
-    The account has to exist, which in practice means they have signed in once.
-    Creating one from an address typed here would let a typo become a standing
-    grant of committee access to an address nobody controls.
+    The account is created if it does not exist yet, *unverified* — the same as
+    granting sponsor access — so a new committee member can be set up before
+    they have ever visited. Unverified is what keeps that safe: the role does
+    nothing until somebody completes the emailed-code sign-in, which proves they
+    control the address. The remaining risk is a typo that lands on a real
+    address belonging to somebody else, so the response says when the account
+    has never signed in and the page asks the granter to check it.
     """
     if role not in role_table.ROLE_NAMES:
         raise HTTPException(400, f"'{role}' is not a role")
 
     address = normalise_email(email)
-    user = await database.get("/auth/users/by-email", {"email": address})
-    if user is None:
-        raise HTTPException(
-            404, "No account with that email yet — they need to sign in once first."
-        )
+    if "@" not in address:
+        raise HTTPException(400, "That does not look like an email address.")
+    user = await resolve_or_create_user(address, verified=False)
     if _is_standing(user.get("email")) and role != "superuser":
         raise HTTPException(
             400,
@@ -774,7 +810,15 @@ async def add_admin(
     log.warning(
         "Role %s granted to user %s by %s", role, user["id"], session.user.email
     )
-    return {"ok": True, "userId": user["id"], "role": role}
+    return {
+        "ok": True,
+        "userId": user["id"],
+        # The address the role actually went to: an Imperial address collapses
+        # to shortcode@ic.ac.uk, which is worth seeing.
+        "email": user["email"],
+        "role": role,
+        "neverSignedIn": user.get("last_login_at") is None,
+    }
 
 
 @router.delete("/admins/{user_id}", dependencies=[Depends(verify_csrf)])
@@ -824,6 +868,9 @@ async def impersonate(
     Two things it will not do: impersonate the standing superuser (there is
     nothing to learn, and it would be a way to launder an action as theirs), and
     nest, because unwinding two layers is how somebody ends up stranded.
+
+    An address with no account gets one, unverified — what a brand-new visitor
+    with that address would see is exactly what this is for.
     """
     if session.is_impersonating:
         raise HTTPException(400, "Stop impersonating before starting again.")
@@ -832,13 +879,13 @@ async def impersonate(
     if _is_standing(address):
         raise HTTPException(400, "That is the standing superuser account.")
 
-    user = await database.get("/auth/users/by-email", {"email": address})
-    if user is None:
-        raise HTTPException(
-            404,
-            "No account with that address. They have to have signed in, or been "
-            "given sponsor access, at least once.",
-        )
+    if "@" not in address:
+        raise HTTPException(400, "That does not look like an email address.")
+    user = await resolve_or_create_user(address, verified=False)
+    # Checked again on the resolved address: an Imperial alias collapses to
+    # shortcode@ic.ac.uk, which could be the standing superuser's.
+    if _is_standing(user.get("email")):
+        raise HTTPException(400, "That is the standing superuser account.")
 
     token = generate_token()
     csrf_token = generate_token()

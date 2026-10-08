@@ -56,6 +56,17 @@ def _titles(text: str) -> list[str]:
     return [str(e["summary"]) for e in _parse(text)]
 
 
+def _slugs(text: str) -> set[str]:
+    """The slug of every VEVENT in ICS text, taken off the UID localpart.
+
+    UID is "<slug>@<site host>" (the contract test_ics_generation.py asserts),
+    so the part before the first @ is the event's slug — the stable identity,
+    unlike the title, which the committee can edit between this test creating
+    the event and reading it back.
+    """
+    return {str(e["uid"]).split("@")[0] for e in _parse(text)}
+
+
 def test_single_event_ics_public_and_leak_free(admin_client):
     # Published events serve their .ics without a session, and that .ics never
     # carries the meeting link even when one is set and marked private.
@@ -157,6 +168,94 @@ def test_feed_and_category_filter_scope(admin_client):
         social_titles = _titles(socials.text)
         assert social_title in social_titles
         assert ws_title not in social_titles
+    finally:
+        for event_id in created:
+            admin_client.delete(f"/admin/events/{event_id}")
+
+
+def test_feed_exactly_matches_the_published_listing(admin_client):
+    # Acceptance criterion 2 is an exactness claim — the feed holds exactly the
+    # published public events — and the membership asserts above cannot tell
+    # "contains my events" from "equals the listing": a feed that silently
+    # drops rows would still pass them. So this test holds the feed to set
+    # equality against a dynamic reference, the site's own anonymous listing,
+    # which speaks the same scope (published only, any date). The reference is
+    # fetched rather than hardcoded because the stack's database also holds
+    # seeded events, and a hardcoded list would fail on any seed change.
+    ws_slug = _unique_slug("ics-exact-ws")
+    draft_slug = _unique_slug("ics-exact-draft")
+
+    created = []
+    for slug, title, published in [
+        (ws_slug, f"ICS exact ws {ws_slug[-6:]}", True),
+        (draft_slug, f"ICS exact draft {draft_slug[-6:]}", False),
+    ]:
+        resp = admin_client.post(
+            "/admin/events",
+            json={
+                "slug": slug,
+                "title": title,
+                # Both events land in the same category, so the category feed
+                # below is one where the draft could plausibly leak into.
+                "category": "Workshops",
+                "venue": "EEE 403",
+                "starts_at": _future_iso(),
+                "published": published,
+                "meeting_url": MEETING_URL,
+                "meeting_url_private": True,
+            },
+        )
+        assert resp.status_code in (200, 201), resp.text
+        # The id lives in the create response's JSON body, not on the Response.
+        created.append(resp.json()["id"])
+
+    try:
+        client = _anon()
+
+        # The reference listing, with the same breadth the feed promises:
+        # upcoming=false so past events are included, and a huge limit so the
+        # reference itself is never truncated and the comparison stays honest
+        # while the fixture database is small. It is fetched anonymously, so
+        # no draft can enter the reference and hide a leak through it.
+        listing = client.get(
+            "/events", params={"upcoming": "false", "limit": "100000"}
+        )
+        assert listing.status_code == 200, listing.text
+        cards = listing.json()["events"]
+        # The cards carry `published`, and an anonymous listing is already
+        # published-only; filtering again just states the scope the feed is
+        # being held to.
+        reference = {c["slug"] for c in cards if c.get("published")}
+        # The event this test created is published with a future starts_at, so
+        # it must be in the reference for the equality below to mean anything.
+        assert ws_slug in reference
+
+        # Exact equality, not subset: rows the feed drops (a cap cutting the
+        # feed short) and rows it adds (a draft leaking) both fail here.
+        feed = client.get("/events.ics")
+        assert feed.status_code == 200, feed.text
+        feed_slugs = _slugs(feed.text)
+        assert feed_slugs == reference
+
+        # The category feed answers to the same exactness, narrowed to one
+        # category — the one this test's own events are in. Both sides filter
+        # case-insensitively, matching the implementation, because the
+        # category arrives as a query param somebody pastes by hand.
+        category = "Workshops"
+        wanted = category.strip().lower()
+        category_reference = {
+            c["slug"]
+            for c in cards
+            if c.get("published")
+            and (c.get("category") or "").strip().lower() == wanted
+        }
+        workshops = client.get("/events.ics", params={"category": category})
+        assert workshops.status_code == 200, workshops.text
+        ws_feed_slugs = _slugs(workshops.text)
+        assert ws_feed_slugs == category_reference
+        # And the draft, sitting in exactly this category, still never
+        # appears in the narrowed feed.
+        assert draft_slug not in ws_feed_slugs
     finally:
         for event_id in created:
             admin_client.delete(f"/admin/events/{event_id}")

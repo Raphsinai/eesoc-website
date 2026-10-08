@@ -261,12 +261,35 @@ async def events_calendar_ics(category: str | None = None) -> Response:
     secret URL anyway. The category comparison is case-insensitive because
     this is a URL somebody pastes by hand.
 
-    The database service cannot filter by category, so the events are filtered
-    here in Python — a few hundred rows at most, well under the 1000-row cap.
+    The database service cannot filter by category, so the feed pages the whole
+    archive out of it and filters here in Python.
     """
-    events = await database.get(
-        "/events", {"published_only": True, "upcoming": False, "limit": 1000}
-    ) or []
+    # Page through the archive rather than fetching it under one hard cap: the
+    # adapter applies its limit after the order-by, so the day the archive
+    # outgrew the cap the feed would start silently omitting its oldest events
+    # — and a subscribed calendar would never notice the rows it never
+    # received. A full page means more rows may follow; a short page means the
+    # archive is exhausted.
+    events: list[dict] = []
+    page_size = 500
+    offset = 0
+    while True:
+        page = (
+            await database.get(
+                "/events",
+                {
+                    "published_only": True,
+                    "upcoming": False,
+                    "limit": page_size,
+                    "offset": offset,
+                },
+            )
+            or []
+        )
+        events.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
     if category:
         wanted = category.strip().lower()
         events = [e for e in events if (e.get("category") or "").lower() == wanted]

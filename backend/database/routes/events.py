@@ -159,22 +159,27 @@ async def list_events(
     upcoming: bool = False,
     academic_year: str | None = None,
     limit: int = 100,
+    offset: int = 0,
 ) -> list[EventDetail]:
     pool = await get_pool()
     async with pool.acquire() as conn:
+        # `id` breaks `starts_at` ties so `OFFSET` paging is deterministic:
+        # two events can share a start time, and without it a page boundary
+        # could repeat or skip a row.
         rows = await conn.fetch(
             f"""
             SELECT {EVENT_COLUMNS} FROM public.events
              WHERE ($1::bool IS NOT TRUE OR published)
                AND ($2::bool IS NOT TRUE OR starts_at >= NOW())
                AND ($3::varchar IS NULL OR academic_year = $3)
-             ORDER BY starts_at
-             LIMIT $4;
+             ORDER BY starts_at, id
+             LIMIT $4 OFFSET $5;
             """,
             published_only,
             upcoming,
             academic_year,
             limit,
+            offset,
         )
         return [await _detail(conn, r) for r in rows]
 

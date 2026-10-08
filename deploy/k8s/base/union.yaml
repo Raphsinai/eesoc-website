@@ -24,6 +24,13 @@ spec:
   template:
     metadata: { labels: { app: union } }
     spec:
+      # Recreate makes the gap between old and new pod unavoidable — that is
+      # the price of never letting two bridge pods coexist against the
+      # eActivities rate limit (see the strategy below) — so the bridge is
+      # briefly absent no matter what. What the budget can still buy is the
+      # in-flight adapter call finishing rather than being cut: 30s with the
+      # preStop sleep inside it.
+      terminationGracePeriodSeconds: 30
       # The repository is private, so its GHCR images are too. `ghcr-pull` is a
       # docker-registry secret in this namespace and is NOT in git.
       imagePullSecrets:
@@ -35,6 +42,13 @@ spec:
           envFrom:
             - configMapRef: { name: eesoc-config }
             - secretRef:    { name: eesoc-secrets }
+          # The Recreate gap cannot be avoided, but the calls the api has
+          # already made through this bridge should still finish rather than
+          # be cut by the SIGTERM. Same load-balancing ordering as the api:
+          # quiet seconds before the process stops, 5 inside the 30s budget.
+          lifecycle:
+            preStop:
+              exec: { command: ["/bin/sh", "-c", "sleep 5"] }
           readinessProbe:
             httpGet: { path: /health, port: 8080 }
             initialDelaySeconds: 5

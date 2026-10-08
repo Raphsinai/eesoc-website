@@ -25,6 +25,10 @@ spec:
   template:
     metadata: { labels: { app: database } }
     spec:
+      # Same drain-first budget as the api pod: two adapters roll one at a
+      # time (maxUnavailable: 0), and 45s lets in-flight queries finish
+      # through the preStop sleep before SIGKILL lands.
+      terminationGracePeriodSeconds: 45
       # The repository is private, so its GHCR images are too. `ghcr-pull` is a
       # docker-registry secret in this namespace and is NOT in git.
       imagePullSecrets:
@@ -50,6 +54,14 @@ spec:
               valueFrom: { secretKeyRef: { name: eesoc-db-app, key: username } }
             - name: PG_PASS
               valueFrom: { secretKeyRef: { name: eesoc-db-app, key: password } }
+          # The api serves FROM this adapter — every /api request is one
+          # of its /check or /query calls — so an adapter going away
+          # mid-request is a request dropping, exactly what the api's
+          # preStop exists to prevent on its own side. The sleep buys the
+          # in-flight queries the same 8 seconds of quiet before SIGTERM.
+          lifecycle:
+            preStop:
+              exec: { command: ["/bin/sh", "-c", "sleep 8"] }
           # No liveness probe on the database check: a transient Postgres blip
           # would restart every replica at once, turning a hiccup into an outage.
           readinessProbe:

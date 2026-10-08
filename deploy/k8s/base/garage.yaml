@@ -73,6 +73,12 @@ spec:
     metadata:
       labels: { app: garage }
     spec:
+      # The garage image is upstream (dxflrs/garage), not ours: nothing in it
+      # can run a preStop hook, so the only zero-downtime lever available here
+      # is the time budget itself — 30s for in-flight S3 reads and writes to
+      # finish before the SIGKILL, on a pod whose Recreate restart is
+      # unavailable for its own reasons anyway (see the strategy below).
+      terminationGracePeriodSeconds: 30
       securityContext:
         fsGroup: 1000
       # The init sidecar is one of our own images, so it is private like the

@@ -310,8 +310,6 @@ const aimedAt = computed(() => {
   if (!years.length) return ''
   return years.map((y) => YEAR_NAMES[y] || `${y}th`).join(', ')
 })
-</script>
-
 
 // Shown only when salesState is "scheduled", i.e. salesOpenAt is set and in
 // the future. Rendered in the viewer's own timezone, which is what they will
@@ -323,6 +321,7 @@ const salesOpensText = computed(() => {
     hour: '2-digit', minute: '2-digit',
   })
 })
+</script>
 
 <template>
   <main style="max-width:var(--container-lg); margin:0 auto; padding:var(--space-10) var(--space-6)">
@@ -420,7 +419,7 @@ const salesOpensText = computed(() => {
           <p style="margin:0 0 var(--space-5); font:var(--type-small); color:var(--text-muted)">
             Places for this event are taken through its own sign-up form.
           </p>
-          <Button block :href="event.signupUrl" target="_blank" rel="noopener">Sign up ↗</Button>
+          <Button block data-testid="event-signup-link" :href="event.signupUrl" target="_blank" rel="noopener">Sign up ↗</Button>
         </Card>
 
         <Card v-else-if="!event.ticketTypes?.length" variant="offset">

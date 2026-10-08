@@ -7,3 +7,8 @@
 # what a failing test means.
 pytest==8.4.2
 httpx==0.28.1
+# icalendar parses the RFC 5545 files the .ics tests assert against — a wire
+# format, which eyeballing would not test at all. Pinned because the tests
+# importorskip it, so without a pin a missing install turns every parse
+# assertion into a silent skip instead of a failure.
+icalendar==6.3.1

@@ -12,7 +12,7 @@ both the module and the library exist, so collection passes while the
 implementation is still in flight.
 """
 
-import sys
+import importlib.util
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -22,16 +22,23 @@ import pytest
 # The repo root is two directories up from tests/events-calendar/, and the ICS
 # module lives under backend/api (a plain package — its __init__ is empty).
 REPO_ROOT = Path(__file__).resolve().parents[2]
+ICS_MODULE_PATH = REPO_ROOT / "backend" / "api" / "utils" / "ics.py"
 
-# Importing the module mutates no state, but a missing module must not break
-# collection for every test in the suite before the implementation lands.
-try:
-    import utils.ics as ics
-except ImportError:
+# `backend/api/utils/ics.py` imports only the standard library by contract, so
+# loading it straight off the filesystem pulls in no FastAPI or database
+# client. It is loaded by path rather than `import utils.ics`: tests run as
+# `python3 -m pytest tests` from the repo root, where `utils.ics` is not on
+# the import path, and mutating sys.path here would leak into every other test
+# in the same session. The skip stays, but only for a file that is genuinely
+# absent — a present module with a real bug must fail loudly, not skip.
+if not ICS_MODULE_PATH.is_file():
     pytest.skip(
-        "backend/api/utils/ics.py does not exist yet",
+        f"backend/api/utils/ics.py does not exist yet at {ICS_MODULE_PATH}",
         allow_module_level=True,
     )
+_spec = importlib.util.spec_from_file_location("utils.ics", ICS_MODULE_PATH)
+ics = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(ics)
 
 
 def _parse(text: str):
@@ -256,3 +263,73 @@ def test_build_calendar_ics_sets_calname():
     )
     cal, _ = _parse(text)
     assert str(cal["x-wr-calname"]) == "EESoc events"
+
+
+# ------------------------------------------------------------------ leaktightness
+#
+# Acceptance criterion 6: the .ics files carry exactly the documented public
+# fields. Asserting against a property allowlist (rather than a list of known
+# leaks) is what catches a future X- or attendee property the moment it is
+# added — the parser reports every property name, so anything new fails the
+# `<=` check before it can reach a calendar client.
+
+
+VEVENT_PROPERTY_ALLOWLIST = {
+    "UID", "DTSTAMP", "DTSTART", "DTEND", "SUMMARY", "LOCATION", "URL", "DESCRIPTION",
+}
+VCALENDAR_PROPERTY_ALLOWLIST = {"VERSION", "PRODID", "CALSCALE", "X-WR-CALNAME"}
+
+
+def _property_names(component) -> set[str]:
+    """Property names of one calendar component, uppercased for comparing.
+
+    icalendar reports property keys lowercased; comparing case-insensitively
+    keeps the allowlist independent of that choice.
+    """
+    return {str(name).upper() for name in component.keys()}
+
+
+def test_event_ics_properties_within_allowlist():
+    # A single-event calendar is exactly the wrapper plus that VEVENT's public
+    # fields: no ATTENDEE, no X-properties that could leak internals, and no
+    # meeting link (which the earlier tests already negate by value).
+    text = ics.build_event_ics(
+        _event_dict(
+            starts_at="2026-10-07T18:00:00+00:00",
+            ends_at="2026-10-07T20:00:00+00:00",
+            description="A full description.",
+            venue="EEE 403",
+        ),
+        site_origin="https://eesoc.com",
+    )
+    cal, events = _parse(text)
+    assert len(events) == 1
+    assert _property_names(events[0]) <= VEVENT_PROPERTY_ALLOWLIST
+    assert _property_names(cal) <= VCALENDAR_PROPERTY_ALLOWLIST
+
+
+def test_calendar_ics_properties_within_allowlist():
+    # The feed's allowlist is the same: its meeting link never appears, even
+    # when one of the listed events has one.
+    meeting = "https://meet.example.com/never-leaks"
+    text = ics.build_calendar_ics(
+        [
+            _event_dict(
+                slug="a",
+                title="A",
+                starts_at="2026-10-07T18:00:00+00:00",
+                ends_at="2026-10-07T20:00:00+00:00",
+                description="A.",
+                meeting_url=meeting,
+            ),
+            _event_dict(slug="b", title="B"),
+        ],
+        site_origin="https://eesoc.com",
+        name="EESoc events",
+    )
+    cal, events = _parse(text)
+    assert len(events) == 2
+    assert meeting not in text
+    for vevent in events:
+        assert _property_names(vevent) <= VEVENT_PROPERTY_ALLOWLIST
+    assert _property_names(cal) <= VCALENDAR_PROPERTY_ALLOWLIST

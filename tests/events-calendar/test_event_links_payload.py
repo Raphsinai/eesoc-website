@@ -122,6 +122,29 @@ def test_private_meeting_link_gated_to_booked_attendee(admin_client, member_clie
         admin_client.delete(f"/admin/events/{created['id']}")
 
 
+def test_signed_in_member_without_booking_does_not_see_private_link(
+    admin_client, member_client
+):
+    # A signed-in member who simply has not booked THIS event is no more
+    # entitled to the private link than a stranger: the gate is a live booking
+    # on the event, not membership. This is a separate, fresh event so the
+    # member_client (always member1) has no reservation on it.
+    slug = _unique_slug("links-member-nobook")
+    created = _create_event(
+        admin_client,
+        slug,
+        meeting_url=MEETING_URL,
+        meeting_url_private=True,
+    )
+    try:
+        as_member = member_client.get(f"/events/{slug}")
+        assert as_member.status_code == 200
+        assert as_member.json()["meetingUrl"] is None
+        assert as_member.json()["meetingUrlPrivate"] is True
+    finally:
+        admin_client.delete(f"/admin/events/{created['id']}")
+
+
 def test_non_private_meeting_link_visible_to_anonymous(admin_client):
     # A meeting link the committee chose not to hide is public, so a stranger
     # sees it in the payload.

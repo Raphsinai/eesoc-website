@@ -77,6 +77,7 @@ def test_single_event_ics_public_and_leak_free(admin_client):
         },
     )
     assert created.status_code in (200, 201), created.text
+    created_id = created.json()["id"]
 
     try:
         response = _anon().get(f"/events/{slug}/calendar.ics")
@@ -92,7 +93,9 @@ def test_single_event_ics_public_and_leak_free(admin_client):
         # out of a shareable .ics.
         assert MEETING_URL not in response.text
     finally:
-        admin_client.delete(f"/admin/events/{created['id']}")
+        # The create response is an httpx.Response, not the event dict, so the
+        # id is read off its JSON body rather than subscripted directly.
+        admin_client.delete(f"/admin/events/{created_id}")
 
 
 def test_feed_and_category_filter_scope(admin_client):
@@ -174,9 +177,12 @@ def test_unpublished_event_ics_is_404(admin_client):
         },
     )
     assert created.status_code in (200, 201), created.text
+    created_id = created.json()["id"]
 
     try:
         response = _anon().get(f"/events/{slug}/calendar.ics")
         assert response.status_code == 404
     finally:
-        admin_client.delete(f"/admin/events/{created['id']}")
+        # Same as the single-event test: the id lives in the response's JSON
+        # body, not as a key on the httpx.Response itself.
+        admin_client.delete(f"/admin/events/{created_id}")

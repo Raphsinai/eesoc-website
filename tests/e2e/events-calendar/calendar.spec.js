@@ -15,8 +15,11 @@ const { test, expect } = require('@playwright/test')
 // means anonymous for all of the gating assertions below.
 test.use({ storageState: { cookies: [], origins: [] } })
 
-// Unique per run so repeated CI runs never contend for a slug.
-const STAMP = Date.now()
+// Unique per run so repeated CI runs never contend for a slug. The random
+// suffix is load-bearing: this spec runs twice (public + admin projects) and
+// the two runs can start inside the same millisecond, so `Date.now()` alone
+// collides on the slug and fails every test with a 409 before it starts.
+const STAMP = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 const SLUG_A = `e2e-cal-a-${STAMP}`
 const SLUG_B = `e2e-cal-b-${STAMP}`
 const TITLE_A = `E2E calendar event A ${STAMP}`
@@ -49,6 +52,11 @@ async function signInAsAdmin(request) {
 test.beforeAll(async ({ request }) => {
   const csrfToken = await signInAsAdmin(request)
   const future = new Date(Date.now() + 30 * 86400000).toISOString()
+  // The Google Calendar link only renders when the event has both a start and
+  // an end (the render template needs a duration), so Event A gets an end two
+  // hours after its start. Without it the `event-gcal-link` assertion below
+  // would fail: the UI deliberately leaves the link off rather than invent one.
+  const futureEnd = new Date(Date.now() + 30 * 86400000 + 2 * 3600000).toISOString()
   const past = new Date(Date.now() - 86400000).toISOString()
 
   // Event A: public meeting link, venue map, external sign-up, aimed at years
@@ -60,6 +68,7 @@ test.beforeAll(async ({ request }) => {
       category: 'Workshops',
       venue: 'EEE 403',
       starts_at: future,
+      ends_at: futureEnd,
       published: true,
       map_url: MAP_URL_A,
       signup_url: SIGNUP_URL_A,

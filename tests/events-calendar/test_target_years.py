@@ -63,13 +63,15 @@ def test_create_string_input_reads_back_as_list(admin_client):
         },
     )
     assert created.status_code in (200, 201), created.text
+    created_id = created.json()["id"]
 
     try:
         detail = _anon().get(f"/events/{slug}")
         assert detail.status_code == 200
         assert detail.json()["targetYears"] == [1, 2]
     finally:
-        admin_client.delete(f"/admin/events/{created['id']}")
+        # `created` is the httpx.Response, so the id comes from its JSON body.
+        admin_client.delete(f"/admin/events/{created_id}")
 
 
 def test_create_list_input_update_and_admin_row(admin_client):
@@ -89,15 +91,17 @@ def test_create_list_input_update_and_admin_row(admin_client):
         },
     )
     assert created.status_code in (200, 201), created.text
+    created_id = created.json()["id"]
 
     try:
         detail = _anon().get(f"/events/{slug}")
         assert detail.json()["targetYears"] == [1, 2]
 
         # The admin form saves the whole event, so the PUT mirrors a real save:
-        # the required write fields plus the changed years.
+        # the required write fields plus the changed years. The id lives in the
+        # create response's JSON body, not on the Response object itself.
         updated = admin_client.put(
-            f"/admin/events/{created['id']}",
+            f"/admin/events/{created_id}",
             json={
                 "slug": slug,
                 "title": title,
@@ -119,7 +123,7 @@ def test_create_list_input_update_and_admin_row(admin_client):
         row = next(e for e in listing.json() if e.get("slug") == slug)
         assert _normalise_years(row.get("target_years")) == [3]
     finally:
-        admin_client.delete(f"/admin/events/{created['id']}")
+        admin_client.delete(f"/admin/events/{created_id}")
 
 
 def test_unset_target_years_defaults_to_empty_list(admin_client):
@@ -137,9 +141,10 @@ def test_unset_target_years_defaults_to_empty_list(admin_client):
         },
     )
     assert created.status_code in (200, 201), created.text
+    created_id = created.json()["id"]
 
     try:
         detail = _anon().get(f"/events/{slug}")
         assert detail.json()["targetYears"] == []
     finally:
-        admin_client.delete(f"/admin/events/{created['id']}")
+        admin_client.delete(f"/admin/events/{created_id}")

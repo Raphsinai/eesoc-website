@@ -99,6 +99,35 @@ def test_notify_me_on_unopened_event_still_works(admin_client):
         admin_client.delete(f"/admin/events/{created['id']}")
 
 
+def test_reserve_before_sales_open_is_409(admin_client, member_client):
+    # A signed-in member cannot reserve on an event whose tickets are not on
+    # sale yet: the server refuses with 409, not a booking. This is in the same
+    # spirit as the existing regression asserts — section 05 is additive and
+    # must not have loosened the sales-open gate the reserve endpoint enforces.
+    slug = _unique_slug("reg-not-open")
+    created = _create_event(
+        admin_client,
+        slug,
+        ticket_types=[
+            {
+                "name": "Seat",
+                "price_pence": 0,
+                "capacity": 10,
+                "requires_purchase": False,
+            }
+        ],
+    )  # no sales_open_at -> "soon"
+    try:
+        ticket_type_id = _anon().get(f"/events/{slug}").json()["ticketTypes"][0]["id"]
+        reserved = member_client.post(
+            f"/events/{slug}/reserve",
+            json={"ticket_type_id": ticket_type_id, "quantity": 1},
+        )
+        assert reserved.status_code == 409, reserved.text
+    finally:
+        admin_client.delete(f"/admin/events/{created['id']}")
+
+
 def test_waitlist_join_on_full_event_still_works(admin_client, member_client):
     # A ticket type with capacity 0 models a full event; joining the waitlist
     # still succeeds (queued behind it) rather than erroring.

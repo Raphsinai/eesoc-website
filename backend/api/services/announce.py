@@ -98,11 +98,6 @@ async def _announce_one(event: dict) -> dict:
         log.info("Nothing to send for %s — no subscribers", event["slug"])
         return {"event": event["slug"], "recipients": 0, "sent": 0}
 
-    url = f"{settings.site_origin}/events/{event['slug']}"
-    tickets = _ticket_lines(event)
-    links = await purchase.links_for_event(event)
-    when = _when(event)
-
     # Recorded as a campaign like any other bulk send, so it appears in the
     # same history the committee reads and a half-finished send is visible.
     campaign = await database.post(
@@ -115,9 +110,42 @@ async def _announce_one(event: dict) -> dict:
         },
     )
 
+    build = await build_sale_announcement(event, campaign)
+    result = await emailing.send_bulk(
+        campaign["id"], recipients, build, kind="on_sale", event_id=event["id"]
+    )
+    log.info(
+        "Announced %s to %d recipient(s): %d sent",
+        event["slug"], len(recipients), result["sent"],
+    )
+    return {"event": event["slug"], "recipients": len(recipients), **result}
+
+
+async def build_sale_announcement(event: dict, campaign_row: dict | None = None):
+    """The on-sale `build` closure, as a module-level factory.
+
+    Extracted from `_announce_one` so `emailing.resume_pending` can rebuild an
+    on-sale send that a pod replacement interrupted — a factory rather than a
+    plain function because it needs awaits (per-event purchase links, the
+    pending-alert list) before the closure can exist. `campaign_row` is
+    carried for symmetry with the other resume builders; the on-sale message
+    itself is built from the event, and the campaign row only proves the send
+    was recorded.
+
+    Works from email alone on a resume: `by_address` only ever says whether an
+    address gets their personal alert message or the shared BCC'd one, and the
+    rows the sender passes are `{email}` — a resumed campaign_recipients row
+    carries nothing else.
+    """
+    url = f"{settings.site_origin}/events/{event['slug']}"
+    tickets = _ticket_lines(event)
+    links = await purchase.links_for_event(event)
+    when = _when(event)
+
     # Alerts are marked notified by address, so somebody who both asked about
     # this event and subscribed generally is not left with a live alert that
-    # fires again later.
+    # fires again later. Pending-only on purpose: a resume must not re-find the
+    # alerts the previous sender already sent and marked.
     alerts = await database.get(
         "/email/sale-alerts", {"event_id": event["id"], "pending_only": True}
     ) or []
@@ -163,12 +191,44 @@ async def _announce_one(event: dict) -> dict:
                 await asyncio.sleep(settings.bulk_send_interval_seconds)
         return reached
 
-    result = await emailing.send_bulk(campaign["id"], recipients, build)
-    log.info(
-        "Announced %s to %d recipient(s): %d sent",
-        event["slug"], len(recipients), result["sent"],
+    return build
+
+
+async def build_event_announcement(event: dict, campaign_row: dict):
+    """A committee-written "about one event" `build` closure, from the stored row.
+
+    This is the resume half of routes/admin.py's announce_event: the same
+    mailer call with the same event data, but rebuilt from the campaign row a
+    killed pod left behind rather than from the request body the committee
+    typed into a form that no longer exists.
+    """
+    subject = (campaign_row.get("subject") or "").strip()
+    heading = (campaign_row.get("heading") or subject).strip()
+    html, text = emailing.render_body(campaign_row.get("body") or "")
+
+    starts, ends = _parse(event.get("starts_at")), _parse(event.get("ends_at"))
+    when = (
+        f"{format_date(starts)}, {format_time_range(starts, ends)}" if starts else "TBC"
     )
-    return {"event": event["slug"], "recipients": len(recipients), **result}
+    tickets = _ticket_lines(event)
+    url = f"{settings.site_origin}/events/{event['slug']}"
+
+    async def build(batch: list[dict], unsubscribe: str) -> list[str]:
+        return await mailer.send_event_announcement(
+            [r["email"] for r in batch],
+            subject,
+            event["title"],
+            when,
+            event.get("venue") or "",
+            url,
+            unsubscribe,
+            body_text=text,
+            body_html=html,
+            tickets=tickets,
+            heading=heading,
+        )
+
+    return build
 
 
 # ----------------------------------------------------- last-chance reminders

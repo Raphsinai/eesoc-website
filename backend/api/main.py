@@ -28,6 +28,7 @@ from routes.search import router as search_router
 from routes.seo import router as seo_router
 from routes.sponsors import router as sponsors_router
 from services import announce as announce_service
+from services import emailing as emailing_service
 from services import maintenance
 from services import storage
 from services import sync as sync_service
@@ -114,10 +115,18 @@ async def lifespan(app: FastAPI):
     else:
         log.warning("No SMTP credentials — on-sale and reminder emails disabled")
 
+    # A bulk send that the previous pod was mid-flight on is deliberately left
+    # `status='sending'` in the database, so this pod — its replacement, under a
+    # rolling update — finishes it rather than a half-sent campaign being
+    # discovered weeks later. The campaign rows say which sends those are and
+    # how to rebuild their messages.
+    resume_task = asyncio.create_task(emailing_service.resume_pending())
+    log.info("Resuming bulk sends the previous pod left mid-flight, if any")
+
     yield
 
     seed_task.cancel()
-    for background in (task, announce_task):
+    for background in (task, announce_task, resume_task):
         if background is None:
             continue
         background.cancel()

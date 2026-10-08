@@ -399,6 +399,13 @@ jobs:
           # such ARG, so buildx dropped it and the hardcoded fallback won.
           build-args: |
             VITE_API_BASE=/api
+            # The floating :latest tag (pushed by this job on every main
+            # build) is the previous production-bound build. The frontend
+            # Dockerfile merges its hashed assets into the new image so tabs
+            # opened before the deploy keep working. The other matrix
+            # Dockerfiles don't declare this ARG, so BuildKit ignores it for
+            # them (same as the VITE_API_BASE line above).
+            PREVIOUS_FRONTEND_IMAGE=ghcr.io/${{ env.OWNER_LC }}/eesoc-frontend:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

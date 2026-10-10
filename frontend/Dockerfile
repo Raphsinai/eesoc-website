@@ -50,18 +50,21 @@ COPY --from=build /app/dist /usr/share/nginx/html
 # Only assets/ is merged, never the previous index.html: the app shell must
 # always be the current one so a reload picks up the new deploy.
 #
-# `cp -an` (archive + no-clobber): BusyBox cp in this alpine image supports
-# both -a (recursive, preserves mtime) and -n, so the current build wins any
-# name collision — which in practice cannot happen anyway, since filenames
-# are content-hashed and vite.config.js gives variant builds fully disjoint
-# names too.
+# The previous assets are laid down first and this build's copied over them,
+# so the current build wins any name collision — which in practice cannot
+# happen anyway, since filenames are content-hashed and vite.config.js gives
+# variant builds fully disjoint names too. `cp -a` keeps mtimes, which the
+# prune below depends on.
 #
-# `2>/dev/null || true` is deliberate, not a swallowed error. The default
-# previous image (a stock nginx) has no /assets/ directory at all, so a cold
-# first build fails this cp by design with nothing to union; and a genuinely
-# broken union cannot pass silently, because the asset-continuity e2e suite
-# asserts that the previous build's asset URLs stay fetchable from the new
-# image — a cp that dropped files fails the build in CI rather than shipping.
+# Not `cp -an previous/assets html/`, which is what this used to be: BusyBox
+# cp's -n skips a destination directory that already exists, wholesale, and
+# exits 0 — so the union copied nothing, every deploy dropped the previous
+# build's chunks, and the `|| true` that followed hid it. The e2e suite
+# (tests/e2e/spa-assets) caught it once it actually ran.
+#
+# The default previous image (a stock nginx) has no /assets/ at all, so a cold
+# first build has nothing to union; that case is tested for explicitly rather
+# than swallowed, so a cp that genuinely fails now fails the build.
 #
 # Prune files older than 14 days by mtime: Docker COPY and `cp -a` preserve
 # build-time mtimes, so each asset ages out ~two weeks after the build that
@@ -75,7 +78,11 @@ COPY --from=build /app/dist /usr/share/nginx/html
 # cluster-side and owned by other sections) — so it is a blocked human step
 # recorded here, not silently dropped.
 COPY --from=previous /usr/share/nginx/html /tmp/previous-html
-RUN cp -an /tmp/previous-html/assets /usr/share/nginx/html/ 2>/dev/null || true \
+RUN mkdir /tmp/assets \
+    && if [ -d /tmp/previous-html/assets ]; then cp -a /tmp/previous-html/assets/. /tmp/assets/; fi \
+    && cp -a /usr/share/nginx/html/assets/. /tmp/assets/ \
+    && rm -rf /usr/share/nginx/html/assets /tmp/previous-html \
+    && mv /tmp/assets /usr/share/nginx/html/assets \
     && find /usr/share/nginx/html/assets -type f -mtime +14 -delete
 
 EXPOSE 80

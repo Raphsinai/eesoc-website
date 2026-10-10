@@ -134,10 +134,13 @@ router.afterEach(() => { menuOpen.value = false })
       </div>
 
       <template v-if="session.authenticated">
-        <span
+        <!-- Your name is the way to your account page (passkeys, sign-out
+             everywhere). -->
+        <router-link
+          to="/account"
           class="site-identity"
           :title="session.user?.email"
-        >{{ displayName }}<template v-if="session.isMember"> · member</template></span>
+        >{{ displayName }}<template v-if="session.isMember"> · member</template></router-link>
         <Button variant="ghost" size="sm" @click="logout">Log out</Button>
       </template>
       <Button v-else variant="secondary" size="sm" @click="$emit('open-login')">Log in</Button>
@@ -173,6 +176,11 @@ router.afterEach(() => { menuOpen.value = false })
   font-size: var(--text-xs);
   color: var(--text-muted);
   white-space: nowrap;
+  text-decoration: none;
+}
+.site-identity:hover {
+  color: var(--text-strong);
+  text-decoration: underline;
 }
 .site-nav {
   display: flex;

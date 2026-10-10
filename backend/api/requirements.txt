@@ -11,3 +11,7 @@ Pillow==11.0.0
 # Renders ticket QR codes (the confirmation email's image, the ticket page).
 # Pure-python encoder drawing through Pillow, imported lazily in the route.
 qrcode==8.0
+# Passkeys (WebAuthn): verifies registration and sign-in answers — challenge,
+# origin, relying party, signature, counter. Cryptography is not something to
+# hand-roll. 3.0.1 rejects malformed attestation formats that 3.0.0 accepted.
+webauthn==3.0.1

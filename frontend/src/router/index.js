@@ -37,6 +37,8 @@ const EmailView = () => import('@/views/EmailView.vue')
 const SubscribeView = () => import('@/views/SubscribeView.vue')
 const CheckinView = () => import('@/views/CheckinView.vue')
 const TicketView = () => import('@/views/TicketView.vue')
+const AccountView = () => import('@/views/AccountView.vue')
+const PasskeySetupView = () => import('@/views/PasskeySetupView.vue')
 
 const routes = [
   // `title` is the page half of eesoc.com's "<Page> | EESoc - Imperial College
@@ -75,6 +77,11 @@ const routes = [
   { path: '/checkin/:eventId', name: 'checkin-event', component: CheckinView, meta: { title: 'Door check-in', requires: 'committee', noindex: true } },
   // A ticket. Public — the token in the URL is the credential.
   { path: '/ticket/:token', name: 'ticket', component: TicketView, meta: { title: 'Your ticket', noindex: true } },
+  // Your passkeys. Not guarded: signed out, the page offers to sign in rather
+  // than bouncing to the home page.
+  { path: '/account', name: 'account', component: AccountView, meta: { title: 'Your account', noindex: true } },
+  // Where a committee-made passkey link lands. The token is in the fragment.
+  { path: '/passkey-setup', name: 'passkey-setup', component: PasskeySetupView, meta: { title: 'Set up a passkey', noindex: true } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 

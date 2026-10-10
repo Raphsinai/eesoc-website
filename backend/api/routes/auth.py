@@ -148,6 +148,20 @@ async def verify_code(
     user = await resolve_or_create_user(
         address, body.first_name, body.last_name, verified=True
     )
+    return await finish_sign_in(user, response)
+
+
+async def finish_sign_in(user: dict, response: Response) -> SessionView:
+    """Everything a sign-in does once we know who it is, however they proved it.
+
+    Shared by the emailed code and both passkey routes (routes/passkeys.py), so
+    a passkey sign-in can never quietly skip a step the code flow takes — the
+    standing superuser's row, the first-admin bootstrap, the last-login stamp.
+
+    `touch-login` also marks the address verified. For a code that is literal;
+    for a passkey it was literal when the passkey was saved (a signed-in
+    account, or a link the committee made for that address, vouching for it).
+    """
     tokens = await _open_session(user["id"], response)
 
     await database.post(f"/auth/users/{user['id']}/touch-login")
@@ -261,6 +275,10 @@ async def _view(session: AuthSession, csrf_token: str | None = None) -> SessionV
     # reach the editor for their own entry.
     card = await committee_card(session)
 
+    # How many passkeys the account holds, so the sign-in dialog only offers to
+    # save one to somebody who has none. One indexed count.
+    passkeys = await database.get(f"/passkeys/count/{session.user.id}") or 0
+
     user = session.user
     name = " ".join(p for p in [user.first_name, user.last_name] if p) or None
     return SessionView(
@@ -282,6 +300,7 @@ async def _view(session: AuthSession, csrf_token: str | None = None) -> SessionV
         role=session.role,
         capabilities=sorted(session.capabilities),
         committee_login=(card or {}).get("login"),
+        passkeys=passkeys,
         impersonating=session.is_impersonating,
         impersonator_email=(
             str(session.impersonator.email) if session.impersonator else None

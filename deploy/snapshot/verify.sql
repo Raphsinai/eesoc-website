@@ -56,8 +56,12 @@ BEGIN
 
     -- Credential tables must be empty, not merely anonymised: a session row is
     -- a working credential whatever the user's name has been changed to.
-    FOR col IN SELECT unnest(ARRAY['sessions', 'login_codes']) AS table_name
+    -- Tables a newer migration adds are only checked once they exist: the
+    -- snapshot is of production's schema, which lags staging's.
+    FOR col IN SELECT unnest(ARRAY['sessions', 'login_codes', 'passkeys',
+                                   'passkey_links', 'webauthn_challenges']) AS table_name
     LOOP
+        CONTINUE WHEN to_regclass('public.' || col.table_name) IS NULL;
         EXECUTE format('SELECT count(*) FROM public.%I', col.table_name) INTO n;
         IF n > 0 THEN
             problems := problems ||

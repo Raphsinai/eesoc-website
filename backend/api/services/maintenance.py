@@ -34,6 +34,7 @@ FEATURES: dict[str, str] = {
     "lockers": "Locker booking",
     "sponsor_portal": "The sponsor portal",
     "admin": "The admin dashboard",
+    "passkeys": "Signing in with a passkey",
 }
 
 # Deliberately NOT gated on email, even though both are unreachable while
@@ -47,6 +48,12 @@ FEATURES: dict[str, str] = {
 #                    session keeps working.
 #   lockers        — booking is self-service; only the yearly clear-out notice
 #                    needs email, and that is an admin action, not a member one.
+#
+#   passkeys       — a passkey is checked against a key we already hold, so
+#                    signing in with one needs no email at all. That is half
+#                    the point of them: when the yearly password reset stops
+#                    the codes, anybody with a passkey still gets in. Turning
+#                    `login` off by hand turns this off too (see `unavailable`).
 #
 # Bookings ARE gated: confirmations, purchase reminders and the whole waitlist
 # are email. A booking nobody can be told about is not a booking.
@@ -94,7 +101,13 @@ def unavailable() -> dict[str, str]:
         for key in NEEDS_EMAIL:
             out[key] = _MESSAGES.get(key, _DEFAULT_MESSAGE)
 
-    for key in _forced():
+    forced = _forced()
+    # Somebody forcing sign-in off by hand means all of it: whatever made them
+    # reach for the switch is not something a passkey makes safe. Only the
+    # *derived* outage — no mail credentials — leaves passkeys working.
+    if "login" in forced:
+        forced.add("passkeys")
+    for key in forced:
         out.setdefault(key, settings.maintenance_message or _DEFAULT_MESSAGE)
 
     return out

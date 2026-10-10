@@ -45,6 +45,25 @@ class Settings(BaseSettings):
     login_code_resend_seconds: int = 60
     login_code_digits: int = 6
 
+    # --- passkeys ---
+    # The relying party a passkey is bound to. Blank means the host of
+    # site_origin, which is right everywhere this runs (eesoc.com,
+    # eesoc.raphsinai.dev, localhost). A passkey made for one host cannot be
+    # used on another — so production passkeys never work on staging, and a
+    # staging SITE_ORIGIN pointing at eesoc.com would break them there.
+    webauthn_rp_id: str = ""
+    # What the browser shows when asking to save the passkey.
+    webauthn_rp_name: str = "EESoc"
+    # Origins a ceremony may come from besides site_origin, comma separated.
+    # Empty is right while www.eesoc.com redirects to the apex at the edge.
+    webauthn_extra_origins: str = ""
+    # How long a sign-in or registration prompt stays answerable.
+    passkey_challenge_seconds: int = 300
+    # How long a committee-made passkey link works if nobody uses it. A week:
+    # it goes to somebody outside the society, by whatever channel reaches
+    # them, and they may not open it the same day.
+    passkey_link_ttl_hours: int = 168
+
     # --- email ---
     # Imperial's shared webmaster mailbox, via Exchange Online. Taken from the
     # 2023/24 handover: smtp.office365.com:587, LOGIN auth, TLS required.
@@ -161,7 +180,8 @@ class Settings(BaseSettings):
     # Extra features to force off by hand, comma separated. Anything whose
     # dependencies are missing is detected automatically (see
     # services/maintenance.py); this is for breakage the process cannot see.
-    # Known keys: login, bookings, lockers, sponsor_portal, admin
+    # Known keys: login, bookings, lockers, sponsor_portal, admin, passkeys
+    # (forcing login also forces passkeys)
     maintenance_features: str = ""
     maintenance_message: str = ""
 

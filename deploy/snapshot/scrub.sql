@@ -28,6 +28,17 @@ TRUNCATE TABLE public.sessions;
 -- Sign-in codes, their hashes, and the IP that asked for them.
 TRUNCATE TABLE public.login_codes;
 
+-- Passkeys and the links that make them (migration 065). A passkey from
+-- production cannot sign in on staging — it is bound to eesoc.com — but a
+-- live link's hash is a link, and staging has no business with either. The
+-- challenges are throwaway nonces. Guarded: see the note below on schema lag.
+DO $$
+BEGIN
+    IF to_regclass('public.passkeys') IS NOT NULL THEN
+        TRUNCATE TABLE public.passkeys, public.passkey_links, public.webauthn_challenges;
+    END IF;
+END $$;
+
 -- The snapshot is of PRODUCTION's schema, which lags staging's by whatever is
 -- waiting to be promoted. So anything scrubbed here that a newer migration
 -- introduced is guarded by whether it exists yet — a scrub that fails on a

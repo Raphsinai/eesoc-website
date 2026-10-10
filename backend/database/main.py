@@ -14,6 +14,7 @@ from routes.email import router as email_router
 from routes.jobs import router as jobs_router
 from routes.events import router as events_router
 from routes.lockers import router as lockers_router
+from routes.passkeys import router as passkeys_router
 from routes.resources import router as resources_router
 from routes.sponsors import router as sponsors_router
 from routes.union import router as union_router
@@ -57,6 +58,7 @@ app.include_router(sponsors_router)
 app.include_router(email_router)
 app.include_router(jobs_router)
 app.include_router(checkin_router)
+app.include_router(passkeys_router)
 
 
 @app.get("/health")

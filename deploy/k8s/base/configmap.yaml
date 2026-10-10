@@ -91,7 +91,8 @@ data:
   # instance, sign-in and event booking take themselves offline and say so,
   # rather than accepting bookings that can never be confirmed. This is only for
   # breakage the process cannot detect itself.
-  # Keys: login, bookings, lockers, sponsor_portal, admin
+  # Keys: login, bookings, lockers, sponsor_portal, admin, passkeys (forcing
+  # login forces passkeys too; an automatic mail outage leaves passkeys on)
   #
   # Lockers: paused until a Union product is linked to them. Without a link
   # the site cannot tell who has paid, so every booking would be taken on

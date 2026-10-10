@@ -114,6 +114,7 @@ _DENIED = {
         "That is a site-wide setting, and your role covers one part of the site. "
         "Ask an admin."
     ),
+    "passkey_links": "Only an admin or a superuser can make passkey links.",
 }
 
 
@@ -124,6 +125,7 @@ require_users = require_capability("users")
 require_events = require_capability("events")
 require_sponsors = require_capability("sponsors")
 require_site = require_capability("site")
+require_passkey_links = require_capability("passkey_links")
 
 
 async def require_event_editor(

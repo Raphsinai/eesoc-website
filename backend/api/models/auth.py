@@ -159,6 +159,9 @@ class SessionView(BaseModel):
     # The committee card this person may edit, if any — by login. Present for
     # ordinary committee members who hold no role at all.
     committee_login: str | None = None
+    # How many passkeys the account has. Zero is what makes the sign-in dialog
+    # offer to save one.
+    passkeys: int = 0
     # Set while a superuser is signed in as somebody else, so the page can say
     # so in a banner that does not go away.
     impersonating: bool = False

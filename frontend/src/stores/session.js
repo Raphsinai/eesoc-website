@@ -7,6 +7,7 @@
 import { computed, reactive } from 'vue'
 
 import api from '@/api'
+import { createPasskey, deviceName, getPasskey } from '@/utils/passkey'
 
 export const state = reactive({
   loaded: false,
@@ -25,6 +26,9 @@ export const state = reactive({
   // The committee card this person may edit, by login. Set for ordinary
   // committee members who hold no role at all.
   committeeLogin: null,
+  // How many passkeys the account has. Zero is what makes the sign-in dialog
+  // offer to save one.
+  passkeys: 0,
   impersonating: false,
   impersonatorEmail: null,
   academicYear: null,
@@ -43,6 +47,7 @@ function apply(data) {
   state.role = data?.role ?? null
   state.capabilities = data?.capabilities ?? []
   state.committeeLogin = data?.committee_login ?? null
+  state.passkeys = data?.passkeys ?? 0
   state.impersonating = Boolean(data?.impersonating)
   state.impersonatorEmail = data?.impersonator_email ?? null
   state.academicYear = data?.academic_year ?? null
@@ -123,4 +128,43 @@ export async function saveName(firstName, lastName) {
     last_name: lastName || null,
   })
   return refresh()
+}
+
+
+/** Sign in with a passkey: the server's challenge, the browser's sheet, the
+ *  server's check. No address is typed — the passkey says whose it is.
+ *  Throws the browser's own error when the sheet is closed; `cancelled()` in
+ *  utils/passkey tells that apart from a real failure. */
+export async function passkeySignIn() {
+  const options = await api.post('/auth/passkey/options')
+  const credential = await getPasskey(options)
+  const data = await api.post('/auth/passkey/verify', { credential })
+  apply(data)
+  return data
+}
+
+
+/** Save a passkey on the signed-in account, then refresh so `passkeys` is
+ *  counted and the offer stops appearing. */
+export async function addPasskey() {
+  const options = await api.post('/auth/passkeys/options')
+  const credential = await createPasskey(options)
+  const res = await api.post('/auth/passkeys', { credential, name: deviceName() })
+  await refresh()
+  return res
+}
+
+
+/** The setup-link half: save a passkey on the account a committee-made link
+ *  names, which signs the browser in as that account. */
+export async function registerWithLink(token) {
+  const options = await api.post('/auth/passkey-link/options', { token })
+  const credential = await createPasskey(options)
+  const data = await api.post('/auth/passkey-link/register', {
+    token,
+    credential,
+    name: deviceName(),
+  })
+  apply(data)
+  return data
 }

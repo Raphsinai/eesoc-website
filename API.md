@@ -83,6 +83,47 @@ impersonated one, which by design holds none of the superuser's access.
 `POST /auth/logout` 🔒 · `POST /auth/logout-everywhere` 🔒 · `PATCH /auth/me` 🔒
 (name, `cv_opt_in`).
 
+### Passkeys
+
+A passkey signs somebody in with their device's own lock instead of an emailed
+code — the way round a spam filter that eats our codes, and the way in while the
+webmaster mailbox is down. Saved once, after a code sign-in (the login dialog
+offers it to an account with none) or from `/account`. Credentials are
+discoverable, so signing in needs no address: the passkey says whose it is.
+
+Every ceremony is two calls: one returns WebAuthn options in their JSON form
+(base64url fields), the next takes the browser's `PublicKeyCredential` in the
+same form as `credential`. The server checks the challenge is one it issued,
+unexpired and unused (reading it deletes it), for this purpose and this account
+or link; py_webauthn checks origin (`SITE_ORIGIN`), relying party (its host),
+signature and counter.
+
+| Call | Who | Does |
+|---|---|---|
+| `POST /auth/passkey/options` → `POST /auth/passkey/verify {credential}` | anybody | sign in; returns the session view |
+| `GET /auth/passkeys` | 🔒 | your passkeys: `name`, `createdAt`, `lastUsedAt`, `synced`, `viaLink`, `linkMadeBy` |
+| `POST /auth/passkeys/options` → `POST /auth/passkeys {credential, name}` | 🔒 | save one on your account |
+| `DELETE /auth/passkeys/{id}` | 🔒 | remove one of yours (the emailed code still works) |
+| `POST /auth/passkey-link {token}` | link holder | what the link is for: `email`, `expiresAt`, `madeBy` |
+| `POST /auth/passkey-link/options {token}` → `POST /auth/passkey-link/register {token, credential, name}` | link holder | save a passkey on the link's account, spend the link, sign in |
+
+Saving or removing a passkey is refused while impersonating: a passkey outlives
+the impersonation, so it would be a way back into the account with no banner.
+`GET /auth/session` carries `passkeys`, the count on the account.
+
+Signing in with a passkey is the `passkeys` maintenance feature, **not**
+`login`: it needs no email, so the automatic outage when mail credentials are
+missing leaves it working. Forcing `login` off by hand forces `passkeys` off too.
+
+**Setup links** are for the people our codes never reach — usually a sponsor
+behind a corporate filter. A committee member makes one (`/admin/passkey-links`,
+below), sends it themselves by whatever reaches the person, and opening it lets
+them save a passkey on that address's account and sign in, no code. The page is
+`/passkey-setup#<token>`: the token rides in the fragment, which browsers never
+send to a server, and the api takes it in POST bodies, so it is in no access
+log. One link per account at a time (a new one revokes the last), single-use,
+7 days (`PASSKEY_LINK_TTL_HOURS`), only its hash stored.
+
 ---
 
 ## Events
@@ -291,12 +332,12 @@ fresh deployment that would be a committee with the keys locked inside.
 One role per account, in `admins.role`. The table of what each unlocks is
 `backend/api/utils/roles.py`; enforcement is `backend/api/utils/deps.py`.
 
-| Role | users | events | sponsors | site |
-|---|:--:|:--:|:--:|:--:|
-| `superuser` | ✓ | all | ✓ | ✓ |
-| `admin` | — | all | ✓ | ✓ |
-| `events` | — | all | — | — |
-| `industry` | — | industry events only | ✓ | — |
+| Role | users | events | sponsors | site | passkey_links |
+|---|:--:|:--:|:--:|:--:|:--:|
+| `superuser` | ✓ | all | ✓ | ✓ | ✓ |
+| `admin` | — | all | ✓ | ✓ | ✓ |
+| `events` | — | all | — | — | — |
+| `industry` | — | industry events only | ✓ | — | — |
 
 * **users** — grant and revoke roles, and impersonate. Superuser only.
 * **events** — events, ticket types, bookings, waitlists, product links on an
@@ -310,6 +351,17 @@ One role per account, in `admins.role`. The table of what each unlocks is
   which is sponsorship work rather than access control.
 * **site** — resources, files, lockers, Union products, bulk email, the
   committee page's layout and other people's cards.
+* **passkey_links** — make, list and revoke passkey setup links
+  (`GET/POST /admin/passkey-links {email}`, `DELETE /admin/passkey-links/{id}`).
+  A link lets whoever holds it into the account, so: never for the standing
+  superuser; for an account holding **any** committee role, only with `users`
+  too (otherwise an admin could link a superuser's account and walk in); not
+  while impersonating. The same rule is checked again when the link is *used* —
+  a link is honoured only if its maker could still make it, so promoting the
+  account or demoting the maker afterwards kills it. An unknown address gets an
+  unverified account, as with sponsor access. The URL is returned once, in the
+  response; nothing is emailed. Making, using and revoking are logged at
+  WARNING with both addresses.
 
 **Editing your own committee card needs no role.** Anyone matched to a row on
 this year's roster can change their own intro and photograph
@@ -463,3 +515,11 @@ settings and `EMAIL_TOKEN_SECRET`. See `.env.example` and `backend.env.example`.
 
 With no `SMTP_HOST` set, login codes are **written to the api log** instead of
 emailed, so the flow is testable before credentials exist.
+
+Passkeys are bound to the host of `SITE_ORIGIN` (override with
+`WEBAUTHN_RP_ID`; extra allowed origins in `WEBAUTHN_EXTRA_ORIGINS`). A passkey
+made on one host never works on another — production's are useless on staging,
+which is why staging's `SITE_ORIGIN` must stay its own — and **changing the
+production domain strands every passkey on it**: people fall back to emailed
+codes and save new ones. `PASSKEY_CHALLENGE_SECONDS` (300) and
+`PASSKEY_LINK_TTL_HOURS` (168) bound the ceremonies and the setup links.

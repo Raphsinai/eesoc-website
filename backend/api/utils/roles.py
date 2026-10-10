@@ -17,6 +17,13 @@ the refactor that splits one route into three:
   site        everything that is just the website: resources, files, lockers,
               Union product links, the sync buttons, bulk email, the committee
               page's layout and other people's cards.
+  passkey_links
+              make a one-off link that lets somebody save a passkey on an
+              account without an emailed code — for the people our codes
+              never reach. Whoever opens the link gets into that account, so
+              it is held by the two roles trusted with the whole site, and a
+              link for a committee account needs `users` as well (see
+              `routes/passkeys.py`).
 
 A committee member editing *their own* card needs none of these. That is
 ownership of a row, not a role, and it is resolved in `deps.committee_card`.
@@ -30,12 +37,12 @@ ROLES: dict[str, dict] = {
     "superuser": {
         "label": "Superuser",
         "blurb": "Everything, including granting roles and signing in as somebody else.",
-        "capabilities": {"users", "events", "sponsors", "site"},
+        "capabilities": {"users", "events", "sponsors", "site", "passkey_links"},
     },
     "admin": {
         "label": "Admin",
         "blurb": "Everything except managing who has access.",
-        "capabilities": {"events", "sponsors", "site"},
+        "capabilities": {"events", "sponsors", "site", "passkey_links"},
     },
     "events": {
         "label": "Events",

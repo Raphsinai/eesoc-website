@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import re
 
+from fastapi import HTTPException
+
 from clients import database
 from utils.auth import normalise_email
 
@@ -153,3 +155,50 @@ async def resolve_or_create_user(
         payload["email_verified"] = True
 
     return await database.post("/auth/users/upsert", payload)
+
+
+async def refresh_membership(user: dict) -> dict:
+    """Pick up a Union membership taken out since this account was last linked.
+
+    A code sign-in gets this for free — `resolve_or_create_user` looks the
+    address up every time. A passkey sign-in never types an address, so it has
+    to ask: somebody who made their account as a guest and has since joined
+    the Union should be a member the next time they come in, whichever way
+    they sign in.
+
+    Narrower than the code path on purpose. That path may *move* an account to
+    its canonical shortcode@ic.ac.uk address, merging identities; here the
+    passkey has already said which account this is, so anything that would
+    change the address is left for the next code sign-in rather than done
+    behind the person's back. And it never fails a sign-in — a membership we
+    could not link today is a membership we link next time.
+    """
+    if user.get("member_id") is not None:
+        return user
+
+    address = normalise_email(user["email"])
+    member = await find_member(address, user.get("shortcode"))
+    if member is None:
+        return user
+    if canonical_email(address, user.get("shortcode"), member) != address:
+        return user
+
+    try:
+        return await database.post(
+            "/auth/users/upsert",
+            {
+                "email": address,
+                "member_id": member["id"],
+                "first_name": member.get("first_name") or user.get("first_name"),
+                "last_name": member.get("last_name") or user.get("last_name"),
+                "shortcode": member.get("login") or user.get("shortcode"),
+            },
+        )
+    except HTTPException as exc:
+        # Most likely the member is already linked to another account of
+        # theirs (users.member_id is unique). The code flow sorts that out.
+        log.warning(
+            "Could not link user %s to member %s on passkey sign-in: %s",
+            user.get("id"), member["id"], exc.detail,
+        )
+        return user

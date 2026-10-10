@@ -1,4 +1,21 @@
 # DECISIONS — assumptions recorded during autonomous build rounds
+- **2026-10-10 (passkeys, Raph's direct request — outside the numbered plan):** passkey
+  sign-in, an optional "save a passkey" step after every code sign-in, `/account` to
+  manage them, and committee-made **passkey setup links** for people our codes never
+  reach (mostly sponsors). Took migration **065** (`065_passkeys.sql`; 064 is reserved by
+  section 16 — sections 11/12 should renumber past 065 too). New capability
+  `passkey_links` on `admin` + `superuser`; a link for an account holding any committee
+  role additionally needs `users`, and the rule is re-checked when the link is used.
+  New maintenance key `passkeys` (not email-dependent; forcing `login` forces it).
+  Passkey tables are truncated in `scrub.sql` and must-be-empty in `verify.sql`.
+  Also fixed on the way, because CI had been red since the round-4 push and nothing
+  could reach staging: `requirements-dev.txt` now includes the api runtime (pytest
+  stopped at collection, so **no pytest suite had ever run in CI**); the `api_nologin`
+  base URL; three stale tests (doors-close data, the event-payload allowlist, a
+  capacity-0 waitlist event the schema forbids); Playwright's `admin` storage-state
+  path and `workers: 1` under CI; the recovery spec counting `replaceState` as a
+  reload; and a **real bug in section 03** — BusyBox `cp -an` never merged the previous
+  build's assets, so old chunks were dropped on every deploy.
 - **2026-10-08 (section 14, doors close):** `events.doors_close_at` (migration 063) is carried
   by the event models/read payloads only — **section 08 (event duplication/series, not yet
   built) must copy `doors_close_at` when it duplicates an event**, or duplicated events would

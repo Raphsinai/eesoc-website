@@ -15,6 +15,7 @@ import Input from '@/components/ds/Input.vue'
 import StatBlock from '@/components/ds/StatBlock.vue'
 import Dialog from '@/components/ds/Dialog.vue'
 import TraceRule from '@/components/ds/TraceRule.vue'
+import PasskeyLinkMade from '@/components/PasskeyLinkMade.vue'
 import session, { can, hasAdminArea } from '@/stores/session'
 
 const route = useRoute()
@@ -84,6 +85,15 @@ const myCard = ref(null)
 const newRole = ref('admin')
 const impersonateEmail = ref('')
 
+// ---------------------------------------------------------- passkey links ---
+// For somebody our sign-in codes do not reach. The link is shown once, as made
+// (only its hash is stored), keyed by the address it was made for so the
+// Sponsors tab can show it under the right person.
+const passkeyLinks = ref([])
+const passkeyLinkTtlHours = ref(null)
+const passkeyLinkEmail = ref('')
+const madeLinks = reactive({})
+
 // ------------------------------------------------------------------ email ---
 const audiences = ref([])
 const mailStatus = ref(null)
@@ -151,6 +161,7 @@ async function load() {
 onMounted(async () => {
   await load()
   loadSponsorInbox()
+  loadPasskeyLinks()
   // Arriving from an event's page with "Email everyone who hasn't bought".
   const id = Number(route.query.announce)
   if (id) {
@@ -1088,6 +1099,69 @@ async function removeAdmin(a) {
   } catch (e) {
     error.value = e.message
   }
+}
+
+async function loadPasskeyLinks() {
+  if (!can('passkey_links')) return
+  try {
+    const res = await api.get('/admin/passkey-links')
+    passkeyLinks.value = res.links
+    passkeyLinkTtlHours.value = res.ttlHours
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+/** Make a passkey link for an address. A fresh one revokes any live link for
+ *  the same account, so the list never holds two that work. */
+async function makePasskeyLink(email) {
+  const address = (email || '').trim()
+  if (!address) return
+  error.value = ''
+  busy.value = true
+  try {
+    const res = await api.post('/admin/passkey-links', { email: address })
+    // Both spellings: an Imperial alias comes back as shortcode@ic.ac.uk.
+    madeLinks[address.toLowerCase()] = res
+    madeLinks[res.email.toLowerCase()] = res
+    await loadPasskeyLinks()
+    return res
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
+}
+
+async function makeLinkFromForm() {
+  if (await makePasskeyLink(passkeyLinkEmail.value)) passkeyLinkEmail.value = ''
+}
+
+async function revokePasskeyLink(l) {
+  if (!confirm(`Revoke the passkey link for ${l.email}? It stops working straight away.`)) return
+  try {
+    await api.del(`/admin/passkey-links/${l.id}`)
+    for (const [key, made] of Object.entries(madeLinks)) {
+      if (made.id === l.id) delete madeLinks[key]
+    }
+    await loadPasskeyLinks()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+/** The link made most recently from the People tab's form, if still on screen. */
+const lastMadeLink = computed(() => {
+  const made = Object.values(madeLinks)
+  return made.length ? made.reduce((a, b) => (a.id > b.id ? a : b)) : null
+})
+
+function linkStatus(l) {
+  const at = (v) => new Date(v).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+  if (l.status === 'live') return `works until ${at(l.expiresAt)}`
+  if (l.status === 'used') return `used ${at(l.usedAt)}`
+  if (l.status === 'revoked') return `revoked ${at(l.revokedAt)}${l.revokedBy ? ` by ${l.revokedBy}` : ''}`
+  return `expired ${at(l.expiresAt)}`
 }
 
 /** Sign in as somebody else. A full reload: every panel on screen was built
@@ -2281,6 +2355,48 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             >Sign in as them</Button>
           </Card>
 
+          <Card v-if="can('passkey_links')" variant="outline">
+            <h2 style="margin:0 0 var(--space-2); font:var(--type-h4)">Passkey setup links</h2>
+            <p style="margin:0 0 var(--space-4); font:var(--type-small); color:var(--text-muted)">
+              For somebody our sign-in codes never reach — a sponsor whose spam
+              filter eats them. The link lets them save a passkey on that
+              address's account and sign in without a code. Nothing is emailed:
+              send it yourself, by whatever does reach them. It works once<template v-if="passkeyLinkTtlHours">
+              and lasts {{ Math.round(passkeyLinkTtlHours / 24) }} days</template>.
+              <template v-if="!canManageUsers">Accounts with committee access need a superuser.</template>
+            </p>
+            <Field label="Email" help="If there is no account yet, one is made — as when granting sponsor access.">
+              <Input v-model="passkeyLinkEmail" placeholder="name@company.com" />
+            </Field>
+            <Button
+              size="sm"
+              style="margin-top:var(--space-3)"
+              :disabled="busy || !passkeyLinkEmail.trim()"
+              @click="makeLinkFromForm"
+            >Make a link</Button>
+            <PasskeyLinkMade v-if="lastMadeLink" :link="lastMadeLink" />
+
+            <template v-if="passkeyLinks.length">
+              <TraceRule style="margin:var(--space-5) 0 var(--space-2)" />
+              <div
+                v-for="l in passkeyLinks"
+                :key="l.id"
+                style="display:flex; justify-content:space-between; align-items:center; gap:var(--space-3); padding:var(--space-2) 0; border-top:1px solid var(--border-hairline)"
+              >
+                <div style="display:grid; gap:2px; min-width:0">
+                  <span style="font:var(--type-2xs); overflow-wrap:anywhere">
+                    {{ l.email }}
+                    <Badge :tone="l.status === 'live' ? 'accent' : l.status === 'used' ? 'success' : 'neutral'">{{ l.status }}</Badge>
+                  </span>
+                  <span style="font:var(--type-2xs); color:var(--text-faint)">
+                    {{ linkStatus(l) }}<template v-if="l.createdBy"> · made by {{ l.createdBy }}</template>
+                  </span>
+                </div>
+                <Button v-if="l.status === 'live'" size="sm" variant="ghost" @click="revokePasskeyLink(l)">Revoke</Button>
+              </div>
+            </template>
+          </Card>
+
           <Card variant="outline">
             <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">Accounts</h2>
             <div style="display:grid; gap:var(--space-2); font:var(--type-small)">
@@ -2382,9 +2498,23 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 <span style="font-family:var(--font-mono); font-size:var(--text-2xs); text-transform:uppercase; color:var(--text-faint)">
                   Portal access
                 </span>
-                <div v-for="u in sp.users" :key="u.id" style="display:flex; justify-content:space-between; align-items:center; padding:var(--space-2) 0">
-                  <span style="font:var(--type-2xs)">{{ u.email }}</span>
-                  <Button size="sm" variant="ghost" @click="revokeSponsorAccess(sp, u)">Revoke</Button>
+                <div v-for="u in sp.users" :key="u.id" style="padding:var(--space-2) 0">
+                  <div style="display:flex; justify-content:space-between; align-items:center; gap:var(--space-2)">
+                    <span style="font:var(--type-2xs); overflow-wrap:anywhere">{{ u.email }}</span>
+                    <div style="display:flex; gap:4px; flex-shrink:0">
+                      <!-- For a contact whose mail server eats our sign-in codes. -->
+                      <Button
+                        v-if="can('passkey_links')"
+                        size="sm"
+                        variant="ghost"
+                        :disabled="busy"
+                        title="Make a link that lets them sign in with a passkey, no emailed code"
+                        @click="makePasskeyLink(u.email)"
+                      >Passkey link</Button>
+                      <Button size="sm" variant="ghost" @click="revokeSponsorAccess(sp, u)">Revoke</Button>
+                    </div>
+                  </div>
+                  <PasskeyLinkMade v-if="madeLinks[u.email.toLowerCase()]" :link="madeLinks[u.email.toLowerCase()]" />
                 </div>
                 <p v-if="!sp.users?.length" style="margin:var(--space-2) 0; font:var(--type-2xs); color:var(--text-faint)">
                   Nobody can log in for this sponsor yet.
@@ -2397,7 +2527,8 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 </div>
                 <p style="margin:var(--space-2) 0 0; font:var(--type-2xs); color:var(--text-faint)">
                   They sign in with that address using the usual emailed code, which is
-                  what proves they control it.
+                  what proves they control it.<template v-if="can('passkey_links')"> If our codes
+                  never arrive, send them a passkey link instead.</template>
                 </p>
               </div>
             </Card>

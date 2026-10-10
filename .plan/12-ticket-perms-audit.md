@@ -14,7 +14,8 @@ detailed, traceable audit row saying who did what, to which booking, when.
 
 ## Owns
 
-- migrations `061`–`062` (audit log; any recording columns 059/060 lack — expand-only)
+- migrations `068`–`069` (audit log; any recording columns 059/060 lack — expand-only;
+  renumbered 2026-10-10 from 061–062 to land past passkeys' 065)
 - `backend/api/utils/roles.py` (a new capability granted to exactly `admin` +
   `superuser`; blurbs updated so the People tab is accurate)
 - `backend/api/utils/deps.py` only if a guard helper needs shaping
@@ -25,7 +26,13 @@ detailed, traceable audit row saying who did what, to which booking, when.
   rows for each; the audit-log list endpoint
 - `backend/api/services/confirmations.py` / `services/purchase.py` (or wherever
   the confirm action actually resolves) — audit the automatic sync-confirm as
-  a system action; **do not** touch `services/sync.py`'s Union call paths
+  a system action; **do not** touch `services/sync.py`'s Union call paths.
+  **2026-10-10:** section 16 owns `services/confirmations.py` and the confirmation
+  queries in `backend/database/routes/events.py` in parallel — do not edit either.
+  Record the sync confirm without them (e.g. an `AFTER UPDATE` trigger on
+  `reservations` in your own migration, firing when a row becomes `confirmed` with a
+  `matched_sale_id`, writing a system-actor row); manual confirms/cancels are audited
+  in the api layer (`routes/admin.py`) after the adapter call returns.
 - `backend/database/routes/checkin.py`, `models/events.py` (only what recording
   needs), plus new audit-specific adapter routes/models (new files — name them;
   they must not collide with 06's rescope)

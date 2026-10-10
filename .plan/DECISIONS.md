@@ -1,4 +1,33 @@
 # DECISIONS — assumptions recorded during autonomous build rounds
+- **2026-10-10 (build round, notes):** two notes triaged.
+  (1) *Sale end datetimes + end-of-day hold deadlines* → **feature / scope change**: new
+  event fields, a new reservation gate and a new deadline rule on the live booking path.
+  Proposed as **section 17, awaiting approval, not built.** Reading taken (details in
+  `requests/07-*`): two optional fields `reservations_close_at` (no reserving after) and
+  `union_sales_close_at` (no hold deadline may pass it); an N-day hold ends 23:59:59
+  Europe/London on booking-date + N−1, one day later if booked at/after 23:00 London;
+  unset fields keep today's behaviour; unlinked (no Union product) holds keep "until the
+  event starts". The note's first sentence could instead mean end of the *next* day for a
+  1-day hold — flagged for Raph to settle when approving.
+  (2) *Cancelled tickets informed by email* → **tweak inside the ticketing scope**, built
+  this round as **section 18**: a durable per-booking cancellation email, sender mirrors
+  `services/confirmations.py`, runs on the announcer's ten-minute loop; neutral copy (who
+  cancelled isn't recorded until 12's audit log); historical cancellations and silent
+  committee-added tickets are `skipped`. Follow-up, not done: once 12/07 have merged, add
+  `cancellations.trigger()` after the two cancel routes for immediate delivery.
+- **2026-10-10 (build round, migration numbers):** per the passkeys note, sections land
+  past 065: **17 → 066, 18 → 067, 12 → 068–069** (was 061–062, never built), proposed
+  11 → 070–071 (its spec still says 062–063 — collides; renumber when approved). The
+  runner applies by set, not high-water mark (`migrate.py`), and `check-migrations.py` has
+  no ordering rule, so 07's already-built 047–049 and 16's 064 still apply on databases
+  that already have 065 — 07's lead checks they don't depend on anything numbered later on
+  a fresh database.
+- **2026-10-10 (build round, scheduling):** STATUS.md was two rounds stale (13/14 merged,
+  15/16 built-unmerged, passkeys + CI fixes landed out-of-plan and pushed). Waves by file
+  ownership: **W1** 15 (finish: commit untracked tests, merge main, validate) ∥ 16 (finish)
+  ∥ 12 (build; told not to touch `services/confirmations.py`/`database/routes/events.py`
+  while 16 owns them — audit sync-confirms via a DB trigger in its own migration or
+  similar). **W2** 18 ∥ 07 (merge main into its built branch, re-validate).
 - **2026-10-10 (passkeys, Raph's direct request — outside the numbered plan):** passkey
   sign-in, an optional "save a passkey" step after every code sign-in, `/account` to
   manage them, and committee-made **passkey setup links** for people our codes never

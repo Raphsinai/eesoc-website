@@ -211,13 +211,46 @@ def _seconds_until_next_run() -> float:
     return (target - now).total_seconds()
 
 
+async def _dependencies_up(timeout_seconds: float = 120.0) -> bool:
+    """Wait until the database adapter and the union bridge both answer.
+
+    Nothing orders startup — compose waits only for containers to exist, k8s
+    not at all — so the startup sync used to run before the adapter was
+    listening, fail on its lease, and never be tried again: the test stack
+    then had no members, and every member-shaped test failed.
+
+    Only the two services' own /health is polled, and the bridge's answers
+    from its local cache state: waiting here costs eActivities nothing. The
+    sync itself still runs exactly once, because retrying *that* could repeat
+    upstream calls against a rate limit that bans the society.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while True:
+        try:
+            await database.get("/health")
+            await union.health()
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if asyncio.get_running_loop().time() >= deadline:
+                return False
+            await asyncio.sleep(2)
+
+
 async def scheduler() -> None:
     """Background loop. Cancelled on shutdown by the lifespan handler."""
     if settings.sync_on_startup:
-        try:
-            await sync_all()
-        except Exception:
-            log.exception("Startup sync failed")
+        if await _dependencies_up():
+            try:
+                await sync_all()
+            except Exception:
+                log.exception("Startup sync failed")
+        else:
+            log.error(
+                "Startup sync skipped: the database adapter or the union bridge "
+                "never came up"
+            )
 
     while True:
         delay = _seconds_until_next_run()

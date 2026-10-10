@@ -129,8 +129,10 @@ def test_reserve_before_sales_open_is_409(admin_client, member_client):
 
 
 def test_waitlist_join_on_full_event_still_works(admin_client, member_client):
-    # A ticket type with capacity 0 models a full event; joining the waitlist
-    # still succeeds (queued behind it) rather than erroring.
+    # A one-seat event that somebody else has already taken is full; joining
+    # the waitlist still succeeds (queued behind them) rather than erroring.
+    # Capacity 0 cannot model this: the schema refuses it (migration 011's
+    # CHECK capacity > 0).
     slug = _unique_slug("reg-waitlist")
     created = _create_event(
         admin_client,
@@ -140,13 +142,20 @@ def test_waitlist_join_on_full_event_still_works(admin_client, member_client):
             {
                 "name": "Full seat",
                 "price_pence": 0,
-                "capacity": 0,
+                "capacity": 1,
                 "requires_purchase": False,
             }
         ],
     )
     try:
         ticket_type_id = _anon().get(f"/events/{slug}").json()["ticketTypes"][0]["id"]
+        taken = admin_client.post(
+            f"/events/{slug}/reserve",
+            json={"ticket_type_id": ticket_type_id, "quantity": 1},
+        )
+        assert taken.status_code == 200, taken.text
+        assert _anon().get(f"/events/{slug}").json()["soldOut"] is True
+
         joined = member_client.post(
             f"/events/{slug}/waitlist",
             json={"ticket_type_id": ticket_type_id, "quantity": 1},

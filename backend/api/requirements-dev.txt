@@ -7,6 +7,11 @@
 # what a failing test means.
 pytest==8.4.2
 httpx==0.28.1
+# The api's own runtime, because several unit suites import api modules
+# directly (tests/zero-downtime/test_storage_retryable.py loads
+# services.storage, which needs fastapi and boto3). Without it pytest stops at
+# collection and not one test runs — which is what CI did until this line.
+-r requirements.txt
 # icalendar parses the RFC 5545 files the .ics tests assert against — a wire
 # format, which eyeballing would not test at all. Pinned because the tests
 # importorskip it, so without a pin a missing install turns every parse

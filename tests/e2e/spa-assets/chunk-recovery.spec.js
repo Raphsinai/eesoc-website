@@ -37,12 +37,19 @@ test('a missing old chunk reloads once to the current bundle instead of looping'
   // --- "deploy" without the previous build: old chunk URLs now 404 ----------
   await rebuildFrontend({ variant: VARIANT_B })
 
-  // Count main-frame navigations from this moment on. The recovery hook
+  // Count main-frame document loads from this moment on. The recovery hook
   // (frontend/src/chunk-recovery.js) must produce exactly one of these — the
   // location.reload() that fetches the new index.html.
+  //
+  // Document *requests*, not `framenavigated`: that event also fires for
+  // same-document history changes, and vue-router calls
+  // history.replaceState as the reloaded app boots — so one reload read as
+  // two ("/", "/") and the spec failed on a tab that had behaved perfectly.
   const navigations = []
-  page.on('framenavigated', (frame) => {
-    if (frame === page.mainFrame()) navigations.push(frame.url())
+  page.on('request', (request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      navigations.push(request.url())
+    }
   })
 
   // Click a CTA to a route this tab has NEVER visited. The old bundle lazily

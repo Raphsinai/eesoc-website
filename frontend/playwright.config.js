@@ -5,10 +5,26 @@
 // dev server: they need the union stub and mailpit, and must never touch the
 // real ICU bridge. baseURL is the frontend, so specs use the same-origin /api
 // the browser uses.
+import { fileURLToPath } from 'node:url';
 import { defineConfig, devices } from '@playwright/test';
+
+// Where tests/e2e/auth.setup.js saves the admin's session. Absolute, because
+// Playwright resolves a relative storageState against the working directory —
+// the repo root, where the suites are run from — not against this file, so
+// '../tests/e2e/.auth/admin.json' pointed outside the repository and every
+// spec in the `admin` project failed with ENOENT.
+const ADMIN_STATE = fileURLToPath(new URL('../tests/e2e/.auth/admin.json', import.meta.url));
 
 export default defineConfig({
   testDir: '../tests/e2e',
+
+  // One worker in CI. The spa-assets specs rebuild and recreate the shared
+  // frontend container mid-test, and say they are safe because nothing runs
+  // beside them — but Playwright does not default to one worker under CI, so
+  // with the runner's two CPUs both of those specs rebuilt the same container
+  // at once and each failed on the other's build. Locally, pass --workers=1
+  // (or CI=1) when running them.
+  workers: process.env.CI ? 1 : undefined,
 
   // Every .spec.js in the tree runs twice — once signed out, once as the
   // admin the setup project signs in — because sections keep adding specs and
@@ -34,7 +50,7 @@ export default defineConfig({
       dependencies: ['setup'],
       use: {
         ...devices['Desktop Chrome'],
-        storageState: '../tests/e2e/.auth/admin.json',
+        storageState: ADMIN_STATE,
       },
     },
   ],

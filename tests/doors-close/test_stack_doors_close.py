@@ -121,7 +121,9 @@ def test_event_created_with_doors_close_reads_it_back(admin_client):
             "category": "Workshops",
             "venue": MILLER_VENUE,
             "starts_at": _future_iso(),
-            "ends_at": _future_iso(),
+            # A day long, so doors an hour after the start fall inside it —
+            # doors closing after the end is refused (criterion 2).
+            "ends_at": _future_iso(days=31),
             "doors_close_at": doors.isoformat(),
             "published": True,
         },

@@ -28,6 +28,10 @@ ALLOWED_FIELDS = {
     "myReservations",
     # new in this section
     "mapUrl", "meetingUrl", "meetingUrlPrivate", "targetYears",
+    # added since, public by design: the doors-close time (section 14) and the
+    # sponsors confirmed for the event (the 2026-27 agreement, 359badf — only
+    # active sponsors, name and logo)
+    "doorsClose", "doorsCloseAt", "sponsors",
 }
 
 

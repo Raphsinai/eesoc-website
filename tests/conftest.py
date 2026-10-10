@@ -53,8 +53,12 @@ def api_nologin() -> httpx.Client:
     For the real code flow: /auth/dev-login 404s here, so tests can drive
     request-code -> verify-code through mailpit. It shares the database, so
     accounts made through `api` exist under this instance too.
+
+    No `/api` on the base: this instance is published straight from its
+    container (docker-compose.test.yml), not through nginx, and the api itself
+    serves from the root — `/api` is nginx's prefix, stripped before it arrives.
     """
-    return _client(os.environ.get("EESOC_NOLOGIN_BASE", "http://localhost:8081/api"))
+    return _client(os.environ.get("EESOC_NOLOGIN_BASE", "http://localhost:8081"))
 
 
 @pytest.fixture(scope="session")

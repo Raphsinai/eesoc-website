@@ -16,6 +16,7 @@ import StatBlock from '@/components/ds/StatBlock.vue'
 import Dialog from '@/components/ds/Dialog.vue'
 import TraceRule from '@/components/ds/TraceRule.vue'
 import PasskeyLinkMade from '@/components/PasskeyLinkMade.vue'
+import WhatsAppPost from '@/components/WhatsAppPost.vue'
 import session, { can, hasAdminArea } from '@/stores/session'
 
 const route = useRoute()
@@ -102,8 +103,8 @@ const compose = reactive({ subject: '', heading: '', body: '', audiences: [] })
 const previewHtml = ref('')
 const previewCount = ref(null)
 const previewSample = ref([])
-// Non-null while the "email people about this event" dialog is open; holds the
-// event it is about, so the same composer serves both.
+// Non-null while the "announce this event" dialog is open; holds the event it
+// is about, so the same composer serves both.
 const announcing = ref(null)
 
 const busy = ref(false)
@@ -1804,7 +1805,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                   <Button size="sm" variant="ghost" @click="togglePublished(e)">{{ e.published ? 'Unpublish' : 'Publish' }}</Button>
                   <Button size="sm" variant="secondary" @click="router.push(`/admin/events/${e.id}`)">Details</Button>
                   <Button size="sm" variant="ghost" @click="editEvent(e)">Edit</Button>
-                  <Button v-if="can('site')" size="sm" variant="secondary" @click="announceEvent(e)">Email about this</Button>
+                  <Button v-if="can('site')" size="sm" variant="secondary" title="Email people about it, post it on WhatsApp, or both" @click="announceEvent(e)">Announce</Button>
                   <Button size="sm" variant="danger" @click="removeEvent(e)">Delete</Button>
                 </div>
               </div>
@@ -2568,6 +2569,11 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             </Card>
 
             <Card variant="outline">
+              <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">WhatsApp</h2>
+              <WhatsAppPost :heading="compose.heading || compose.subject" :body="compose.body" />
+            </Card>
+
+            <Card variant="outline">
               <div style="display:flex; align-items:baseline; justify-content:space-between; gap:var(--space-3); flex-wrap:wrap">
                 <h2 style="margin:0; font:var(--type-h4)">Sent</h2>
                 <Button size="sm" variant="ghost" :disabled="busy" title="Send any due last-chance reminders now, instead of at the next ten-minute pass" @click="runReminderPass">
@@ -2914,17 +2920,19 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
     <!-- Opened from the Events tab. Same audiences, same preview, same send
          path — the only difference is that the event's date, venue, tickets
          and booking link are rendered into the message from the database, so a
-         reminder cannot advertise last week's room. -->
+         reminder cannot advertise last week's room. The WhatsApp post is built
+         from the same words and the same event details. -->
     <Dialog
       :open="Boolean(announcing)"
-      :title="announcing ? `Email people about ${announcing.title}` : ''"
+      :title="announcing ? `Announce ${announcing.title}` : ''"
       width="720px"
       @close="closeCompose"
     >
       <div v-if="announcing" style="display:grid; gap:var(--space-4)">
         <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
-          Write what you want to say. The date, venue, ticket prices and a link
-          to the event page are added underneath automatically.
+          Write what you want to say, then email it, post it on WhatsApp, or
+          both. The date, venue, ticket prices and a link to the event page are
+          added underneath automatically.
         </p>
 
         <Field label="Subject"><Input v-model="compose.subject" /></Field>
@@ -2955,6 +2963,13 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
 
         <div v-if="previewHtml" class="mail-preview" v-html="previewHtml" />
         <p v-if="error" style="margin:0; font:var(--type-small); color:var(--danger)">{{ error }}</p>
+
+        <TraceRule />
+        <WhatsAppPost
+          :heading="compose.heading || compose.subject"
+          :body="compose.body"
+          :event-id="announcing.id"
+        />
       </div>
 
       <template #footer>
@@ -3019,6 +3034,13 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           <span style="font:var(--type-label); color:var(--text-muted)">As it will arrive · “{{ reviewing.preview.subject }}”</span>
           <div class="mail-preview" v-html="reviewing.preview.html" />
         </div>
+
+        <WhatsAppPost
+          :heading="mailDraft.heading || mailDraft.subject"
+          :body="mailDraft.body"
+          :event-id="reviewing.event?.id ?? null"
+          :kind="reviewing.kind"
+        />
 
         <TraceRule />
         <span style="font:var(--type-label); color:var(--text-muted)">

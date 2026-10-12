@@ -321,6 +321,7 @@ reports who let them in and when.
 | `POST /admin/email/preview` | Render the message and count the audience — **sends nothing** |
 | `POST /admin/email/send` | Send a newsletter |
 | `POST /admin/events/{id}/announce` | Email people **about one event**, same audiences |
+| `POST /admin/whatsapp/render` | The **WhatsApp version** of an announcement (`heading`, `body`, optional `event_id`, `kind`) and a `wa.me` link that opens WhatsApp with it filled in — **sends nothing**; see [WhatsApp](#whatsapp) |
 | `GET /admin/email/campaigns` | Send history, updated live while one runs |
 | `GET /admin/events/{id}/sale-alerts` | Who is waiting to hear this event is on sale |
 | `GET /admin/email/optouts` | Who has unsubscribed (read-only, deliberately) |
@@ -515,6 +516,28 @@ becomes an RFC 2047 encoded-word, which clients silently ignore.
 
 Addresses are de-duplicated across every audience, and opt-outs are applied in
 SQL rather than by the caller, so a new audience cannot forget them.
+
+### WhatsApp
+
+The site writes WhatsApp posts; a committee member sends them. Every place an
+announcement is written — the newsletter composer, an event's **Announce**
+dialog, a draft in the email queue — has a **WhatsApp version**: the same
+words in WhatsApp's formatting (`*bold*`, `- ` lists, links as `label (url)`),
+with an event's date, venue, doors-close, prices and link added from the
+database by the same helpers the email uses. **Open in WhatsApp** is a
+`https://wa.me/?text=…` link: WhatsApp opens with the post filled in, they
+choose the community or group, and press send. For a channel, Copy and paste.
+
+The site never posts by itself, on purpose. WhatsApp's Business API cannot post
+into a group or community — only to individual opted-in numbers, as
+pre-approved templates, paid per message — and automating WhatsApp Web breaks
+WhatsApp's terms, with the ban landing on the number that runs the society's
+community. A person pressing send is also the approval that
+"nothing addressed to a crowd goes without a person's approval" requires.
+
+`POST /admin/whatsapp/render` reads only our own database. It warns, without
+refusing, when the event is unpublished (the link would not open for anybody
+else), has started, or — for an on-sale post — its sales have not opened yet.
 
 ---
 

@@ -20,7 +20,7 @@ from config import settings
 from services import agreement as agreement_service
 from services import announce as announce_service
 from services import campaigns as campaigns_service
-from services import confirmations, emailing, purchase, sponsor_notes, storage
+from services import confirmations, emailing, purchase, sponsor_notes, storage, whatsapp
 from services.identity import resolve_or_create_user
 from utils.auth import (
     generate_token,
@@ -2114,6 +2114,36 @@ async def announce_now(_: AuthSession = Depends(require_site)) -> dict:
     when the event is saved and sent at their approved time.
     """
     return await announce_service.run_once()
+
+
+# ------------------------------------------------------------------ whatsapp
+
+
+@router.post("/whatsapp/render", dependencies=[Depends(verify_csrf)])
+async def whatsapp_render(
+    heading: str = Body(default="", embed=True),
+    body: str = Body(default="", embed=True),
+    event_id: int | None = Body(default=None, embed=True),
+    kind: str | None = Body(default=None, embed=True),
+    _: AuthSession = Depends(require_site),
+) -> dict:
+    """The WhatsApp version of an announcement, and a link that opens WhatsApp
+    with it filled in. Sends nothing: a person posts it from their own
+    WhatsApp — services/whatsapp.py says why the site never does.
+
+    Same people as email, because it is the same announcement to a crowd.
+    """
+    event = None
+    if event_id is not None:
+        event = await database.get(f"/events/{event_id}")
+        if event is None:
+            raise HTTPException(404, "No such event")
+    text = await whatsapp.message(heading, body, event, kind)
+    return {
+        "text": text,
+        "url": whatsapp.share_url(text) if text else None,
+        "warning": whatsapp.warning(event, kind),
+    }
 
 
 def _estimate_minutes(count: int) -> str:

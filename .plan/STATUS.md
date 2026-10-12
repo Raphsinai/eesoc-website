@@ -17,7 +17,7 @@ every assumption: `DECISIONS.md`. **Staging only; nothing is promoted without Ra
 | 06 | Sign-up questions (rescoped) | not started (after 12) |
 | 07 | Rich event pages, archive | built on `plan-07-rich-events`, **unmerged**; wave 2 (merge main in, re-validate) |
 | 08 | Event admin workflow | not started (after 07) |
-| 09 | Email approval queue | **core landed out-of-plan 2026-10-12** (Raph's direct request, migration 073): queue, edit words + recipients, test send, approve/dismiss, BCC send; on-sale is the only trigger wired. Still to do from the spec: the other triggers, staleness, source-sync of unedited drafts |
+| 09 | Email approval queue | **core landed out-of-plan 2026-10-12** (Raph's direct requests, migrations 073–074): queue, edit words + recipients, test send, send now / approve for its time (scheduled) / dismiss, BCC send. The on-sale draft is written when an event is saved with a sale time and follows the event (unedited drafts rewritten; approvals held if approved words would change or the event is unpublished). Still to do from the spec: the other triggers, staleness |
 | 10 | Committee-added tickets | superseded — landed on the origin line (a43c4b5) |
 | 11 | Form builder | proposed, **awaiting approval** (migrations to renumber to 070–071 when approved) |
 | 12 | Ticket perms + audit log | wave 1, building (migrations 068–069) |
@@ -34,8 +34,11 @@ Out-of-plan work landed and pushed since round 4 (Raph's direct sessions): passk
 from 09's spec: the per-event "tell me when it's on sale" askers are **not** sent
 automatically any more; they are one ticked audience on the on-sale draft and go
 out BCC'd with everybody else when it is approved ("every automated email needs
-approval, only emails directed to people can be sent automatically"). Migration
-**073** is taken (072 is the uncommitted free-tickets work in the main checkout).
+approval, only emails directed to people can be sent automatically"). Migrations
+**073–074** are taken (072 is the uncommitted free-tickets work in the main
+checkout). Raph's rule from the same day: recurring jobs run **hourly, on the
+hour**, never more often (utils/clock.py) — the reminder pass moved from every 10
+minutes; a scheduled email is a timer for its moment, not a recurring job.
 
 ## This round (2026-10-10)
 

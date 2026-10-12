@@ -118,7 +118,7 @@ def _adapter(compose_exec, method: str, path: str, body: dict) -> dict:
     program = (
         "import json,urllib.request;"
         f"r=urllib.request.Request('http://localhost:8080{path}',"
-        f"data=json.dumps({json.dumps(body)!r}).encode(),method='{method}',"
+        f"data={json.dumps(body)!r}.encode(),method='{method}',"
         "headers={'Content-Type':'application/json'});"
         "print(urllib.request.urlopen(r).read().decode())"
     )

@@ -136,6 +136,18 @@ const selected = computed(
 // to warn rather than to lock the option.
 const needsMembership = computed(() => Boolean(selected.value?.needsMembership))
 
+// A free ticket is booked outright — confirmed, nothing held — so its button
+// should not talk about holding anything.
+const isFree = computed(() => selected.value?.requiresPurchase === false)
+
+const bookLabel = computed(() => {
+  if (busy.value) return isFree.value ? 'Booking…' : 'Holding…'
+  if (showGuestForm.value && !session.authenticated) {
+    return isFree.value ? 'Confirm my place' : 'Confirm and hold my ticket'
+  }
+  return isFree.value ? 'Book my place' : 'Reserve'
+})
+
 const maxQuantity = computed(() => {
   if (!selected.value) return 1
   const held = (event.value?.myReservations || [])
@@ -203,8 +215,9 @@ async function book() {
     const res = await api.post(`/events/${route.params.slug}/reserve`, payload)
     message.value = res.next.message
     membershipWarning.value = res.membershipWarning || ''
-    // Submitted: the hold has become a booking waiting on payment, so stop the
-    // countdown rather than releasing anything.
+    // Submitted: the draft has become a booking — a place on a free ticket, a
+    // hold waiting on payment otherwise — so stop the countdown rather than
+    // releasing anything.
     draftToken.value = null
     clearInterval(ticker)
     showGuestForm.value = false
@@ -594,7 +607,7 @@ const salesOpensText = computed(() => {
             </template>
 
             <Button block :disabled="busy || !canBook" @click="book">
-              {{ busy ? 'Holding…' : (showGuestForm && !session.authenticated ? 'Confirm and hold my ticket' : 'Reserve') }}
+              {{ bookLabel }}
             </Button>
 
             <p
@@ -633,13 +646,20 @@ const salesOpensText = computed(() => {
                 <Badge :tone="statusTone[r.status] || 'neutral'">{{ r.status }}</Badge>
               </div>
 
-              <p v-if="r.status === 'held'" style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
+              <p v-if="r.status === 'held' && r.requiresPurchase" style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
                 Held until {{ new Date(r.expiresAt).toLocaleString() }}
               </p>
+              <!-- The one free booking that is not confirmed outright: a
+                   members-only ticket for somebody not yet in the members feed. -->
+              <p v-else-if="r.status === 'held'" style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
+                Waiting for your Union membership to show up — we'll confirm it
+                and email your ticket after the next morning's check.
+              </p>
 
-              <!-- The QR the door scans. A paid booking, or a free one (which
-                   stays held until the event) — an unpaid hold has nothing
-                   for the door to accept yet. -->
+              <!-- The QR the door scans. A confirmed booking — every free one
+                   is — or a free one still waiting on membership, which the
+                   door has always let through; an unpaid hold has nothing for
+                   the door to accept yet. -->
               <div v-if="r.ticketToken && (r.status === 'confirmed' || !r.requiresPurchase)">
                 <Button size="sm" variant="secondary" :href="`/ticket/${r.ticketToken}`">Show your ticket</Button>
               </div>

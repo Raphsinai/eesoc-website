@@ -154,7 +154,9 @@ async def sync_all(force: bool = False, year: str | None = None) -> dict:
             )
             # Expiring a hold frees a seat, so the queue is worked immediately
             # afterwards rather than a day later.
-            promoted = await database.post("/waitlist/promote")
+            promoted = await database.post(
+                "/waitlist/promote", params={"academic_year": year}
+            )
             notified = await notify_waitlist_offers((promoted or {}).get("offered", []))
             swept = await database.post("/auth/sessions/sweep")
 
@@ -189,7 +191,9 @@ async def reconcile_only() -> dict:
     matched = await database.post(
         "/reservations/match", params={"academic_year": academic_year()}
     )
-    promoted = await database.post("/waitlist/promote")
+    promoted = await database.post(
+        "/waitlist/promote", params={"academic_year": academic_year()}
+    )
     notified = await notify_waitlist_offers((promoted or {}).get("offered", []))
     if (matched or {}).get("confirmed"):
         confirmations.trigger()
@@ -302,9 +306,18 @@ async def notify_waitlist_offers(offers: list[dict]) -> int:
     Promotion and notification are separate steps on purpose: the seat is held
     in the database first, so a mail failure cannot lose somebody their place.
     `notified_at` records who has been told, so a retry cannot email twice.
+
+    A free place is not an offer — it was confirmed on the spot — so it gets
+    the ordinary "you're confirmed" email with the ticket, from the
+    confirmations sender, instead of "buy it on the Union shop by Thursday".
     """
     sent = 0
+    confirmed_any = False
     for offer in offers or []:
+        if offer.get("confirmed"):
+            confirmed_any = True
+            await database.post(f"/waitlist/{offer['waitlist_id']}/notified")
+            continue
         try:
             user = await database.get(f"/auth/users/{offer['user_id']}")
             event = await database.get(f"/events/{offer['event_id']}")
@@ -335,6 +348,8 @@ async def notify_waitlist_offers(offers: list[dict]) -> int:
             await database.post(f"/waitlist/{offer['waitlist_id']}/notified")
         except Exception:  # noqa: BLE001
             log.exception("Could not notify waitlist offer %s", offer.get("waitlist_id"))
+    if confirmed_any:
+        confirmations.trigger()
     return sent
 
 

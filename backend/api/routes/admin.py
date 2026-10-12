@@ -570,7 +570,10 @@ async def change_ticket_type(
     """Move a booking to another ticket type of the same event.
 
     Sends nothing: this is the committee correcting its own records, usually
-    after agreeing the change with the person already.
+    after agreeing the change with the person already. The exception is a hold
+    moved onto a free ticket, which the move confirms (a free ticket is never a
+    hold): like every confirmation, that sends the "you're confirmed" email,
+    because the person now holds a ticket they did not have before.
     """
     reservation = await _reservation_in_scope(reservation_id, session)
     row = await database.post(
@@ -580,6 +583,8 @@ async def change_ticket_type(
     # The adapter's 404 arrives as None, not an exception.
     if row is None:
         raise HTTPException(404, "No such ticket type for this event")
+    if reservation.get("status") == "held" and row.get("status") == "confirmed":
+        confirmations.trigger()
     names = {
         t["id"]: t["name"]
         for t in (await database.get(f"/events/{reservation['event_id']}") or {}).get("ticket_types", [])
@@ -684,7 +689,13 @@ async def cancel_reservation(
     """Cancel a booking and hand the seat to the waitlist."""
     await _reservation_in_scope(reservation_id, session)
     await database.post(f"/reservations/{reservation_id}/cancel")
-    promoted = await database.post("/waitlist/promote")
+    promoted = await database.post(
+        "/waitlist/promote", params={"academic_year": academic_year()}
+    )
+    # A free place handed on from the waitlist is already confirmed; send its
+    # email now rather than on the sender's next pass.
+    if any(o.get("confirmed") for o in (promoted or {}).get("offered", [])):
+        confirmations.trigger()
     return {"ok": True, "promoted": (promoted or {}).get("count", 0)}
 
 

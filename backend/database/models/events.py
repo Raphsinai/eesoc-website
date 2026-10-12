@@ -246,6 +246,10 @@ class ReservationRequest(BaseModel):
     # Guests hold for less time than a signed-in user. None = use the event's
     # own hold_hours.
     hold_hours_override: int | None = None
+    # The current academic year, so a free members-only ticket can tell
+    # whether the person is a member *this* year. None reads as "not shown" —
+    # the booking then waits, held, rather than being confirmed on a guess.
+    academic_year: str | None = None
 
 
 class ReservationResult(BaseModel):

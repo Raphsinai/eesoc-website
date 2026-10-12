@@ -87,6 +87,52 @@ HOLD_EXPIRES = """
     END
 """
 
+# When a new booking's place lapses, by kind:
+#   confirmed outright (a free ticket)   — never: NOW() only fills the column;
+#   free, waiting on membership          — when the event starts: there is
+#                                          nothing to buy, so the event is the
+#                                          only clock (as for an unlinked hold);
+#   to be paid for                       — the purchase window, HOLD_EXPIRES.
+BOOKING_EXPIRES = (
+    "CASE WHEN {confirm}::boolean THEN NOW()"
+    " WHEN NOT {paid}::boolean THEN GREATEST({starts}, NOW() + make_interval(hours => {hours}))"
+    " ELSE " + HOLD_EXPIRES + " END"
+)
+
+MEMBER_THIS_YEAR = """
+    SELECT EXISTS (
+        SELECT 1 FROM public.users u
+          JOIN public.members m ON m.id = u.member_id
+         WHERE u.id = $1 AND m.academic_year = $2
+    );
+"""
+
+
+async def _confirms_outright(conn, tt, user_id: int | None, academic_year: str | None) -> bool:
+    """Is a booking of this ticket type a place the moment it is made?
+
+    A free ticket (`requires_purchase` false) has nothing to buy, so there is
+    nothing to hold it for: it is confirmed straight away, and its confirmation
+    email and QR go out like any other confirmed booking's. A hold exists to
+    give somebody time to pay; on a free ticket it only ever lapsed, or sat
+    "held" until the event looking like something was still owed.
+
+    The one exception is a members-only ticket for somebody the feed does not
+    show as a member this year — whoever joined today is not in it until the
+    morning sync. That booking waits, held, and the matcher's membership pass
+    confirms it once they appear (see `match_reservations`), exactly as a paid
+    members-only ticket waits. No year given reads as "not shown": the safe
+    side is to wait, never to confirm on a guess.
+    """
+    if tt["requires_purchase"]:
+        return False
+    if not tt["members_only"]:
+        return True
+    if not academic_year or user_id is None:
+        return False
+    return bool(await conn.fetchval(MEMBER_THIS_YEAR, user_id, academic_year))
+
+
 WAITLIST_COLUMNS = """
     id, event_id, user_id, preferred_ticket_type_id, quantity, created_at,
     offered_at, offer_expires_at, reservation_id, claimed_at, released_at,
@@ -577,13 +623,24 @@ async def reserve(req: ReservationRequest) -> ReservationResult:
         if counts["user_taken"] + req.quantity > tt["max_per_user"]:
             return ReservationResult(ok=False, reason="over_user_limit")
 
+        # A free ticket is a place outright ($10); anything else is a hold until
+        # a Union sale confirms it ($11 is whether it needs one). `expires_at` is
+        # NOT NULL, so a confirmed row carries NOW() there — nothing reads it
+        # once a booking is confirmed. One CASE rather than a statement per
+        # branch, so every $n is always referenced (Postgres refuses a gap).
+        confirm = await _confirms_outright(conn, tt, req.user_id, req.academic_year)
+        expires = BOOKING_EXPIRES.format(
+            confirm="$10", paid="$11", tt="$2", ev="$1", hours="$5", starts="$8::timestamptz"
+        )
         row = await conn.fetchrow(
             f"""
             INSERT INTO public.reservations
-                (event_id, ticket_type_id, user_id, quantity, expires_at,
-                 order_number, booked_as_guest, visitor_hash)
+                (event_id, ticket_type_id, user_id, quantity, status, expires_at,
+                 confirmed_at, order_number, booked_as_guest, visitor_hash)
             VALUES ($1, $2, $3, $4,
-                    {HOLD_EXPIRES.format(tt="$2", ev="$1", hours="$5", starts="$8::timestamptz")},
+                    CASE WHEN $10::boolean THEN 'confirmed' ELSE 'held' END,
+                    {expires},
+                    CASE WHEN $10::boolean THEN NOW() END,
                     $6, $7, $9)
             RETURNING id, event_id, ticket_type_id, user_id, quantity, status,
                       created_at, expires_at, confirmed_at, cancelled_at,
@@ -598,6 +655,8 @@ async def reserve(req: ReservationRequest) -> ReservationResult:
             req.booked_as_guest,
             event["starts_at"],
             req.visitor_hash,
+            confirm,
+            tt["requires_purchase"],
         )
     return ReservationResult(ok=True, reservation=Reservation(**dict(row)))
 
@@ -835,7 +894,10 @@ async def change_ticket_type(reservation_id: int, ticket_type_id: int) -> Reserv
     For the committee correcting a booking — the wrong option picked, a change of
     mind agreed by message. The status is left alone: a held booking stays held
     (and now needs the new type's Union product to confirm), a confirmed one
-    stays confirmed.
+    stays confirmed — except that a held booking moved onto a free ticket is
+    confirmed, because a free ticket is never a hold (see
+    `_confirms_outright`). The committee chose the move, so no membership
+    check: that is theirs to judge.
 
     Serialised on the event row exactly as `reserve` is, so a move cannot
     oversell the target type: the capacity check and the update see the same
@@ -892,13 +954,19 @@ async def change_ticket_type(reservation_id: int, ticket_type_id: int) -> Reserv
             f"""
             UPDATE public.reservations
                SET ticket_type_id = $2,
-                   note = COALESCE(note || ' | ', '') || $3
+                   note = COALESCE(note || ' | ', '') || $3,
+                   -- The right-hand sides see the row as it was.
+                   status = CASE WHEN status = 'held' AND NOT $4 THEN 'confirmed'
+                                 ELSE status END,
+                   confirmed_at = CASE WHEN status = 'held' AND NOT $4 THEN NOW()
+                                       ELSE confirmed_at END
              WHERE id = $1
             RETURNING {RESERVATION_COLUMNS};
             """,
             reservation_id,
             ticket_type_id,
             f"ticket changed from {current['ticket_type_name']} to {target['name']}",
+            target["requires_purchase"],
         )
     return Reservation(**dict(row))
 
@@ -1235,7 +1303,34 @@ async def match_reservations(academic_year: str | None = None) -> dict:
                 used_sales.add(c["sale_id"])
                 done.add(c["reservation_id"])
 
-    return {"confirmed": confirmed, "candidates": len(candidates)}
+        # Free bookings still waiting: a members-only one whose holder the
+        # (just refreshed) feed now shows as a member this year, and any free
+        # hold an older pod made mid-rollout. Nothing to match a sale to —
+        # being allowed the ticket is the whole of the confirmation.
+        freed = await conn.fetch(
+            """
+            UPDATE public.reservations r
+               SET status = 'confirmed', confirmed_at = NOW()
+              FROM public.ticket_types tt
+             WHERE tt.id = r.ticket_type_id
+               AND NOT tt.requires_purchase
+               AND r.status = 'held' AND r.expires_at > NOW()
+               AND (NOT tt.members_only OR EXISTS (
+                      SELECT 1 FROM public.users u
+                        JOIN public.members m ON m.id = u.member_id
+                       WHERE u.id = r.user_id AND m.academic_year = $1))
+            RETURNING r.id;
+            """,
+            academic_year,
+        )
+
+    return {
+        # Free ones included, so callers that trigger the confirmation email on
+        # "anything confirmed" do so for these too.
+        "confirmed": confirmed + len(freed),
+        "confirmed_free": len(freed),
+        "candidates": len(candidates),
+    }
 
 
 # -------------------------------------------------------------------- product links
@@ -1361,8 +1456,10 @@ async def claim_draft(
     user_id: int,
     hold_hours: int | None = None,
     visitor_hash: str | None = None,
+    academic_year: str | None = None,
 ) -> ReservationResult:
-    """Turn a draft into a real hold once the guest form is submitted.
+    """Turn a draft into a real booking once the guest form is submitted —
+    confirmed outright for a free ticket, a hold for anything to be paid for.
 
     Keyed on the token rather than the row id, so one visitor cannot claim
     another's draft by guessing a number.
@@ -1372,7 +1469,8 @@ async def claim_draft(
         draft = await conn.fetchrow(
             """
             SELECT r.id, r.event_id, r.ticket_type_id, r.quantity, r.expires_at,
-                   r.status, r.visitor_hash, e.hold_hours, e.starts_at, tt.max_per_user
+                   r.status, r.visitor_hash, e.hold_hours, e.starts_at, tt.max_per_user,
+                   tt.requires_purchase, tt.members_only
               FROM public.reservations r
               JOIN public.events e        ON e.id  = r.event_id
               JOIN public.ticket_types tt ON tt.id = r.ticket_type_id
@@ -1410,17 +1508,25 @@ async def claim_draft(
             )
             return ReservationResult(ok=False, reason="over_user_limit")
 
+        # Same rule as `reserve`: a free ticket is a place outright ($8).
+        confirm = await _confirms_outright(conn, draft, user_id, academic_year)
+        expires = BOOKING_EXPIRES.format(
+            confirm="$8", paid="$9", tt="$4", ev="$5", hours="$3", starts="$6::timestamptz"
+        )
         row = await conn.fetchrow(
             f"""
             UPDATE public.reservations
-               SET user_id = $2, status = 'held', draft_token = NULL,
+               SET user_id = $2, draft_token = NULL,
+                   status = CASE WHEN $8::boolean THEN 'confirmed' ELSE 'held' END,
                    visitor_hash = COALESCE(visitor_hash, $7),
-                   expires_at = {HOLD_EXPIRES.format(tt="$4", ev="$5", hours="$3", starts="$6::timestamptz")}
+                   expires_at = {expires},
+                   confirmed_at = CASE WHEN $8::boolean THEN NOW() END
              WHERE id = $1
             RETURNING {RESERVATION_COLUMNS};
             """,
             draft["id"], user_id, hold_hours or draft["hold_hours"],
             draft["ticket_type_id"], draft["event_id"], draft["starts_at"], vh,
+            confirm, draft["requires_purchase"],
         )
     return ReservationResult(ok=True, reservation=Reservation(**dict(row)))
 
@@ -1502,12 +1608,20 @@ async def leave_waitlist(entry_id: int) -> None:
 
 
 @router.post("/waitlist/promote")
-async def promote_waitlist() -> dict:
+async def promote_waitlist(academic_year: str | None = None) -> dict:
     """Offer freed seats to the front of each queue.
 
     Called after anything that can free capacity — a cancellation, the expiry
     sweep, the nightly reconcile. Oldest waiter first, stopping as soon as the
     event is full again.
+
+    On a free ticket the "offer" is simply the place: confirmed and claimed at
+    once (see `_confirms_outright`), and the caller sends the ordinary
+    confirmation email rather than a "buy it by Thursday" offer. Before, a free
+    offer was a hold that nothing could ever confirm, so it lapsed after the
+    event's hold time and the place went to the next person in the queue.
+    `academic_year` lets a free members-only ticket check membership; without
+    it such an offer waits, held, until the event.
     """
     pool = await get_pool()
     offered: list[dict] = []
@@ -1532,7 +1646,8 @@ async def promote_waitlist() -> dict:
             event_id = record["event_id"]
             async with conn.transaction():
                 event = await conn.fetchrow(
-                    "SELECT id, capacity, hold_hours FROM public.events WHERE id=$1 FOR UPDATE;",
+                    "SELECT id, capacity, hold_hours, starts_at FROM public.events "
+                    "WHERE id=$1 FOR UPDATE;",
                     event_id,
                 )
                 if event is None:
@@ -1557,7 +1672,7 @@ async def promote_waitlist() -> dict:
                     # be too.
                     ticket = await conn.fetchrow(
                         f"""
-                        SELECT tt.id
+                        SELECT tt.id, tt.requires_purchase, tt.members_only
                           FROM public.ticket_types tt
                           LEFT JOIN (
                                 SELECT ticket_type_id, SUM(quantity) AS taken
@@ -1585,25 +1700,40 @@ async def promote_waitlist() -> dict:
                         if taken + waiter["quantity"] > event["capacity"]:
                             break
 
+                    confirm = await _confirms_outright(
+                        conn, ticket, waiter["user_id"], academic_year
+                    )
                     reservation = await conn.fetchrow(
                         f"""
                         INSERT INTO public.reservations
                             (event_id, ticket_type_id, user_id, quantity, status,
-                             expires_at, note)
-                        VALUES ($1,$2,$3,$4,'held',
-                                NOW() + make_interval(hours => $5), 'from waitlist')
+                             expires_at, confirmed_at, note)
+                        VALUES ($1,$2,$3,$4,
+                                CASE WHEN $6::boolean THEN 'confirmed' ELSE 'held' END,
+                                CASE WHEN $6::boolean THEN NOW()
+                                     WHEN NOT $7::boolean
+                                         THEN GREATEST($8::timestamptz,
+                                                       NOW() + make_interval(hours => $5))
+                                     ELSE NOW() + make_interval(hours => $5) END,
+                                CASE WHEN $6::boolean THEN NOW() END,
+                                'from waitlist')
                         RETURNING {RESERVATION_COLUMNS};
                         """,
                         event_id, ticket["id"], waiter["user_id"], waiter["quantity"],
-                        event["hold_hours"],
+                        event["hold_hours"], confirm, ticket["requires_purchase"],
+                        event["starts_at"],
                     )
+                    # A confirmed place is claimed the moment it is offered, so
+                    # the release sweep above never hands it to somebody else.
                     await conn.execute(
                         """
                         UPDATE public.waitlist_entries
-                           SET offered_at = NOW(), offer_expires_at = $2, reservation_id = $3
+                           SET offered_at = NOW(), reservation_id = $3,
+                               offer_expires_at = CASE WHEN $4 THEN NULL ELSE $2 END,
+                               claimed_at = CASE WHEN $4 THEN NOW() END
                          WHERE id = $1;
                         """,
-                        waiter["id"], reservation["expires_at"], reservation["id"],
+                        waiter["id"], reservation["expires_at"], reservation["id"], confirm,
                     )
                     offered.append({
                         "waitlist_id": waiter["id"],
@@ -1611,6 +1741,7 @@ async def promote_waitlist() -> dict:
                         "event_id": event_id,
                         "reservation_id": reservation["id"],
                         "expires_at": reservation["expires_at"].isoformat(),
+                        "confirmed": confirm,
                     })
     return {"offered": offered, "count": len(offered)}
 

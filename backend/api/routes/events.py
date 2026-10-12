@@ -332,13 +332,18 @@ async def reserve(
     draft_token: str | None = Body(default=None, embed=True),
     session: AuthSession | None = Depends(current_session),
 ) -> dict:
-    """Hold tickets.
+    """Book tickets: a hold on a ticket to be bought, a place on a free one.
 
     Open to people who are not signed in: they supply an email and, if they are
     an Imperial student, their shortcode. An unverified account is created to own
     the booking, and the hold is deliberately shorter than a signed-in one —
     long enough to finish paying, not long enough to squat on a seat nobody has
     proved they want.
+
+    A free ticket (no Union purchase) is never a hold: the booking comes back
+    confirmed and its confirmation email, with the QR, goes straight away. The
+    adapter decides (`_confirms_outright`), including the one case that still
+    waits — a members-only ticket for somebody not yet in the members feed.
     """
     event = await database.get(f"/events/by-slug/{slug}")
     if event is None or not event["published"]:
@@ -397,7 +402,7 @@ async def reserve(
     # this converts that draft rather than competing for capacity a second time.
     visitor = _visitor_hash(request)
     if draft_token:
-        params = {"user_id": user_id}
+        params = {"user_id": user_id, "academic_year": academic_year()}
         if visitor:
             params["visitor_hash"] = visitor
         result = await database.post(
@@ -424,6 +429,8 @@ async def reserve(
                 # window; a signed-in user gets the event's own.
                 "hold_hours_override": settings.guest_hold_hours if as_guest else None,
                 "visitor_hash": visitor,
+                # Lets a free members-only ticket check membership this year.
+                "academic_year": academic_year(),
             },
         )
 
@@ -432,6 +439,11 @@ async def reserve(
         raise HTTPException(409, REASONS.get(result["reason"], "Could not reserve."))
 
     reservation = result["reservation"]
+
+    # A free place is confirmed already: send its "you're confirmed" email (the
+    # ticket and QR) now rather than on the sender's next ten-minute pass.
+    if reservation["status"] == "confirmed":
+        confirmations.trigger()
 
     # Guests get a code so they can come back, see the booking and confirm the
     # address is really theirs. Sending it here rather than making them ask
@@ -456,7 +468,7 @@ async def reserve(
             "quantity": reservation["quantity"],
             "expiresAt": reservation["expires_at"],
         },
-        "next": _next_step(ticket, is_member, as_guest),
+        "next": _next_step(ticket, is_member, as_guest, reservation["status"]),
         "membershipWarning": membership_warning,
     }
 
@@ -549,9 +561,24 @@ async def _send_guest_code(address: str) -> None:
         log.exception("Could not send guest sign-in code to %s", address)
 
 
-def _next_step(ticket: dict, is_member: bool, as_guest: bool = False) -> dict:
+def _next_step(
+    ticket: dict, is_member: bool, as_guest: bool = False, status: str = "held"
+) -> dict:
     if not ticket.get("requires_purchase", True):
-        return {"action": "none", "message": "You're on the list. Nothing to pay."}
+        if status == "confirmed":
+            return {
+                "action": "none",
+                "message": "You're in. Nothing to pay — we've emailed you your ticket.",
+            }
+        # The one free booking that waits: members-only, membership not yet in
+        # the feed. The warning beside this says why.
+        return {
+            "action": "none",
+            "message": (
+                "Your place is saved. We'll confirm it and email your ticket as "
+                "soon as the Union's records show your membership."
+            ),
+        }
     if as_guest and is_member:
         return {
             "action": "buy",
@@ -624,7 +651,9 @@ async def cancel(
     # The seat is free now, so offer it now rather than waiting for the nightly
     # pass — a waitlisted person should not lose a day to somebody else's change
     # of mind.
-    promoted = await database.post("/waitlist/promote")
+    promoted = await database.post(
+        "/waitlist/promote", params={"academic_year": academic_year()}
+    )
     await sync_service.notify_waitlist_offers((promoted or {}).get("offered", []))
     return {"ok": True}
 

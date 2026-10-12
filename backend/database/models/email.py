@@ -75,6 +75,12 @@ class Campaign(BaseModel):
     created_at: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    # A draft's hand edits to who it goes to, on top of `audiences` (073).
+    extra_recipients: list[str] = []
+    excluded_recipients: list[str] = []
+    # Who approved or dismissed it, and when; `status` says which.
+    reviewed_by: int | None = None
+    reviewed_at: datetime | None = None
 
 
 class CampaignCreate(BaseModel):
@@ -83,6 +89,39 @@ class CampaignCreate(BaseModel):
     body: str = ""
     audiences: list[str] = []
     created_by: int | None = None
+    # A draft for the approval queue is created `awaiting_approval` with its
+    # kind and event already set, because nothing will send it to set them
+    # later. Everything else is created `draft` and its sender sets both.
+    status: str = "draft"
+    kind: str = "newsletter"
+    event_id: int | None = None
+
+
+class CampaignDraftEdit(BaseModel):
+    """A committee member's edit to a draft waiting for approval.
+
+    Every field optional: a field left out keeps what the draft has.
+    """
+
+    subject: str | None = None
+    heading: str | None = None
+    body: str | None = None
+    audiences: list[str] | None = None
+    extra_recipients: list[str] | None = None
+    excluded_recipients: list[str] | None = None
+
+
+class CampaignDecision(BaseModel):
+    """Approve (`sending`) or dismiss a draft — only from the status expected.
+
+    Conditional, so two committee members pressing Send at the same moment
+    produce one send and one "already dealt with", not two sends.
+    """
+
+    status: str
+    expect: str = "awaiting_approval"
+    reviewed_by: int | None = None
+    recipients: int | None = None
 
 
 class Recipient(BaseModel):

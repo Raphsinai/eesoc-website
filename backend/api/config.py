@@ -123,8 +123,7 @@ class Settings(BaseSettings):
     bulk_batch_size: int = 400
     # Exchange Online throttles a mailbox at roughly 30 messages a minute and
     # 10,000 recipients a day. Batches are spaced by this much, which only
-    # matters for an audience large enough to need more than one — and for the
-    # per-event alerts, which are still one message each.
+    # matters for an audience large enough to need more than one.
     bulk_send_interval_seconds: float = 2.0
     # Refuse a send larger than this without it being split. A society
     # newsletter is in the hundreds; four figures means an audience was picked
@@ -144,6 +143,14 @@ class Settings(BaseSettings):
     # one sent by email. Sent from the transactional mailbox, one message per
     # note, throttled per thread (see services/sponsor_notes.py).
     sponsor_notify_email: str = "eesoc.vp@imperial.ac.uk"
+
+    # Who is told when an automated bulk email is waiting for approval, comma
+    # separated. Nothing addressed to a crowd is sent by a timer — the on-sale
+    # announcement is written, then waits for a committee member — and "tickets
+    # are on sale" is worth little a day late, so whoever approves wants to
+    # hear. Empty means nobody is emailed and the admin dashboard is the only
+    # sign; set it to the publicity officer's address.
+    email_approval_notify: str = ""
 
     # --- automated reminders ---
     # How long before a hold expires the "last chance" email goes out. 24h by

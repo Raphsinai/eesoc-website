@@ -80,6 +80,14 @@ async def dashboard(session: AuthSession = Depends(require_admin)) -> dict:
             union_health = {"ok": False, "error": str(exc)}
 
     counts = stats.get("counts", {})
+    # Drafts in the email approval queue. Counted here so the landing page can
+    # say so: a timer wrote them, and nothing goes out until somebody acts.
+    awaiting = sum(
+        1 for c in await database.get(
+            "/email/campaigns", {"status": "awaiting_approval", "limit": 100}
+        ) or []
+        if c.get("status") == "awaiting_approval"
+    )
     return {
         "academicYear": academic_year(),
         "counts": counts,
@@ -100,11 +108,12 @@ async def dashboard(session: AuthSession = Depends(require_admin)) -> dict:
         "capabilities": sorted(session.capabilities),
         # Surfaced so the committee sees what still needs setting up, rather
         # than finding out when a booking silently fails to confirm.
-        "warnings": _warnings(counts, union_health),
+        "warnings": _warnings(counts, union_health, awaiting),
+        "emailsAwaitingApproval": awaiting,
     }
 
 
-def _warnings(counts: dict, union_health: dict | None) -> list[dict]:
+def _warnings(counts: dict, union_health: dict | None, awaiting: int = 0) -> list[dict]:
     out = []
     if settings.dev_login_enabled:
         out.append({
@@ -132,6 +141,15 @@ def _warnings(counts: dict, union_health: dict | None) -> list[dict]:
                 "window and need a decision — remind, cancel or confirm."
             ),
             "action": "overdue",
+        })
+    if awaiting:
+        out.append({
+            "level": "warn",
+            "message": (
+                f"{awaiting} email(s) waiting for approval. Nothing goes out "
+                "until somebody sends or dismisses them."
+            ),
+            "action": "email",
         })
     return out
 
@@ -2061,7 +2079,9 @@ async def announce_now(_: AuthSession = Depends(require_site)) -> dict:
     """Run the on-sale and last-chance pass immediately.
 
     The loop runs every few minutes anyway; this is for the case where a sale
-    date has just been corrected and nobody wants to watch the clock.
+    date has just been corrected and nobody wants to watch the clock. The
+    on-sale half only writes drafts into the approval queue — it sends nothing
+    to subscribers itself.
     """
     return await announce_service.run_once()
 

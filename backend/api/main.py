@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from clients import database, union
 from config import settings
 from routes.admin import router as admin_router
+from routes.approvals import router as approvals_router
 from routes.auth import router as auth_router
 from routes.checkin import router as checkin_router
 from routes.committee import router as committee_router
@@ -157,6 +158,7 @@ app.include_router(sponsors_router)
 app.include_router(search_router)
 app.include_router(seo_router)
 app.include_router(admin_router)
+app.include_router(approvals_router)
 app.include_router(checkin_router)
 app.include_router(passkeys_router)
 app.include_router(passkey_links_router)

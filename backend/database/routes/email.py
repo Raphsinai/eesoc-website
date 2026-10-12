@@ -16,6 +16,8 @@ from fastapi.exceptions import HTTPException
 from models.email import (
     Campaign,
     CampaignCreate,
+    CampaignDecision,
+    CampaignDraftEdit,
     OptOut,
     Recipient,
     SaleAlert,
@@ -33,17 +35,22 @@ ALERT_COLUMNS = """
 
 CAMPAIGN_COLUMNS = """
     id, subject, heading, body, audiences, status, recipients, sent, failed,
-    error, created_by, created_at, started_at, finished_at, kind, event_id
+    error, created_by, created_at, started_at, finished_at, kind, event_id,
+    extra_recipients, excluded_recipients, reviewed_by, reviewed_at
 """
+
+# The JSONB columns, each a list of strings.
+_CAMPAIGN_LISTS = ("audiences", "extra_recipients", "excluded_recipients")
 
 
 def _campaign(row) -> Campaign:
     """asyncpg hands JSONB back as a string unless a codec is registered, and
-    one codec for one column is not worth the pool-level setup."""
+    one codec for three columns is not worth the pool-level setup."""
     data = dict(row)
-    raw = data.get("audiences")
-    if isinstance(raw, str):
-        data["audiences"] = json.loads(raw or "[]")
+    for column in _CAMPAIGN_LISTS:
+        raw = data.get(column)
+        if isinstance(raw, str):
+            data[column] = json.loads(raw or "[]")
     return Campaign(**data)
 
 
@@ -276,24 +283,29 @@ async def create_campaign(campaign: CampaignCreate) -> Campaign:
         row = await conn.fetchrow(
             f"""
             INSERT INTO public.email_campaigns
-                (subject, heading, body, audiences, created_by)
-            VALUES ($1, $2, $3, $4::jsonb, $5)
+                (subject, heading, body, audiences, created_by, status, kind, event_id)
+            VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
             RETURNING {CAMPAIGN_COLUMNS};
             """,
             campaign.subject, campaign.heading, campaign.body,
             json.dumps(campaign.audiences), campaign.created_by,
+            campaign.status, campaign.kind, campaign.event_id,
         )
     return _campaign(row)
 
 
 @router.get("/campaigns")
-async def list_campaigns(limit: int = 50) -> list[Campaign]:
+async def list_campaigns(limit: int = 50, status: str | None = None) -> list[Campaign]:
+    """Newest first. `status` narrows it — the approval queue asks for
+    `awaiting_approval`, oldest waiting first being the one to read next is
+    the caller's call, not this route's."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"SELECT {CAMPAIGN_COLUMNS} FROM public.email_campaigns"
+            f" WHERE ($2::varchar IS NULL OR status = $2)"
             f" ORDER BY created_at DESC LIMIT $1;",
-            limit,
+            limit, status,
         )
     return [_campaign(r) for r in rows]
 
@@ -356,6 +368,83 @@ async def update_campaign(
         )
     if row is None:
         raise HTTPException(404, "No such campaign")
+    return _campaign(row)
+
+
+async def _missing_or_conflict(conn, campaign_id: int) -> HTTPException:
+    """Why a conditional write on a campaign matched nothing: it is not there,
+    or it has already left the approval queue."""
+    status = await conn.fetchval(
+        "SELECT status FROM public.email_campaigns WHERE id = $1;", campaign_id
+    )
+    if status is None:
+        return HTTPException(404, "No such campaign")
+    return HTTPException(409, f"That email is no longer waiting for approval ({status}).")
+
+
+@router.put("/campaigns/{campaign_id}/draft")
+async def edit_draft(campaign_id: int, edit: CampaignDraftEdit) -> Campaign:
+    """Change a draft that is waiting for approval.
+
+    Only while it waits: the WHERE carries the status, so an edit landing after
+    somebody pressed Send changes nothing about a message already going out —
+    and says so with a 409 rather than appearing to have worked.
+    """
+    def as_json(values: list[str] | None) -> str | None:
+        return None if values is None else json.dumps(values)
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"""
+            UPDATE public.email_campaigns SET
+                subject             = COALESCE($2, subject),
+                heading             = COALESCE($3, heading),
+                body                = COALESCE($4, body),
+                audiences           = COALESCE($5::jsonb, audiences),
+                extra_recipients    = COALESCE($6::jsonb, extra_recipients),
+                excluded_recipients = COALESCE($7::jsonb, excluded_recipients)
+             WHERE id = $1 AND status = 'awaiting_approval'
+            RETURNING {CAMPAIGN_COLUMNS};
+            """,
+            campaign_id, edit.subject, edit.heading, edit.body,
+            as_json(edit.audiences), as_json(edit.extra_recipients),
+            as_json(edit.excluded_recipients),
+        )
+        if row is None:
+            raise await _missing_or_conflict(conn, campaign_id)
+    return _campaign(row)
+
+
+@router.post("/campaigns/{campaign_id}/decide")
+async def decide(campaign_id: int, decision: CampaignDecision) -> Campaign:
+    """Move a draft out of the queue: to `sending` (approved) or `dismissed`.
+
+    One conditional UPDATE is the whole guard against a double approval — the
+    second press finds the status already moved and gets a 409, so it never
+    starts a second sender.
+    """
+    if decision.status not in ("sending", "dismissed"):
+        raise HTTPException(400, "A draft can only be approved or dismissed.")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"""
+            UPDATE public.email_campaigns SET
+                status      = $2::varchar,
+                reviewed_by = $4,
+                reviewed_at = NOW(),
+                recipients  = COALESCE($5, recipients),
+                started_at  = CASE WHEN $2::varchar = 'sending' THEN NOW() ELSE started_at END,
+                finished_at = CASE WHEN $2::varchar = 'dismissed' THEN NOW() ELSE finished_at END
+             WHERE id = $1 AND status = $3::varchar
+            RETURNING {CAMPAIGN_COLUMNS};
+            """,
+            campaign_id, decision.status, decision.expect,
+            decision.reviewed_by, decision.recipients,
+        )
+        if row is None:
+            raise await _missing_or_conflict(conn, campaign_id)
     return _campaign(row)
 
 

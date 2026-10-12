@@ -14,8 +14,10 @@ to four hundred people goes out in seconds, where one each took a quarter of an
 hour under Exchange's rate limit. The cost is the per-person unsubscribe link —
 a shared message can only carry a shared one, so it points at /unsubscribe,
 which emails anybody their own signed link on request. Mail that is about one
-person (a sign-in code, a booking, a per-event alert they set) is still sent to
-them alone.
+person's own doing (a sign-in code, a booking) is still sent to them alone.
+
+Nothing here decides *whether* to send. Bulk mail written by a timer waits for
+a committee member's approval first — see services/campaigns.py.
 """
 
 from __future__ import annotations
@@ -611,10 +613,8 @@ async def send_bulk(
     """Send to everybody in batches, recording progress as it goes.
 
     `build(batch, unsubscribe)` sends one batch of recipient rows and returns
-    the addresses it reached. Normally that is one message with the whole batch
-    BCC'd; a caller with something personal for a few of them (the on-sale
-    email's per-event alerts) can send those separately inside the same call.
-    This function knows nothing about what is being sent — a newsletter and an
+    the addresses it reached: one message with the whole batch BCC'd. This
+    function knows nothing about what is being sent — a newsletter and an
     event announcement share all of this.
 
     `kind` and `event_id` are written onto the campaign row, not kept here: a
@@ -867,67 +867,32 @@ async def _resume_one(row: dict) -> dict:
 
     This is why the row carries `kind` and `event_id`: the closure that built
     the original messages died with the old pod, and the stored columns are the
-    only description of it that survives.
+    only description of it that survives. The builder is the same one the
+    approval queue previews and sends with, so a resumed message is the one
+    that was approved.
     """
+    # Imported here, not at the top: campaigns imports this module, so a
+    # module-level import would be circular at load time. Only ever called from
+    # the startup task, never at import time.
+    from services import campaigns
+
     campaign_id = row["id"]
     kind = (row.get("kind") or "newsletter").strip()
 
-    if kind == "newsletter":
-        # The same construction as routes/admin.py's send_newsletter, from the
-        # stored row instead of the request body.
-        subject = (row.get("subject") or "").strip()
-        heading = (row.get("heading") or subject).strip()
-        html, text = render_body(row.get("body") or "")
-
-        async def build(batch: list[dict], unsubscribe: str) -> list[str]:
-            return await mailer.send_campaign(
-                [r["email"] for r in batch], subject, heading, text, html, unsubscribe
-            )
-
-        return await send_bulk(campaign_id, [], build, kind="newsletter")
-
-    if kind in ("event_announcement", "on_sale"):
-        # Imported here, not at the top: announce imports this module, so a
-        # module-level import would be circular at load time. Both builders
-        # are only ever called from inside a running request or the startup
-        # task, never at import time.
-        from services import announce
-
-        event = await database.get(f"/events/{row.get('event_id')}")
-        if event is None:
-            # The event was deleted between send and resume. A row this old is
-            # an audit record, not a promise, so the campaign is closed failed
-            # with the reason rather than retried forever.
-            await database.patch(
-                f"/email/campaigns/{campaign_id}",
-                params={
-                    "status": "failed",
-                    "error": (
-                        f"Cannot resume: event {row.get('event_id')} no longer "
-                        "exists."
-                    ),
-                },
-            )
-            return {"campaign": campaign_id, "ok": False,
-                    "error": f"event {row.get('event_id')} deleted"}
-
-        if kind == "on_sale":
-            build = await announce.build_sale_announcement(event, row)
-        else:
-            build = await announce.build_event_announcement(event, row)
-        return await send_bulk(
-            campaign_id, [], build, kind=kind, event_id=row.get("event_id")
+    try:
+        build = await campaigns.builder_for(row)
+    except campaigns.Unbuildable as exc:
+        # The event was deleted between send and resume, or the kind is from a
+        # future deploy. A row this old is an audit record, not a promise, and
+        # retrying cannot help — close it with the reason rather than leaving
+        # it resumable forever.
+        log.error("Campaign %s cannot be resumed: %s — marking failed", campaign_id, exc)
+        await database.patch(
+            f"/email/campaigns/{campaign_id}",
+            params={"status": "failed", "error": f"Cannot resume: {exc}."},
         )
+        return {"campaign": campaign_id, "ok": False, "error": str(exc)}
 
-    # A kind from a future deploy, or a typo in the column. Nothing can be
-    # rebuilt, and retrying cannot help — close it with the reason rather than
-    # leaving it resumable forever.
-    log.error("Campaign %s has unknown kind %r — marking failed", campaign_id, kind)
-    await database.patch(
-        f"/email/campaigns/{campaign_id}",
-        params={
-            "status": "failed",
-            "error": f"Cannot resume: unknown campaign kind {kind!r}.",
-        },
+    return await send_bulk(
+        campaign_id, [], build, kind=kind, event_id=row.get("event_id")
     )
-    return {"campaign": campaign_id, "ok": False, "error": f"unknown kind {kind!r}"}

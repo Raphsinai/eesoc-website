@@ -61,6 +61,27 @@ BEGIN
     IF to_regclass('public.email_test_recipients') IS NOT NULL THEN
         TRUNCATE TABLE public.email_test_recipients;
     END IF;
+    -- Who each bulk send reached, one address per row (migration 036). The
+    -- campaign rows keep their counts, which is all the history screen reads.
+    IF to_regclass('public.campaign_recipients') IS NOT NULL THEN
+        TRUNCATE TABLE public.campaign_recipients;
+    END IF;
+END $$;
+
+-- Addresses added to or taken off a draft by hand (migration 073). JSONB, so
+-- verify.sql's text-column scan cannot see them — emptied by name instead. A
+-- draft copied to staging keeps its ticked audiences, which are keys, not
+-- people.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name   = 'email_campaigns'
+                  AND column_name  = 'extra_recipients') THEN
+        UPDATE public.email_campaigns
+           SET extra_recipients = '[]'::jsonb, excluded_recipients = '[]'::jsonb
+         WHERE extra_recipients <> '[]'::jsonb OR excluded_recipients <> '[]'::jsonb;
+    END IF;
 END $$;
 
 -- ---------------------------------------------------------------------------

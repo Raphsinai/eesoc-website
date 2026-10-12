@@ -1104,8 +1104,7 @@ async def send_last_chance(
 # ------------------------------------------------------------ announcements
 
 
-async def send_tickets_on_sale(
-    to: str | list[str],
+def tickets_on_sale_message(
     event_title: str,
     when: str,
     venue: str,
@@ -1114,16 +1113,28 @@ async def send_tickets_on_sale(
     tickets: list[tuple[str, str]] | None = None,
     purchase_url: str | None = None,
     doors_close: str | None = None,
-) -> list[str]:
-    """Tickets have just opened for an event somebody asked to hear about.
+    subject: str | None = None,
+    heading: str | None = None,
+    body_text: str = "",
+    body_html: str = "",
+) -> tuple[str, str, str]:
+    """(subject, text, html) for the on-sale announcement, without sending it.
 
-    Goes from the publicity mailbox and carries an unsubscribe, because it is
-    the one email in the booking flow the recipient did not trigger themselves.
+    Separate from the send so the approval queue can show the committee the
+    whole message — opening, details, button, footer — from the same code that
+    will deliver it. `subject`, `heading` and the opening (`body_*`, already
+    rendered from the committee's markdown) are what a draft lets them edit;
+    left blank, each falls back to the standard wording.
     """
     title = escape(event_title)
+    subject = (subject or "").strip() or f"Tickets for {event_title} are on sale"
+    heading = (heading or "").strip() or subject
+    opening_text = body_text.strip() or f"Tickets for {event_title} are on sale now."
+    opening_html = body_html or _p(f"Tickets for <strong>{title}</strong> are on sale now.")
+
     ticket_lines = "\n".join(f"  {name} — {price}" for name, price in (tickets or []))
     body = (
-        f"Tickets for {event_title} are on sale now.\n\n"
+        f"{opening_text}\n\n"
         f"When:   {when}\n"
         + (f"Where:  {venue}\n" if venue else "")
         + (f"Doors close: {doors_close}\n" if doors_close else "")
@@ -1143,26 +1154,65 @@ async def send_tickets_on_sale(
         rows.append((escape(name), escape(price)))
 
     html = _shell(
-        f"Tickets for {title} are on sale",
+        escape(heading),
         f"{escape(when)}{' · ' + escape(venue) if venue else ''}",
-        _p(f"Tickets for <strong>{title}</strong> are on sale now.")
+        opening_html
         + _detail_rows(rows)
         + _button("Reserve your place", event_url)
         + _note("You asked us to tell you when this went on sale.")
-        + _footer_link("Stop these alerts", unsubscribe_url),
+        # BCC'd to everyone, so the link is the shared page that asks who you
+        # are — see `_bulk_headers` — and the label says what it does.
+        + _footer_link("Unsubscribe from EESoc email", unsubscribe_url),
     )
-    return await send_many(
-        _as_list(to),
-        f"Tickets for {event_title} are on sale",
-        body,
-        html,
-        profile="publicity",
-        headers=_bulk_headers(unsubscribe_url),
+    return subject, body, html
+
+
+async def send_tickets_on_sale(
+    to: str | list[str],
+    event_title: str,
+    when: str,
+    venue: str,
+    event_url: str,
+    unsubscribe_url: str,
+    tickets: list[tuple[str, str]] | None = None,
+    purchase_url: str | None = None,
+    doors_close: str | None = None,
+    subject: str | None = None,
+    heading: str | None = None,
+    body_text: str = "",
+    body_html: str = "",
+) -> list[str]:
+    """Tickets have just opened for an event somebody asked to hear about.
+
+    Goes from the publicity mailbox and carries an unsubscribe, because it is
+    the one email in the booking flow the recipient did not trigger themselves.
+    """
+    subject, body, html = tickets_on_sale_message(
+        event_title, when, venue, event_url, unsubscribe_url,
+        tickets=tickets, purchase_url=purchase_url, doors_close=doors_close,
+        subject=subject, heading=heading, body_text=body_text, body_html=body_html,
     )
+    return await send_bulk_message(_as_list(to), subject, body, html, unsubscribe_url)
 
 
 def _as_list(to: str | list[str]) -> list[str]:
     return [to] if isinstance(to, str) else list(to)
+
+
+async def send_bulk_message(
+    to: list[str], subject: str, text: str, html: str, unsubscribe_url: str
+) -> list[str]:
+    """One already-rendered bulk message to everybody in `to`, BCC'd.
+
+    The one way anything addressed to a crowd leaves: the publicity mailbox,
+    the unsubscribe headers, and `send_many`'s BCC — nobody sees anybody
+    else's address, and it is one message per batch rather than one per person.
+    """
+    return await send_many(
+        to, subject, text, html,
+        profile="publicity",
+        headers=_bulk_headers(unsubscribe_url),
+    )
 
 
 def _bulk_headers(unsubscribe_url: str) -> dict[str, str]:
@@ -1189,6 +1239,25 @@ def _bulk_headers(unsubscribe_url: str) -> dict[str, str]:
     return headers
 
 
+def campaign_message(
+    subject: str,
+    heading: str,
+    body_text: str,
+    body_html: str,
+    unsubscribe_url: str,
+) -> tuple[str, str, str]:
+    """(subject, text, html) for a newsletter, without sending it."""
+    text = f"{body_text.rstrip()}\n\n—\nEESoc · eesoc.com\nUnsubscribe: {unsubscribe_url}\n"
+    html = _shell(
+        escape(heading or subject),
+        # First line of the body, which is what an inbox preview would show
+        # anyway — better to choose it than to let the client pick the wordmark.
+        escape(" ".join(body_text.split())[:140]),
+        body_html + _footer_link("Unsubscribe from EESoc email", unsubscribe_url),
+    )
+    return subject, text, html
+
+
 async def send_campaign(
     to: str | list[str],
     subject: str,
@@ -1203,23 +1272,13 @@ async def send_campaign(
     typography by `services/emailing.py`, not here, so the admin preview and the
     delivered message are produced by the same code and cannot drift.
     """
-    text = f"{body_text.rstrip()}\n\n—\nEESoc · eesoc.com\nUnsubscribe: {unsubscribe_url}\n"
-    html = _shell(
-        escape(heading or subject),
-        # First line of the body, which is what an inbox preview would show
-        # anyway — better to choose it than to let the client pick the wordmark.
-        escape(" ".join(body_text.split())[:140]),
-        body_html + _footer_link("Unsubscribe from EESoc email", unsubscribe_url),
+    subject, text, html = campaign_message(
+        subject, heading, body_text, body_html, unsubscribe_url
     )
-    return await send_many(
-        _as_list(to), subject, text, html,
-        profile="publicity",
-        headers=_bulk_headers(unsubscribe_url),
-    )
+    return await send_bulk_message(_as_list(to), subject, text, html, unsubscribe_url)
 
 
-async def send_event_announcement(
-    to: str | list[str],
+def event_announcement_message(
     subject: str,
     event_title: str,
     when: str,
@@ -1231,15 +1290,8 @@ async def send_event_announcement(
     tickets: list[tuple[str, str]] | None = None,
     heading: str | None = None,
     doors_close: str | None = None,
-) -> list[str]:
-    """A committee-written message *about one event* — an announcement, a
-    reminder, a change of room.
-
-    Deliberately the same machinery as a newsletter (publicity mailbox, bulk
-    headers, unsubscribe) with the event's own details rendered underneath the
-    committee's words. Writing it as free text alone would mean every reminder
-    re-typed the date and venue, and sooner or later one of them would be wrong.
-    """
+) -> tuple[str, str, str]:
+    """(subject, text, html) for a message about one event, without sending it."""
     title = escape(event_title)
     rows = [("When", escape(when))]
     if venue:
@@ -1278,8 +1330,67 @@ async def send_event_announcement(
         + _button("Full details and booking", event_url)
         + _footer_link("Unsubscribe from EESoc email", unsubscribe_url),
     )
-    return await send_many(
-        _as_list(to), subject, "\n".join(text_parts), html,
-        profile="publicity",
-        headers=_bulk_headers(unsubscribe_url),
+    return subject, "\n".join(text_parts), html
+
+
+async def send_event_announcement(
+    to: str | list[str],
+    subject: str,
+    event_title: str,
+    when: str,
+    venue: str,
+    event_url: str,
+    unsubscribe_url: str,
+    body_text: str = "",
+    body_html: str = "",
+    tickets: list[tuple[str, str]] | None = None,
+    heading: str | None = None,
+    doors_close: str | None = None,
+) -> list[str]:
+    """A committee-written message *about one event* — an announcement, a
+    reminder, a change of room.
+
+    Deliberately the same machinery as a newsletter (publicity mailbox, bulk
+    headers, unsubscribe) with the event's own details rendered underneath the
+    committee's words. Writing it as free text alone would mean every reminder
+    re-typed the date and venue, and sooner or later one of them would be wrong.
+    """
+    subject, text, html = event_announcement_message(
+        subject, event_title, when, venue, event_url, unsubscribe_url,
+        body_text=body_text, body_html=body_html, tickets=tickets,
+        heading=heading, doors_close=doors_close,
     )
+    return await send_bulk_message(_as_list(to), subject, text, html, unsubscribe_url)
+
+
+async def send_approval_needed(
+    to: list[str], subject: str, what: str, recipients: int, url: str
+) -> list[str]:
+    """An automated bulk email is waiting for the committee to approve it.
+
+    To the committee, from the transactional mailbox like a sponsor note: it is
+    addressed to the people who have to act, not to the audience. Says what is
+    waiting and for how many, because "an email needs approving" with no
+    subject is the kind of notice that waits until tomorrow.
+    """
+    body = (
+        "An email is waiting for a committee member to approve it. Nothing goes "
+        "out until somebody does.\n\n"
+        f"What:      {what}\n"
+        f"Subject:   {subject}\n"
+        f"Addressed: {recipients} recipient(s)\n\n"
+        f"Review, edit, send or dismiss it: {url}\n"
+    )
+    html = _shell(
+        "An email is waiting for approval",
+        escape(subject),
+        _p("An email is waiting for a committee member to approve it. Nothing "
+           "goes out until somebody does.")
+        + _detail_rows([
+            ("What", escape(what)),
+            ("Subject", escape(subject)),
+            ("Addressed", f"{recipients} recipient(s)"),
+        ])
+        + _button("Review it", url),
+    )
+    return await send_many(to, f"Waiting for approval: {subject}", body, html)

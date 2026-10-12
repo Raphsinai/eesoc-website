@@ -169,6 +169,18 @@ onMounted(async () => {
     if (e) announceEvent(e, route.query.audience ? String(route.query.audience) : null)
     router.replace({ query: { tab: route.query.tab || 'events' } })
   }
+  // Landing straight on the Email tab (a bookmark, or the link in the
+  // "waiting for approval" notice). The tab watcher only loads it on a
+  // *change* of tab, so without this the queue would read empty.
+  if (can('site') && tab.value === 'email') {
+    await loadEmail().catch((e) => (error.value = e.message))
+  }
+  const review = Number(route.query.review)
+  if (review && can('site')) {
+    tab.value = 'email'
+    router.replace({ query: { tab: 'email' } })
+    openReview(review)
+  }
 })
 
 const counts = computed(() => dash.value?.counts ?? {})
@@ -536,13 +548,15 @@ watch(tab, (t) => {
 
 // --------------------------------------------------------------- email -----
 async function loadEmail() {
-  const [a, c] = await Promise.all([
+  const [a, c, q] = await Promise.all([
     api.get('/admin/email/audiences'),
     api.get('/admin/email/campaigns'),
+    api.get('/admin/email/queue'),
   ])
   audiences.value = a.audiences
   mailStatus.value = a.mail
   campaigns.value = c
+  setQueue(q.items)
   loadTestList().catch(() => {})
 }
 
@@ -690,7 +704,7 @@ async function runAnnouncePass() {
     const res = await api.post('/admin/email/announce-now')
     const announced = res.announced?.events ?? 0
     const chased = res.chased?.sent ?? 0
-    flash(`${announced} event(s) announced, ${chased} purchase reminder(s) sent.`)
+    flash(`${announced} on-sale email(s) written for approval, ${chased} purchase reminder(s) sent.`)
     await loadEmail()
   } catch (e) {
     error.value = e.message
@@ -701,7 +715,186 @@ async function runAnnouncePass() {
 
 const campaignTone = {
   sent: 'success', sending: 'accent', failed: 'danger', draft: 'neutral',
+  awaiting_approval: 'brand', dismissed: 'neutral',
 }
+
+// ------------------------------------------------------- approval queue ---
+// Bulk email the site wrote on its own — today, "tickets are on sale". None of
+// it has gone anywhere: it waits here until somebody reads it, changes what
+// needs changing, and sends or dismisses it.
+const queue = ref([])
+// The draft open in the review dialog, exactly as the server last described it
+// (recipients resolved, preview rendered). `mailDraft` is the editable copy.
+const reviewing = ref(null)
+const mailDraft = reactive({ subject: '', heading: '', body: '', audiences: [], extra: [], excluded: [] })
+const addAddresses = ref('')
+const recipientFilter = ref('')
+const reviewError = ref('')
+const reviewNotice = ref('')
+
+function setQueue(items) {
+  queue.value = items
+  // The tab label's count comes from the dashboard until the queue itself has
+  // been loaded; keep the two saying the same thing.
+  if (dash.value) dash.value.emailsAwaitingApproval = items.length
+}
+
+function fillDraft(d) {
+  reviewing.value = d
+  mailDraft.subject = d.subject
+  mailDraft.heading = d.heading
+  mailDraft.body = d.body
+  mailDraft.audiences = [...d.audiences]
+  mailDraft.extra = [...d.extra]
+  mailDraft.excluded = [...d.excluded]
+}
+
+async function openReview(id) {
+  busy.value = true
+  error.value = ''
+  reviewError.value = ''
+  reviewNotice.value = ''
+  recipientFilter.value = ''
+  addAddresses.value = ''
+  try {
+    // The picker's labels and counts come from the audiences list.
+    if (!audiences.value.length) await loadEmail()
+    fillDraft(await api.get(`/admin/email/queue/${id}`))
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
+}
+
+function closeReview() {
+  reviewing.value = null
+}
+
+/** Unsaved changes to the words. Recipient changes save as they are made. */
+const draftDirty = computed(() =>
+  Boolean(reviewing.value) &&
+  (mailDraft.subject !== reviewing.value.subject ||
+    mailDraft.heading !== reviewing.value.heading ||
+    mailDraft.body !== reviewing.value.body),
+)
+
+/** Save the draft as it stands on screen. The answer is the whole review
+ *  screen worked out afresh, so the list and preview never describe anything
+ *  other than what Send would do. */
+async function saveDraft() {
+  fillDraft(
+    await api.put(`/admin/email/queue/${reviewing.value.id}`, {
+      subject: mailDraft.subject,
+      heading: mailDraft.heading,
+      body: mailDraft.body,
+      audiences: mailDraft.audiences,
+      extra: mailDraft.extra,
+      excluded: mailDraft.excluded,
+    }),
+  )
+}
+
+async function draftAction(fn) {
+  busy.value = true
+  reviewError.value = ''
+  reviewNotice.value = ''
+  try {
+    await fn()
+  } catch (e) {
+    reviewError.value = e.message
+  } finally {
+    busy.value = false
+  }
+}
+
+function toggleDraftAudience(key) {
+  const at = mailDraft.audiences.indexOf(key)
+  if (at === -1) mailDraft.audiences.push(key)
+  else mailDraft.audiences.splice(at, 1)
+  draftAction(saveDraft)
+}
+
+/** Take one address off. One typed in by hand is simply forgotten; one that
+ *  came from a ticked audience is remembered as taken off, so re-resolving the
+ *  audience at send does not put it back. */
+function removeRecipient(email) {
+  const at = mailDraft.extra.indexOf(email)
+  if (at !== -1) mailDraft.extra.splice(at, 1)
+  else if (!mailDraft.excluded.includes(email)) mailDraft.excluded.push(email)
+  draftAction(saveDraft)
+}
+
+function restoreRecipient(email) {
+  mailDraft.excluded = mailDraft.excluded.filter((e) => e !== email)
+  draftAction(saveDraft)
+}
+
+function addRecipients() {
+  const typed = addAddresses.value
+    .split(/[\s,;]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.includes('@'))
+  if (!typed.length) return
+  for (const email of typed) {
+    mailDraft.excluded = mailDraft.excluded.filter((e) => e !== email)
+    if (!mailDraft.extra.includes(email)) mailDraft.extra.push(email)
+  }
+  addAddresses.value = ''
+  draftAction(saveDraft)
+}
+
+function testDraft() {
+  draftAction(async () => {
+    await saveDraft()
+    const res = await api.post(`/admin/email/queue/${reviewing.value.id}/test`)
+    reviewNotice.value = res.message
+  })
+}
+
+function approveDraft() {
+  draftAction(async () => {
+    await saveDraft()
+    const d = reviewing.value
+    if (!confirm(`Send "${d.subject}" to ${d.count} recipient(s)? This cannot be undone.`)) return
+    const res = await api.post(`/admin/email/queue/${d.id}/send`)
+    flash(res.message)
+    closeReview()
+    await loadEmail()
+  })
+}
+
+function dismissDraft() {
+  if (!confirm('Dismiss this email? Nothing is sent, and it will not come back.')) return
+  draftAction(async () => {
+    const res = await api.post(`/admin/email/queue/${reviewing.value.id}/dismiss`)
+    flash(res.message)
+    closeReview()
+    await loadEmail()
+  })
+}
+
+const draftGroups = computed(() =>
+  reviewing.value?.eventAudiences?.length
+    ? [['This event', reviewing.value.eventAudiences], ...audienceGroups.value]
+    : audienceGroups.value,
+)
+
+/** What each recipient's `source` is called, for the little tag beside it. */
+const sourceLabels = computed(() => {
+  const out = { added: 'added by hand', alerts: 'asked about this event' }
+  for (const a of [...audiences.value, ...(reviewing.value?.eventAudiences ?? [])]) out[a.key] = a.label
+  return out
+})
+
+// A few hundred rows with a button each is fine; a few thousand is not. The
+// filter finds anybody, and the count above the list is always the real one.
+const RECIPIENTS_SHOWN = 200
+const shownRecipients = computed(() => {
+  const list = reviewing.value?.recipientList ?? []
+  const q = recipientFilter.value.trim().toLowerCase()
+  return (q ? list.filter((r) => r.email.includes(q)) : list).slice(0, RECIPIENTS_SHOWN)
+})
 
 // -------------------------------------------------------------- people -----
 const newAdminEmail = ref('')
@@ -1363,7 +1556,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           :variant="tab === id ? 'primary' : 'ghost'"
           size="sm"
           @click="tab = id"
-        >{{ label }}</Button>
+        >{{ label }}<template v-if="id === 'email' && dash?.emailsAwaitingApproval"> ({{ dash.emailsAwaitingApproval }})</template></Button>
       </nav>
 
       <p v-if="notice" style="font:var(--type-small); color:var(--text-muted)">{{ notice }}</p>
@@ -1453,6 +1646,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               <Button v-if="w.action === 'sync'" size="sm" variant="secondary" @click="sync">Sync now</Button>
               <Button v-if="w.action === 'links'" size="sm" variant="secondary" @click="tab = 'links'">Link products</Button>
               <Button v-if="w.action === 'overdue'" size="sm" variant="secondary" @click="tab = 'overdue'">Review them</Button>
+              <Button v-if="w.action === 'email' && can('site')" size="sm" variant="secondary" @click="tab = 'email'">Review them</Button>
             </div>
           </Card>
         </div>
@@ -2156,6 +2350,37 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           </Card>
         </div>
 
+        <!-- The approval queue. Above the composer, because a draft here is
+             something the site has already decided somebody should hear about
+             and is only waiting on a person — "tickets are on sale" loses its
+             point by the hour. -->
+        <Card :variant="queue.length ? 'raised' : 'outline'" :class="{ 'pending-card': queue.length }" style="margin-bottom:var(--space-6)">
+          <h2 style="margin:0 0 var(--space-2); font:var(--type-h4); display:flex; gap:var(--space-3); align-items:center">
+            Waiting for approval
+            <Badge v-if="queue.length" tone="danger">{{ queue.length }}</Badge>
+          </h2>
+          <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
+            Emails the site writes on its own — like “tickets are on sale” — wait
+            here. Nothing in this list has been sent: read it, change the words or
+            who it goes to, then send or dismiss it. Email about somebody's own
+            booking or sign-in still goes straight to them.
+          </p>
+          <div
+            v-for="q in queue"
+            :key="q.id"
+            class="queue-row"
+          >
+            <div style="display:grid; gap:var(--space-1, 4px); min-width:0">
+              <strong style="font:var(--type-small); overflow-wrap:anywhere">{{ q.subject }}</strong>
+              <span style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">
+                {{ q.kindLabel }} · {{ q.recipients }} recipient(s) · written {{ new Date(q.createdAt).toLocaleString() }}
+              </span>
+              <span v-if="q.warning" style="font:var(--type-2xs); color:var(--danger)">{{ q.warning }}</span>
+            </div>
+            <Button size="sm" :disabled="busy" @click="openReview(q.id)">Review</Button>
+          </div>
+        </Card>
+
         <div class="admin-cols admin-cols--split">
           <Card variant="offset">
             <h2 style="margin:0 0 var(--space-2); font:var(--type-h4)">Write a newsletter</h2>
@@ -2257,7 +2482,10 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               >
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:var(--space-3)">
                   <span style="font:var(--type-small)">{{ c.subject }}</span>
-                  <Badge :tone="campaignTone[c.status] || 'neutral'">{{ c.status }}</Badge>
+                  <span style="display:flex; gap:var(--space-2); align-items:center; flex-shrink:0">
+                    <Button v-if="c.status === 'awaiting_approval'" size="sm" variant="ghost" :disabled="busy" @click="openReview(c.id)">Review</Button>
+                    <Badge :tone="campaignTone[c.status] || 'neutral'">{{ c.status.replace('_', ' ') }}</Badge>
+                  </span>
                 </div>
                 <span style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">
                   {{ c.sent }}/{{ c.recipients }} sent<template v-if="c.failed"> · {{ c.failed }} failed</template>
@@ -2640,6 +2868,124 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
         </Button>
       </template>
     </Dialog>
+
+    <!-- Reviewing a draft from the approval queue. Everything on it is worked
+         out by the server from the saved draft — the recipient list by
+         resolving the ticked audiences, the preview by the same builder that
+         sends — so what is approved here is what goes. -->
+    <Dialog
+      :open="Boolean(reviewing)"
+      :title="reviewing ? `Review: ${reviewing.kindLabel}` : ''"
+      width="760px"
+      @close="closeReview"
+    >
+      <div v-if="reviewing" style="display:grid; gap:var(--space-4)">
+        <p v-if="reviewing.warning" class="review-warning">{{ reviewing.warning }}</p>
+        <p v-if="reviewing.event" style="margin:0; font:var(--type-small); color:var(--text-muted)">
+          About <RouterLink :to="`/events/${reviewing.event.slug}`">{{ reviewing.event.title }}</RouterLink>.
+          Written {{ new Date(reviewing.createdAt).toLocaleString() }} — nothing has been sent.
+        </p>
+
+        <Field label="Subject"><Input v-model="mailDraft.subject" /></Field>
+        <Field label="Heading" help="The big line inside the email. Blank uses the subject.">
+          <Input v-model="mailDraft.heading" />
+        </Field>
+        <Field
+          :label="reviewing.event ? 'Opening' : 'Body'"
+          :help="reviewing.event
+            ? 'What comes first. The date, venue, prices and booking link are added underneath from the event when it is sent, so they are always current. **bold**, - bullets, [link](https://…).'
+            : 'Blank line between paragraphs. **bold**, - bullets, ## heading, [link](https://…).'"
+        >
+          <textarea v-model="mailDraft.body" rows="5" class="ees-textarea" />
+        </Field>
+        <div style="display:flex; gap:var(--space-3); align-items:center">
+          <Button size="sm" variant="secondary" :disabled="busy || !draftDirty" @click="draftAction(saveDraft)">
+            Save and update the preview
+          </Button>
+          <span v-if="draftDirty" style="font:var(--type-2xs); color:var(--text-muted)">Unsaved changes.</span>
+        </div>
+
+        <p v-if="reviewing.previewError" style="margin:0; font:var(--type-small); color:var(--danger)">{{ reviewing.previewError }}</p>
+        <div v-if="reviewing.preview" style="display:grid; gap:var(--space-2)">
+          <span style="font:var(--type-label); color:var(--text-muted)">As it will arrive · “{{ reviewing.preview.subject }}”</span>
+          <div class="mail-preview" v-html="reviewing.preview.html" />
+        </div>
+
+        <TraceRule />
+        <span style="font:var(--type-label); color:var(--text-muted)">
+          Who gets it — {{ reviewing.count }} recipient(s), each BCC'd
+        </span>
+        <div v-for="[group, items] in draftGroups" :key="group">
+          <span style="font:var(--type-2xs); color:var(--text-faint)">{{ group }}</span>
+          <label v-for="a in items" :key="a.key" class="aud">
+            <input
+              type="checkbox"
+              :checked="mailDraft.audiences.includes(a.key)"
+              :disabled="busy"
+              @change="toggleDraftAudience(a.key)"
+            />
+            <span>
+              <strong class="aud__label">{{ a.label }}</strong>
+              <span class="aud__desc">{{ a.description }}</span>
+            </span>
+            <span class="aud__count">{{ a.list ? 'list' : (a.count ?? '—') }}</span>
+          </label>
+        </div>
+
+        <form class="test-list__add" @submit.prevent="addRecipients">
+          <Input v-model="addAddresses" placeholder="Add addresses — name@ic.ac.uk, another@ic.ac.uk" aria-label="Add recipients" />
+          <Button type="submit" size="sm" variant="secondary" :disabled="busy || !addAddresses.includes('@')">Add</Button>
+        </form>
+        <p v-if="reviewing.skipped.length" style="margin:0; font:var(--type-2xs); color:var(--text-muted)">
+          Not added, because they have unsubscribed from everything:
+          {{ reviewing.skipped.join(', ') }}
+        </p>
+
+        <div class="recipients">
+          <Input v-if="reviewing.count > 10" v-model="recipientFilter" placeholder="Find an address" aria-label="Find a recipient" />
+          <div v-for="r in shownRecipients" :key="r.email" class="recipients__row">
+            <span style="font-family:var(--font-mono); font-size:var(--text-xs); overflow-wrap:anywhere">{{ r.email }}</span>
+            <span class="recipients__source">
+              {{ r.list ? 'department list' : (sourceLabels[r.source] || r.source) }}
+            </span>
+            <Button size="sm" variant="ghost" :disabled="busy" @click="removeRecipient(r.email)">Remove</Button>
+          </div>
+          <span v-if="!reviewing.count" style="font:var(--type-small); color:var(--text-faint)">
+            Nobody yet — tick an audience above or add an address.
+          </span>
+          <span v-else-if="!recipientFilter.trim() && shownRecipients.length < reviewing.count" style="font:var(--type-2xs); color:var(--text-faint)">
+            Showing {{ shownRecipients.length }} of {{ reviewing.count }} — search to find anybody else.
+          </span>
+        </div>
+
+        <div v-if="mailDraft.excluded.length" style="display:grid; gap:var(--space-2)">
+          <span style="font:var(--type-2xs); color:var(--text-faint)">Taken off by hand</span>
+          <div v-for="email in mailDraft.excluded" :key="email" class="recipients__row">
+            <span style="font-family:var(--font-mono); font-size:var(--text-xs); color:var(--text-muted); text-decoration:line-through">{{ email }}</span>
+            <span />
+            <Button size="sm" variant="ghost" :disabled="busy" @click="restoreRecipient(email)">Put back</Button>
+          </div>
+        </div>
+
+        <p v-if="reviewNotice" style="margin:0; font:var(--type-small); color:var(--text-muted)">{{ reviewNotice }}</p>
+        <p v-if="reviewError" style="margin:0; font:var(--type-small); color:var(--danger)">{{ reviewError }}</p>
+      </div>
+
+      <template #footer>
+        <!-- Wraps on a phone: three buttons do not fit 390px in one row, and
+             the dialog's own footer does not wrap. -->
+        <div class="review-actions">
+          <Button variant="ghost" :disabled="busy" @click="dismissDraft">Dismiss</Button>
+          <span class="review-actions__gap" />
+          <Button variant="secondary" :disabled="busy" title="Send it, as it stands, to the Test list only" @click="testDraft">
+            Send a test
+          </Button>
+          <Button :disabled="busy || !reviewing?.count || !mailDraft.subject.trim()" @click="approveDraft">
+            {{ busy ? 'Working…' : `Send to ${reviewing?.count ?? 0}` }}
+          </Button>
+        </div>
+      </template>
+    </Dialog>
   </main>
 </template>
 
@@ -2789,5 +3135,72 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
   font: var(--type-2xs);
   color: var(--text-body);
   padding-left: var(--space-3);
+}
+
+/* One draft in the approval queue: what it is on the left, Review on the right. */
+.queue-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-faint);
+}
+
+.review-warning {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-left: 4px solid var(--danger);
+  background: var(--surface-sunken, transparent);
+  font: var(--type-small);
+  color: var(--text-strong);
+}
+
+/* The resolved recipient list. Scrolls inside the dialog rather than making
+   the dialog a page long; the count above it is the real total. */
+.recipients {
+  display: grid;
+  gap: var(--space-2);
+  max-height: 320px;
+  overflow: auto;
+  padding: var(--space-3);
+  border: var(--border-width-hairline) solid var(--border-default);
+  border-radius: var(--radius-sm);
+}
+
+.recipients__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.recipients__source {
+  font: var(--type-2xs);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+}
+
+.review-actions__gap {
+  margin-right: auto;
+}
+
+@media (max-width: 560px) {
+  .recipients__row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .recipients__source {
+    display: none;
+  }
 }
 </style>

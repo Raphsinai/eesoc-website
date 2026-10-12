@@ -116,7 +116,8 @@ def test_private_meeting_link_gated_to_booked_attendee(admin_client, member_clie
         )
         assert booked.status_code == 200, booked.text
         assert booked.json()["ok"] is True
-        assert booked.json()["reservation"]["status"] == "held"
+        # A free seat is a place outright (migration 072), not a hold.
+        assert booked.json()["reservation"]["status"] == "confirmed"
 
         # The holder now sees the link the stranger could not.
         as_member = member_client.get(f"/events/{slug}")

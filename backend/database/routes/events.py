@@ -1729,7 +1729,9 @@ async def promote_waitlist(academic_year: str | None = None) -> dict:
                         """
                         UPDATE public.waitlist_entries
                            SET offered_at = NOW(), reservation_id = $3,
-                               offer_expires_at = CASE WHEN $4 THEN NULL ELSE $2 END,
+                               -- Cast: inside a CASE Postgres cannot infer a
+                               -- parameter's type and takes it as text.
+                               offer_expires_at = CASE WHEN $4 THEN NULL ELSE $2::timestamptz END,
                                claimed_at = CASE WHEN $4 THEN NOW() END
                          WHERE id = $1;
                         """,

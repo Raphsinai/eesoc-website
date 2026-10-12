@@ -49,7 +49,8 @@ def _create_event(admin_client, slug, **overrides) -> dict:
 
 def test_reserve_still_returns_held_in_my_reservations(admin_client, member_client):
     # Booking is reservation-style: the member holds a seat and the detail
-    # payload's myReservations shows it as held.
+    # payload's myReservations shows it as held. A ticket to be bought, because
+    # a free one is confirmed outright rather than held (migration 072).
     slug = _unique_slug("reg-reserve")
     created = _create_event(
         admin_client,
@@ -57,10 +58,10 @@ def test_reserve_still_returns_held_in_my_reservations(admin_client, member_clie
         sales_open_at=_past_iso(),
         ticket_types=[
             {
-                "name": "Free seat",
-                "price_pence": 0,
+                "name": "Paid seat",
+                "price_pence": 500,
                 "capacity": 10,
-                "requires_purchase": False,
+                "requires_purchase": True,
             }
         ],
     )

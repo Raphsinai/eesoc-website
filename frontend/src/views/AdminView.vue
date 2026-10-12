@@ -1833,42 +1833,6 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 <Field label="Total capacity" help="Blank = per-type only."><Input v-model.number="draft.capacity" type="number" min="1" /></Field>
                 <Field label="Hold hours" help="Min 24."><Input v-model.number="draft.hold_hours" type="number" min="24" /></Field>
               </div>
-              <!-- An explicit choice, not "leave the date blank". Clearing a
-                   datetime-local is fiddly in every browser and near-impossible
-                   in Safari, which is why the date kept coming back as now. -->
-              <fieldset
-                v-if="draft.ticket_types.length"
-                style="margin:0; padding:0; border:0; display:grid; gap:var(--space-2)"
-              >
-                <legend style="padding:0; font:var(--type-label); color:var(--text-muted)">Ticket sales</legend>
-                <label style="font:var(--type-small); color:var(--text-body); display:flex; gap:var(--space-2); align-items:center">
-                  <input v-model="draft.sales_scheduled" type="radio" :value="false" />
-                  Not announced yet — show “On sale soon”
-                </label>
-                <label style="font:var(--type-small); color:var(--text-body); display:flex; gap:var(--space-2); align-items:center">
-                  <input v-model="draft.sales_scheduled" type="radio" :value="true" />
-                  On sale from a set date
-                </label>
-                <Input
-                  v-if="draft.sales_scheduled"
-                  v-model="draft.sales_open_at"
-                  type="datetime-local"
-                />
-                <p
-                  v-if="draft.sales_scheduled && !draft.sales_open_at"
-                  style="margin:0; font:var(--type-2xs); color:var(--danger)"
-                >
-                  Pick a date, or choose “Not announced yet”.
-                </p>
-                <p v-else style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
-                  {{
-                    draft.sales_scheduled
-                      ? 'Bookings open automatically at that time.'
-                      : 'The event is listed, but cannot be booked until you set a date.'
-                  }}
-                </p>
-              </fieldset>
-
               <Field
                 label="External sign-up form (optional)"
                 help="For events that take sign-ups on their own form, e.g. a sponsor's. The event page shows a Sign up button linking here instead of booking."
@@ -2015,6 +1979,46 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               <Button size="sm" variant="ghost" @click="draft.ticket_types.push({ name: '', price_pence: 0, capacity: null, max_per_user: 1, members_only: false, requires_purchase: true, purchase_url: '' })">
                 Add ticket type
               </Button>
+
+              <!-- When booking opens. Right after the ticket types because it
+                   only appears once there is one — above them, it turned up
+                   out of sight, back up the form.
+
+                   An explicit choice, not "leave the date blank". Clearing a
+                   datetime-local is fiddly in every browser and near-impossible
+                   in Safari, which is why the date kept coming back as now. -->
+              <fieldset
+                v-if="draft.ticket_types.length"
+                style="margin:0; padding:0; border:0; display:grid; gap:var(--space-2)"
+              >
+                <legend style="padding:0; font:var(--type-label); color:var(--text-muted)">Ticket sales</legend>
+                <label style="font:var(--type-small); color:var(--text-body); display:flex; gap:var(--space-2); align-items:center">
+                  <input v-model="draft.sales_scheduled" type="radio" :value="false" />
+                  Not announced yet — show “On sale soon”
+                </label>
+                <label style="font:var(--type-small); color:var(--text-body); display:flex; gap:var(--space-2); align-items:center">
+                  <input v-model="draft.sales_scheduled" type="radio" :value="true" />
+                  On sale from a set date
+                </label>
+                <Input
+                  v-if="draft.sales_scheduled"
+                  v-model="draft.sales_open_at"
+                  type="datetime-local"
+                />
+                <p
+                  v-if="draft.sales_scheduled && !draft.sales_open_at"
+                  style="margin:0; font:var(--type-2xs); color:var(--danger)"
+                >
+                  Pick a date, or choose “Not announced yet”.
+                </p>
+                <p v-else style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
+                  {{
+                    draft.sales_scheduled
+                      ? 'Bookings open automatically at that time. Once published, its “tickets are on sale” email waits in the Email tab for you to approve.'
+                      : 'The event is listed, but cannot be booked until you set a date.'
+                  }}
+                </p>
+              </fieldset>
 
               <label style="font:var(--type-small)"><input v-model="draft.published" type="checkbox" /> Published</label>
               <label style="font:var(--type-small)">

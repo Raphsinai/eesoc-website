@@ -36,7 +36,12 @@ data:
   # year-group lists) is logged instead. Add a tester's address here to let
   # them receive mail; everyone else can read their sign-in code with
   #   kubectl -n eesoc-staging logs deploy/api -c api | grep -A12 'Not sending'
-  MAIL_ALLOWLIST: "ras124@ic.ac.uk,raph@tensorhost.com"
+  #
+  # Imperial addresses only: EESoc is Imperial work. This list is also what
+  # staging's email Test list is refilled from after every snapshot restore
+  # (services/emailing.test_recipients), so an address here receives every
+  # test send — keep personal and business addresses off it.
+  MAIL_ALLOWLIST: "ras124@ic.ac.uk"
 
   # Nothing here is paid for, so the production pause is lifted — locker
   # booking is one of the things worth exercising before a release.

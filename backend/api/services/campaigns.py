@@ -1,17 +1,21 @@
 """A stored campaign row, turned back into mail — and the queue of rows that
-wait for a person to say yes.
+wait for a person to say yes, or for the moment they were approved for.
 
-Both live here because both work from the row alone:
+All of it works from the row alone:
 
   * rebuilding the message: the preview a committee member reads, the `build`
     closure `emailing.send_bulk` runs, and that same closure again when a pod
     replaced mid-send resumes it. One builder for all three, so what is
     approved is what is sent, and what is resumed is what was approved;
   * the approval queue: an automated bulk email is written as a campaign
-    `awaiting_approval` (migration 073), and nothing but a committee member's
-    Send moves it on.
+    `awaiting_approval` (migration 073). A committee member sends it now, or
+    approves it for its time (`scheduled`, 074) — nothing else moves it on;
+  * the on-sale email's draft, kept in step with its event: written the moment
+    an event has a sale time, rewritten when the event changes (unless a
+    person has edited it), and timed to go when sales open;
+  * the scheduler, which sends what was approved for later at its time.
 
-The rule the queue implements: nothing addressed to a crowd is sent by a timer.
+The rule: nothing addressed to a crowd goes without a person's approval.
 Mail about one person's own booking or sign-in — the hold, the confirmation,
 the waitlist offer, the last-chance reminder, the sign-in code — is the answer
 to something they did, is not here, and still goes at once.
@@ -24,12 +28,21 @@ import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
 
+from fastapi import HTTPException
+
 from clients import database
 from config import settings
 from services import emailing, purchase
+from utils import clock
 from utils import email as mailer
 from utils.auth import normalise_email
-from utils.present import format_date, format_doors_close, format_price, format_time_range
+from utils.present import (
+    format_date,
+    format_doors_close,
+    format_price,
+    format_time_range,
+    london,
+)
 
 log = logging.getLogger("api.campaigns")
 
@@ -48,19 +61,43 @@ class Unbuildable(Exception):
     """The row cannot be turned back into a message. The text says why."""
 
 
-def _parse(value) -> datetime | None:
+class NotSendable(Exception):
+    """A send was refused before anything went. `status` is the HTTP answer."""
+
+    def __init__(self, message: str, status: int = 400):
+        super().__init__(message)
+        self.status = status
+
+
+def parse_time(value) -> datetime | None:
+    """A stored time, timezone-aware. The adapter's JSON carries offsets; a
+    naive value is UTC, which is what the database stores."""
     if not value:
         return None
     if isinstance(value, datetime):
-        return value
-    try:
-        return datetime.fromisoformat(str(value))
-    except ValueError:
-        return None
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def when_text(value) -> str:
+    """A send time as the committee reads it: London, to the minute."""
+    at = parse_time(value)
+    if at is None:
+        return "as soon as it is approved"
+    return f"{format_date(at)} at {london(at).strftime('%H:%M')}"
 
 
 def event_when(event: dict) -> str:
-    starts, ends = _parse(event.get("starts_at")), _parse(event.get("ends_at"))
+    starts, ends = parse_time(event.get("starts_at")), parse_time(event.get("ends_at"))
     if starts is None:
         return "TBC"
     return f"{format_date(starts)}, {format_time_range(starts, ends)}"
@@ -243,12 +280,14 @@ async def queue(
     kind: str,
     heading: str | None = None,
     event_id: int | None = None,
+    send_at: str | None = None,
 ) -> dict:
     """Write an automated bulk email as a draft waiting for approval.
 
-    This is the only thing a timer may do with mail addressed to a crowd. The
-    recipient count is worked out now so the queue can show it, and is worked
-    out again at Send — it is a preview, not a promise.
+    The only way the site itself starts mail to a crowd. `send_at` is when it
+    is meant to go — a committee member can approve it for then, or send it
+    sooner. The recipient count is worked out now so the queue can show it,
+    and again at the send — it is a preview, not a promise.
     """
     campaign = await database.post(
         "/email/campaigns",
@@ -260,6 +299,7 @@ async def queue(
             "status": "awaiting_approval",
             "kind": kind,
             "event_id": event_id,
+            "send_at": send_at,
         },
     )
     try:
@@ -309,13 +349,339 @@ def warning(row: dict, event: dict | None) -> str | None:
         return "The event has been deleted, so this can't be sent. Dismiss it."
     if not event.get("published"):
         return "The event is not published any more."
-    starts = _parse(event.get("starts_at"))
-    if starts is not None:
-        if starts.tzinfo is None:
-            starts = starts.replace(tzinfo=timezone.utc)
-        if starts <= datetime.now(timezone.utc):
-            return "The event has already started."
+    starts = parse_time(event.get("starts_at"))
+    if starts is not None and starts <= utcnow():
+        return "The event has already started."
+    if row.get("kind") == "on_sale" and not event.get("sales_open_at"):
+        return "The event has no sale time any more."
+    send_at = parse_time(row.get("send_at"))
+    if row.get("status") == "awaiting_approval" and send_at and send_at <= utcnow():
+        return (
+            f"Sales opened {when_text(send_at)} and this hasn't gone yet. "
+            "Send it now, or dismiss it."
+        )
     return None
+
+
+# ------------------------------------------------------------- sending
+
+
+def check_sendable(subject: str, recipients: list) -> None:
+    """The newsletter's guards (routes/admin.py), for a queued email."""
+    if not (subject or "").strip():
+        raise NotSendable("Give the email a subject.")
+    if not recipients:
+        raise NotSendable("Nobody would receive this — tick an audience or add an address.")
+    if len(recipients) > settings.bulk_max_recipients:
+        raise NotSendable(
+            f"{len(recipients)} recipients is more than the {settings.bulk_max_recipients} "
+            "cap. That is almost certainly an audience picked by accident."
+        )
+    if not mailer.configured("publicity"):
+        raise NotSendable(
+            "No mail credentials, so nothing would be sent. Check the publicity "
+            "mailbox settings.",
+            503,
+        )
+
+
+async def start_send(row: dict, *, expect: str, reviewed_by: int | None) -> int:
+    """Send a queued email now: from the queue's Send, or the scheduler at its
+    time. Returns how many it is going to.
+
+    Who it goes to is worked out again here, not taken from the screen or the
+    moment of approval: an unsubscribe that landed while it waited is
+    honoured. Moving the row to `sending` is one conditional write, so a
+    double press — or two pods' schedulers reaching the same email — starts
+    one send; the loser gets the adapter's 409.
+    """
+    recipients, _skipped = await recipients_for(row)
+    check_sendable(row.get("subject") or "", recipients)
+    try:
+        build = await builder_for(row)
+    except Unbuildable as exc:
+        raise NotSendable(f"This email can't be sent: {exc}. Dismiss it.", 409) from exc
+
+    decided = await database.post(
+        f"/email/campaigns/{row['id']}/decide",
+        {"status": "sending", "expect": expect, "reviewed_by": reviewed_by,
+         "recipients": len(recipients)},
+    )
+    if decided is None:
+        raise NotSendable("No such email.", 404)
+    # Seeded before returning rather than inside the background send, so a
+    # pod lost in the next second leaves a campaign the startup resume can
+    # finish, not one marked "sending" with nobody to send to.
+    await database.post(
+        "/campaign-recipients",
+        {"campaign_id": row["id"], "emails": [r["email"] for r in recipients]},
+    )
+    dispatch(
+        emailing.send_bulk(
+            row["id"], recipients, build,
+            kind=row.get("kind") or "newsletter", event_id=row.get("event_id"),
+        )
+    )
+    return len(recipients)
+
+
+async def hold(row: dict, note: str) -> None:
+    """Take a scheduled email back off the schedule, saying why.
+
+    It goes back to waiting for approval rather than being dismissed: the
+    words and recipients may be exactly right, and only the moment wrong. A
+    person decides again; nothing is sent in the meantime.
+    """
+    try:
+        await database.post(
+            f"/email/campaigns/{row['id']}/decide",
+            {"status": "awaiting_approval", "expect": "scheduled", "note": note},
+        )
+        log.warning("Held scheduled email %s: %s", row["id"], note)
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
+        # Already moved on — sent, dismissed, or held by another pod.
+
+
+# ------------------------------------------------- the on-sale email's draft
+#
+# Written when an event has a sale time, not when the sale opens: a draft that
+# appears only at the moment it is needed is a draft that goes out late. The
+# event is the source; the draft follows it until a person edits the draft.
+
+
+def wants_on_sale(event: dict | None) -> bool:
+    """Whether an event should have an on-sale email waiting: published, with
+    a sale time, and not already under way."""
+    if not event or not event.get("published") or not event.get("sales_open_at"):
+        return False
+    starts = parse_time(event.get("starts_at"))
+    return starts is None or starts > utcnow()
+
+
+def on_sale_content(event: dict) -> dict:
+    """The words and audiences an untouched on-sale draft has.
+
+    The date, venue, prices and booking link are not here: they are rendered
+    from the event at send time, so they are current whenever it goes.
+    """
+    subject = f"Tickets for {event['title']} are on sale"
+    audiences = [f"alerts:{event['id']}", "topic:tickets_on_sale"]
+    if event.get("category"):
+        audiences.append(f"topic:{emailing.category_topic(event['category'])}")
+    return {
+        "subject": subject,
+        "heading": subject,
+        "body": f"Tickets for **{event['title']}** are on sale now.",
+        "audiences": audiences,
+    }
+
+
+async def _live_on_sale(event_id: int) -> dict | None:
+    rows = await database.get(
+        "/email/campaigns",
+        {"status": "awaiting_approval,scheduled", "kind": "on_sale",
+         "event_id": event_id, "limit": 5},
+    ) or []
+    live = [r for r in rows if r.get("status") in ("awaiting_approval", "scheduled")]
+    return live[0] if live else None
+
+
+async def sync_on_sale(event_id: int) -> dict | None:
+    """Bring one event's on-sale email into line with the event. Idempotent.
+
+    Called after every save of an event, and for every event at startup.
+
+      * No email yet, and the event wants one → write the draft, timed for
+        the sale. Once per event: an event whose email was sent or dismissed
+        (or announced before this existed) never gets another by itself.
+      * A draft nobody has edited → rewritten to match (title, category).
+      * The sale time moved → the send time moves with it, approved or not.
+      * The approved words would change, or the event stopped wanting an
+        email (unpublished, sale time cleared, deleted) → taken back off the
+        schedule for a person to look at again. Never sent on a stale yes.
+    """
+    event = await database.get(f"/events/{event_id}")
+    live = await _live_on_sale(event_id)
+    if live is not None:
+        return await _sync_live(live, event)
+
+    if not wants_on_sale(event) or event.get("sales_announced_at"):
+        return None
+    if await database.get(
+        "/email/campaigns", {"kind": "on_sale", "event_id": event_id, "limit": 1}
+    ):
+        return None
+
+    try:
+        campaign = await queue(
+            **on_sale_content(event), kind="on_sale", event_id=event_id,
+            send_at=event["sales_open_at"],
+        )
+    except HTTPException as exc:
+        # The one-live-draft index refusing a twin: another save of the same
+        # event got there first, and its draft is the one.
+        log.info("On-sale draft for event %s not written: %s", event_id, exc.detail)
+        return None
+    # Marked so nothing else announces this event — including the previous
+    # image's on-sale timer, were the deploy rolled back.
+    await database.post(f"/events/{event_id}/announced")
+    wake()
+    return campaign
+
+
+async def _sync_live(live: dict, event: dict | None) -> dict:
+    if not wants_on_sale(event):
+        if live["status"] == "scheduled":
+            await hold(live, (
+                "Taken off the schedule: the event is unpublished, deleted, under "
+                "way, or has no sale time any more."
+            ))
+            wake()
+        return live
+
+    changes: dict = {}
+    sale = parse_time(event["sales_open_at"])
+    if parse_time(live.get("send_at")) != sale:
+        changes["send_at"] = sale.isoformat()
+
+    words_changed = False
+    if not live.get("edited_at"):
+        for key, value in on_sale_content(event).items():
+            if live.get(key) != value:
+                changes[key] = value
+                words_changed = True
+
+    if not changes:
+        return live
+    if words_changed and live["status"] == "scheduled":
+        # What was approved is about to change; the approval does not carry
+        # over to words nobody has read.
+        await hold(live, "The event changed after this was approved, so it needs approving again.")
+
+    updated = await database.put(
+        f"/email/campaigns/{live['id']}/draft", {**changes, "by_hand": False}
+    ) or live
+    if "audiences" in changes:
+        recipients, _ = await recipients_for(updated)
+        updated = await database.patch(
+            f"/email/campaigns/{live['id']}", params={"recipients": len(recipients)}
+        ) or updated
+    wake()
+    return updated
+
+
+async def reconcile_on_sale() -> int:
+    """Run `sync_on_sale` for every event that might need it.
+
+    At startup, so events saved before this code existed — or while it was
+    down — get their drafts, and drafts from before 074 get their send times.
+    """
+    events = await database.get("/events", {"published_only": False, "limit": 1000}) or []
+    live = await database.get(
+        "/email/campaigns",
+        {"status": "awaiting_approval,scheduled", "kind": "on_sale", "limit": 500},
+    ) or []
+    ids = {e["id"] for e in events if wants_on_sale(e) and not e.get("sales_announced_at")}
+    ids |= {d["event_id"] for d in live if d.get("event_id") is not None}
+    for event_id in sorted(ids):
+        try:
+            await sync_on_sale(event_id)
+        except Exception:  # noqa: BLE001 — one bad event must not stop the rest
+            log.exception("Could not sync the on-sale email for event %s", event_id)
+    return len(ids)
+
+
+# ---------------------------------------------------------------- scheduler
+#
+# Sleeps until the next approved email is due, and sends it then — at that
+# moment, not on a polling interval. Woken early whenever a schedule changes in
+# this process, so a sale moved forward is not missed.
+#
+# It also looks once an hour, on the hour, whatever it is waiting for. That is
+# a safety net for changes this process did not see — another pod's, mid-
+# rollout — not the way anything is found on time; recurring jobs here run
+# hourly on the hour and never more often (utils/clock.py).
+
+_wake = asyncio.Event()
+
+
+def wake() -> None:
+    """Something about the schedule changed: look again now."""
+    _wake.set()
+
+
+async def fire_due() -> datetime | None:
+    """Send everything that is due. Returns when the next one is."""
+    rows = await database.get("/email/campaigns", {"status": "scheduled", "limit": 200}) or []
+    upcoming: datetime | None = None
+    for row in rows:
+        if row.get("status") != "scheduled":
+            continue
+        at = parse_time(row.get("send_at"))
+        if at is not None and at > utcnow():
+            upcoming = at if upcoming is None or at < upcoming else upcoming
+            continue
+        await _fire(row)
+    return upcoming
+
+
+async def _fire(row: dict) -> None:
+    if row.get("kind") in EVENT_KINDS:
+        event = await database.get(f"/events/{row['event_id']}")
+        if event is None or not event.get("published"):
+            await hold(row, (
+                "Held at its send time: the event was deleted or unpublished, so "
+                "this did not go out."
+            ))
+            return
+    try:
+        count = await start_send(row, expect="scheduled", reviewed_by=row.get("reviewed_by"))
+    except NotSendable as exc:
+        if exc.status == 503:
+            # No mailbox — the annual password reset. Left scheduled, so it
+            # goes as soon as mail works rather than being lost.
+            log.warning("Scheduled email %s is due but mail is down: %s", row["id"], exc)
+            return
+        await hold(row, f"Held at its send time: {exc}")
+        return
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            return  # another pod's scheduler is already sending it
+        raise
+    log.info("Scheduled email %s is going to %d recipient(s)", row["id"], count)
+
+
+async def scheduler() -> None:
+    """Background loop. Cancelled on shutdown by the lifespan handler."""
+    reconciled = False
+    failures = 0
+    while True:
+        _wake.clear()
+        delay = clock.seconds_until_next_hour()
+        try:
+            if not reconciled:
+                count = await reconcile_on_sale()
+                reconciled = True
+                log.info("On-sale drafts checked for %d event(s)", count)
+            upcoming = await fire_due()
+            failures = 0
+            if upcoming is not None:
+                delay = min(delay, max(0.5, (upcoming - utcnow()).total_seconds()))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — retried below
+            # Usually the adapter not being up yet at startup, or a blip. An
+            # email due now must not wait an hour for that, so the retry backs
+            # off from 30 seconds — but never past the hour it would look anyway.
+            failures += 1
+            log.exception("Scheduled-email pass failed (attempt %d)", failures)
+            delay = min(delay, 30 * 2 ** min(failures - 1, 6))
+        try:
+            await asyncio.wait_for(_wake.wait(), timeout=delay)
+        except asyncio.TimeoutError:
+            pass
 
 
 # asyncio keeps only a weak reference to a running task; holding it here until

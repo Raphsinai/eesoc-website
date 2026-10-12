@@ -19,6 +19,7 @@ from models.auth import AuthSession
 from config import settings
 from services import agreement as agreement_service
 from services import announce as announce_service
+from services import campaigns as campaigns_service
 from services import confirmations, emailing, purchase, sponsor_notes, storage
 from services.identity import resolve_or_create_user
 from utils.auth import (
@@ -276,9 +277,11 @@ async def create_event(
     # would make an event and immediately lose the ability to fix it.
     if not session.can("events"):
         body["industry"] = True
-    return await database.post(
+    created = await database.post(
         "/events", body, params={"created_by": session.user.id}
     )
+    await _sync_on_sale_email(created["id"])
+    return created
 
 
 @router.put("/events/{event_id}", dependencies=[Depends(verify_csrf)])
@@ -295,7 +298,9 @@ async def update_event(
         body["industry"] = True
     else:
         body.setdefault("industry", existing.get("industry", False))
-    return await database.put(f"/events/{event_id}", body)
+    updated = await database.put(f"/events/{event_id}", body)
+    await _sync_on_sale_email(event_id)
+    return updated
 
 
 @router.delete("/events/{event_id}", dependencies=[Depends(verify_csrf)])
@@ -304,7 +309,22 @@ async def delete_event(
 ) -> dict:
     await _editable_event(event_id, session)
     await database.delete(f"/events/{event_id}")
+    await _sync_on_sale_email(event_id)
     return {"ok": True}
+
+
+async def _sync_on_sale_email(event_id: int) -> None:
+    """Keep the event's "tickets are on sale" email in step with the event.
+
+    Written the moment an event is published with a sale time, so it can be
+    approved well before sales open; moved when the sale moves; taken off the
+    schedule if the event is unpublished or deleted. Never fails the save that
+    triggered it — the startup pass catches up anything missed.
+    """
+    try:
+        await campaigns_service.sync_on_sale(event_id)
+    except Exception:  # noqa: BLE001
+        log.exception("Could not update the on-sale email for event %s", event_id)
 
 
 @router.post("/events/{event_id}/ticket-types", dependencies=[Depends(verify_csrf)])
@@ -2076,12 +2096,11 @@ async def email_optouts(_: AuthSession = Depends(require_site)) -> list[dict]:
 
 @router.post("/email/announce-now", dependencies=[Depends(verify_csrf)])
 async def announce_now(_: AuthSession = Depends(require_site)) -> dict:
-    """Run the on-sale and last-chance pass immediately.
+    """Run the last-chance reminder pass immediately.
 
-    The loop runs every few minutes anyway; this is for the case where a sale
-    date has just been corrected and nobody wants to watch the clock. The
-    on-sale half only writes drafts into the approval queue — it sends nothing
-    to subscribers itself.
+    The loop runs every few minutes anyway; this is for when somebody does not
+    want to wait for it. On-sale emails are not part of it: they are drafted
+    when the event is saved and sent at their approved time.
     """
     return await announce_service.run_once()
 

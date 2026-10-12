@@ -81,6 +81,10 @@ class Campaign(BaseModel):
     # Who approved or dismissed it, and when; `status` says which.
     reviewed_by: int | None = None
     reviewed_at: datetime | None = None
+    # When it should go (074) — for an on-sale email, the event's sale time —
+    # and when a person last edited it.
+    send_at: datetime | None = None
+    edited_at: datetime | None = None
 
 
 class CampaignCreate(BaseModel):
@@ -95,6 +99,7 @@ class CampaignCreate(BaseModel):
     status: str = "draft"
     kind: str = "newsletter"
     event_id: int | None = None
+    send_at: datetime | None = None
 
 
 class CampaignDraftEdit(BaseModel):
@@ -109,10 +114,14 @@ class CampaignDraftEdit(BaseModel):
     audiences: list[str] | None = None
     extra_recipients: list[str] | None = None
     excluded_recipients: list[str] | None = None
+    send_at: datetime | None = None
+    # False for the system's own updates (the event changed), which neither
+    # mark the draft as hand-edited nor are refused for a scheduled one.
+    by_hand: bool = True
 
 
 class CampaignDecision(BaseModel):
-    """Approve (`sending`) or dismiss a draft — only from the status expected.
+    """Move a draft between states — only from the status expected.
 
     Conditional, so two committee members pressing Send at the same moment
     produce one send and one "already dealt with", not two sends.
@@ -122,6 +131,8 @@ class CampaignDecision(BaseModel):
     expect: str = "awaiting_approval"
     reviewed_by: int | None = None
     recipients: int | None = None
+    # Stored as the row's `error`: why the system held a scheduled email back.
+    note: str | None = None
 
 
 class Recipient(BaseModel):

@@ -36,7 +36,8 @@ ALERT_COLUMNS = """
 CAMPAIGN_COLUMNS = """
     id, subject, heading, body, audiences, status, recipients, sent, failed,
     error, created_by, created_at, started_at, finished_at, kind, event_id,
-    extra_recipients, excluded_recipients, reviewed_by, reviewed_at
+    extra_recipients, excluded_recipients, reviewed_by, reviewed_at,
+    send_at, edited_at
 """
 
 # The JSONB columns, each a list of strings.
@@ -283,29 +284,41 @@ async def create_campaign(campaign: CampaignCreate) -> Campaign:
         row = await conn.fetchrow(
             f"""
             INSERT INTO public.email_campaigns
-                (subject, heading, body, audiences, created_by, status, kind, event_id)
-            VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
+                (subject, heading, body, audiences, created_by, status, kind,
+                 event_id, send_at)
+            VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9)
             RETURNING {CAMPAIGN_COLUMNS};
             """,
             campaign.subject, campaign.heading, campaign.body,
             json.dumps(campaign.audiences), campaign.created_by,
-            campaign.status, campaign.kind, campaign.event_id,
+            campaign.status, campaign.kind, campaign.event_id, campaign.send_at,
         )
     return _campaign(row)
 
 
 @router.get("/campaigns")
-async def list_campaigns(limit: int = 50, status: str | None = None) -> list[Campaign]:
-    """Newest first. `status` narrows it — the approval queue asks for
-    `awaiting_approval`, oldest waiting first being the one to read next is
-    the caller's call, not this route's."""
+async def list_campaigns(
+    limit: int = 50,
+    status: str | None = None,
+    kind: str | None = None,
+    event_id: int | None = None,
+) -> list[Campaign]:
+    """Newest first, optionally narrowed.
+
+    `status` takes a comma-separated list — the approval queue asks for
+    `awaiting_approval,scheduled`, the sender for `scheduled`. `kind` and
+    `event_id` find one event's on-sale email, whatever state it is in.
+    """
+    statuses = [s.strip() for s in status.split(",") if s.strip()] if status else None
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"SELECT {CAMPAIGN_COLUMNS} FROM public.email_campaigns"
-            f" WHERE ($2::varchar IS NULL OR status = $2)"
+            f" WHERE ($2::varchar[] IS NULL OR status = ANY($2::varchar[]))"
+            f"   AND ($3::varchar IS NULL OR kind = $3::varchar)"
+            f"   AND ($4::bigint IS NULL OR event_id = $4::bigint)"
             f" ORDER BY created_at DESC LIMIT $1;",
-            limit, status,
+            limit, statuses, kind, event_id,
         )
     return [_campaign(r) for r in rows]
 
@@ -389,6 +402,11 @@ async def edit_draft(campaign_id: int, edit: CampaignDraftEdit) -> Campaign:
     Only while it waits: the WHERE carries the status, so an edit landing after
     somebody pressed Send changes nothing about a message already going out —
     and says so with a 409 rather than appearing to have worked.
+
+    A person's edit (`by_hand`) stamps `edited_at`, which is what stops the
+    draft being rewritten from its event afterwards. The system's own updates
+    do not, and may also move the send time of an email already scheduled —
+    the sale moved, so the email moves with it.
     """
     def as_json(values: list[str] | None) -> str | None:
         return None if values is None else json.dumps(values)
@@ -403,13 +421,16 @@ async def edit_draft(campaign_id: int, edit: CampaignDraftEdit) -> Campaign:
                 body                = COALESCE($4, body),
                 audiences           = COALESCE($5::jsonb, audiences),
                 extra_recipients    = COALESCE($6::jsonb, extra_recipients),
-                excluded_recipients = COALESCE($7::jsonb, excluded_recipients)
-             WHERE id = $1 AND status = 'awaiting_approval'
+                excluded_recipients = COALESCE($7::jsonb, excluded_recipients),
+                send_at             = COALESCE($8, send_at),
+                edited_at           = CASE WHEN $9 THEN NOW() ELSE edited_at END
+             WHERE id = $1
+               AND (status = 'awaiting_approval' OR (NOT $9 AND status = 'scheduled'))
             RETURNING {CAMPAIGN_COLUMNS};
             """,
             campaign_id, edit.subject, edit.heading, edit.body,
             as_json(edit.audiences), as_json(edit.extra_recipients),
-            as_json(edit.excluded_recipients),
+            as_json(edit.excluded_recipients), edit.send_at, edit.by_hand,
         )
         if row is None:
             raise await _missing_or_conflict(conn, campaign_id)
@@ -418,14 +439,23 @@ async def edit_draft(campaign_id: int, edit: CampaignDraftEdit) -> Campaign:
 
 @router.post("/campaigns/{campaign_id}/decide")
 async def decide(campaign_id: int, decision: CampaignDecision) -> Campaign:
-    """Move a draft out of the queue: to `sending` (approved) or `dismissed`.
+    """Move a draft along: approve it to send now (`sending`) or at its time
+    (`scheduled`), take an approval back (`awaiting_approval`), or dismiss it.
 
     One conditional UPDATE is the whole guard against a double approval — the
-    second press finds the status already moved and gets a 409, so it never
-    starts a second sender.
+    second press, or a second pod's sender reaching the same due email, finds
+    the status already moved and gets a 409, so it never starts a second send.
+    `note` replaces whatever the row said before: why a scheduled email was
+    held back, or nothing once somebody approves it again.
     """
-    if decision.status not in ("sending", "dismissed"):
-        raise HTTPException(400, "A draft can only be approved or dismissed.")
+    allowed = {
+        "awaiting_approval": {"sending", "scheduled", "dismissed"},
+        "scheduled": {"sending", "awaiting_approval", "dismissed"},
+    }
+    if decision.status not in allowed.get(decision.expect, set()):
+        raise HTTPException(
+            400, f"A draft cannot go from {decision.expect} to {decision.status}."
+        )
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -435,13 +465,14 @@ async def decide(campaign_id: int, decision: CampaignDecision) -> Campaign:
                 reviewed_by = $4,
                 reviewed_at = NOW(),
                 recipients  = COALESCE($5, recipients),
+                error       = $6,
                 started_at  = CASE WHEN $2::varchar = 'sending' THEN NOW() ELSE started_at END,
                 finished_at = CASE WHEN $2::varchar = 'dismissed' THEN NOW() ELSE finished_at END
              WHERE id = $1 AND status = $3::varchar
             RETURNING {CAMPAIGN_COLUMNS};
             """,
             campaign_id, decision.status, decision.expect,
-            decision.reviewed_by, decision.recipients,
+            decision.reviewed_by, decision.recipients, decision.note,
         )
         if row is None:
             raise await _missing_or_conflict(conn, campaign_id)

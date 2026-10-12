@@ -314,12 +314,14 @@ reports who let them in and when.
 | `GET /admin/email/campaigns` | Send history, updated live while one runs |
 | `GET /admin/events/{id}/sale-alerts` | Who is waiting to hear this event is on sale |
 | `GET /admin/email/optouts` | Who has unsubscribed (read-only, deliberately) |
-| `POST /admin/email/announce-now` | Run the on-sale + last-chance pass immediately (on-sale only *writes drafts*) |
-| `GET /admin/email/queue` | Bulk email the site wrote on its own, **waiting for approval** — nothing in it has been sent |
-| `GET /admin/email/queue/{id}` | One draft: words, ticked audiences, hand-added/removed addresses, the resolved recipient list and a preview of the whole message |
-| `PUT /admin/email/queue/{id}` | Edit `subject`, `heading`, `body`, `audiences`, `extra` (addresses added), `excluded` (addresses taken off); answers with the draft re-resolved and re-rendered |
-| `POST /admin/email/queue/{id}/test` | Send the draft as it stands to the Test list only, subject prefixed `[Test]` |
-| `POST /admin/email/queue/{id}/send` | Approve: recipients resolved again now, then the ordinary bulk send. A second press is a 409 |
+| `POST /admin/email/announce-now` | Run the last-chance reminder pass now instead of on the hour |
+| `GET /admin/email/queue` | Bulk email the site wrote on its own: **waiting for approval**, or **scheduled** (approved for its `sendAt`) — nothing in it has been sent |
+| `GET /admin/email/queue/{id}` | One email: words, ticked audiences, hand-added/removed addresses, `sendAt`, the resolved recipient list and a preview of the whole message |
+| `PUT /admin/email/queue/{id}` | Edit `subject`, `heading`, `body`, `audiences`, `extra` (addresses added), `excluded` (addresses taken off) — only while waiting for approval; answers with it re-resolved and re-rendered |
+| `POST /admin/email/queue/{id}/test` | Send it as it stands to the Test list only, subject prefixed `[Test]` |
+| `POST /admin/email/queue/{id}/send` | Send now, waiting or scheduled: recipients resolved again, then the ordinary bulk send. A second press is a 409 |
+| `POST /admin/email/queue/{id}/schedule` | Approve it for its `sendAt`; it then goes by itself at that moment. Refused if the time has passed |
+| `POST /admin/email/queue/{id}/unschedule` | Take an approval back — it waits for approval again, editable |
 | `POST /admin/email/queue/{id}/dismiss` | Decide it should not go. Nothing is sent and it does not come back |
 
 **Product links** are what tie a Union purchase to a booking. Leaving
@@ -414,22 +416,30 @@ Check either with `python3 scripts/check-smtp.py [--pub]`.
 | A hold is taken | "We're holding your ticket" — with the Union purchase link and the pay-by deadline | transactional |
 | ~24h before a hold lapses unpaid | "Last chance" | transactional |
 | A seat frees on a waitlist | The offer, with its deadline | transactional |
-| An event's `sales_open_at` passes | "Tickets are on sale" to everyone who asked about the event and the subscribers — **written into the approval queue, sent only when a committee member approves it** | publicity |
+| An event is published with a sale time | "Tickets are on sale", to everyone who asked about the event and the subscribers — **drafted into the queue at once, and sent when sales open once a committee member has approved it** (or sooner, if they press Send now) | publicity |
 | Committee presses send | Newsletter, or a message about one event | publicity |
 
-**Nothing addressed to a crowd is sent by a timer.** Mail about one person's own
-booking or sign-in (the first three rows, the booking confirmation, the sign-in
-code) goes straight to them. Anything else the site writes on its own waits in
-`GET /admin/email/queue` until somebody with the `site` capability edits, tests,
-sends or dismisses it; set `EMAIL_APPROVAL_NOTIFY` (comma separated) to have
-those people emailed when something arrives there. Every bulk send — queued or
-pressed — is one message per batch with the recipients BCC'd.
+**Nothing addressed to a crowd goes without a person's approval.** Mail about one
+person's own booking or sign-in (the first three rows, the booking confirmation,
+the sign-in code) goes straight to them. Anything else the site writes on its
+own waits in `GET /admin/email/queue` until somebody with the `site` capability
+edits, tests, and sends it now, approves it for its time, or dismisses it; set
+`EMAIL_APPROVAL_NOTIFY` (comma separated) to have those people emailed when
+something arrives there. Every bulk send — queued or pressed — is one message per
+batch with the recipients BCC'd.
 
-The on-sale and last-chance jobs run every `ANNOUNCE_INTERVAL_MINUTES` (default
-10). Both read **only our own database**, so they cost nothing against the Union
-rate limit. Both *claim* their work in SQL before acting, so a crash mid-pass
-loses an email rather than producing it twice — the right way round, because
-somebody mailed twice unsubscribes.
+The on-sale draft follows its event: written when the event is saved published
+with a sale time, rewritten when the event changes (unless somebody has edited
+it), its send time moved when the sale moves, and taken back off the schedule if
+the event is unpublished or deleted — never sent on a stale approval. An approved
+email goes **at its time**: the sender sleeps until the next one is due rather
+than polling.
+
+Recurring jobs run **hourly, on the hour** — never more often. The last-chance
+reminder pass is one: it reads **only our own database**, so it costs nothing
+against the Union rate limit, and it *claims* its work in SQL before sending, so a
+crash mid-pass loses an email rather than sending it twice — the right way
+round, because somebody mailed twice unsubscribes.
 
 ### Where the purchase link comes from
 

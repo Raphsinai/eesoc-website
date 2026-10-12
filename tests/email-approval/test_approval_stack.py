@@ -1,4 +1,4 @@
-"""The email approval queue against the live test stack.
+"""The email queue and scheduled sending against the live test stack.
 
 NEEDS THE COMPOSE TEST STACK — runs in CI (see tests/README.md). Like the
 baseline suites it does not guard on an env var: without the stack it fails
@@ -6,12 +6,14 @@ with a connection error.
 
 The whole path, through the real api, adapter, Postgres and mailpit:
 
-  * an event whose sale has opened produces exactly one on-sale draft, and
-    nothing in the mail sink — however many passes run;
-  * the draft's words and recipients can be edited, a test goes to the test
-    list only, and Send delivers the edited message as one BCC'd message to
-    the edited list;
-  * a dismissed draft sends nothing and cannot then be sent.
+  * publishing an event with a sale time drafts its on-sale email at once —
+    no timer involved — and sends nothing;
+  * the draft's words and recipients can be edited, approved for its time,
+    taken back, approved again; moving the sale moves the send, and at that
+    moment it goes by itself as one BCC'd message to the edited list;
+  * unpublishing the event takes an approved email back off the schedule;
+  * a draft can still be sent there and then, and a test goes to the test
+    list only; a dismissed draft sends nothing and is not written again.
 """
 
 import time
@@ -25,49 +27,48 @@ def _iso(delta: timedelta) -> str:
     return (datetime.now(timezone.utc) + delta).replace(microsecond=0).isoformat()
 
 
-def _create_on_sale_event(admin_client, token: str) -> dict:
-    slug = f"approval-{token}"
-    created = admin_client.post(
-        "/admin/events",
-        json={
-            "slug": slug,
-            "title": f"Approval Night {token}",
-            "category": "Socials",
-            "venue": "EEE 403",
-            "starts_at": _iso(timedelta(days=30)),
-            "ends_at": _iso(timedelta(days=30, hours=2)),
-            # Already open, so the very next on-sale pass picks it up.
-            "sales_open_at": _iso(-timedelta(hours=1)),
-            "published": True,
-            "ticket_types": [
-                {"name": "Standard", "price_pence": 500, "capacity": 50,
-                 "requires_purchase": False},
-            ],
-        },
-    )
+def _payload(token: str, sale: timedelta | None, **changes) -> dict:
+    """A whole event: the admin update replaces every field, so the same
+    payload is sent again with changes rather than a partial one."""
+    return {
+        "slug": f"sched-{token}",
+        "title": f"Scheduled Night {token}",
+        "category": "Socials",
+        "venue": "EEE 403",
+        "starts_at": _iso(timedelta(days=30)),
+        "ends_at": _iso(timedelta(days=30, hours=2)),
+        "sales_open_at": _iso(sale) if sale is not None else None,
+        "published": True,
+        **changes,
+    }
+
+
+def _create(admin_client, payload: dict) -> int:
+    created = admin_client.post("/admin/events", json=payload)
     assert created.status_code in (200, 201), created.text
-    return created.json()
+    return created.json()["id"]
 
 
-def _drafts_for(admin_client, event_id: int) -> list[dict]:
+def _update(admin_client, event_id: int, payload: dict) -> None:
+    updated = admin_client.put(f"/admin/events/{event_id}", json=payload)
+    assert updated.status_code == 200, updated.text
+
+
+def _drafts(admin_client, event_id: int) -> list[dict]:
     items = admin_client.get("/admin/email/queue").json()["items"]
     return [q for q in items if (q.get("event") or {}).get("id") == event_id]
 
 
-def _run_pass_until_drafted(admin_client, event_id: int) -> list[dict]:
-    """Run the on-sale pass until this event's draft exists.
+def _the_draft(admin_client, event_id: int) -> dict:
+    drafts = _drafts(admin_client, event_id)
+    assert len(drafts) == 1, drafts
+    return drafts[0]
 
-    Polled, because a pass already running (the scheduler's own tick) makes
-    announce-now skip — and that pass writes the draft a moment later.
-    """
-    deadline = time.monotonic() + 20.0
-    while True:
-        ran = admin_client.post("/admin/email/announce-now")
-        assert ran.status_code == 200, ran.text
-        drafts = _drafts_for(admin_client, event_id)
-        if drafts or time.monotonic() > deadline:
-            return drafts
-        time.sleep(0.5)
+
+def _cleanup(admin_client, event_id: int) -> None:
+    for draft in _drafts(admin_client, event_id):
+        admin_client.post(f"/admin/email/queue/{draft['id']}/dismiss")
+    admin_client.delete(f"/admin/events/{event_id}")
 
 
 def _messages(mailpit, needle: str) -> list[dict]:
@@ -80,15 +81,12 @@ def _messages(mailpit, needle: str) -> list[dict]:
     return out
 
 
-def _audience_mail(mailpit, event: dict) -> list[dict]:
-    """The on-sale email itself, as the audience would get it.
-
-    Matched on the exact subject, so the "waiting for approval" notice to the
-    committee (sent when EMAIL_APPROVAL_NOTIFY is set) does not count as the
-    announcement having gone out.
-    """
-    subject = f"Tickets for {event['title']} are on sale"
-    return [m for m in _messages(mailpit, event["title"]) if m.get("Subject") == subject]
+def _on_sale_mail(mailpit, title: str) -> list[dict]:
+    """The standard on-sale email, as the audience would get it. Exact
+    subject, so the "waiting for approval" notice to the committee (sent when
+    EMAIL_APPROVAL_NOTIFY is set) does not count."""
+    subject = f"Tickets for {title} are on sale"
+    return [m for m in _messages(mailpit, title) if m.get("Subject") == subject]
 
 
 def _addresses(message: dict, *fields: str) -> set[str]:
@@ -112,115 +110,155 @@ def _wait_for_status(admin_client, campaign_id: int, status: str) -> dict:
     raise AssertionError(f"campaign {campaign_id} never reached {status!r}: {row}")
 
 
-def test_on_sale_email_waits_for_approval_then_sends_as_edited(admin_client, mailpit):
+def test_publishing_with_a_sale_time_drafts_the_email_at_once(admin_client, mailpit):
     token = uuid.uuid4().hex[:8]
-    tester = f"approval-tester-{token}@example.com"
-    added = f"approval-added-{token}@example.com"
-    removed = f"approval-removed-{token}@example.com"
-    event = _create_on_sale_event(admin_client, token)
+    payload = _payload(token, sale=timedelta(hours=2))
+    event_id = _create(admin_client, payload)
+    try:
+        # No announce pass, no waiting: the save itself wrote it.
+        draft = _the_draft(admin_client, event_id)
+        assert draft["kind"] == "on_sale"
+        assert draft["status"] == "awaiting_approval"
+        assert datetime.fromisoformat(draft["sendAt"]) == datetime.fromisoformat(
+            payload["sales_open_at"]
+        )
 
+        # Saving again, or renaming the event, keeps the one draft — renamed.
+        renamed = {**payload, "title": f"Renamed Night {token}"}
+        _update(admin_client, event_id, renamed)
+        draft = _the_draft(admin_client, event_id)
+        assert draft["subject"] == f"Tickets for Renamed Night {token} are on sale"
+
+        assert _on_sale_mail(mailpit, payload["title"]) == []
+        assert _on_sale_mail(mailpit, renamed["title"]) == []
+    finally:
+        _cleanup(admin_client, event_id)
+
+
+def test_approved_email_goes_at_its_time_as_edited(admin_client, mailpit):
+    token = uuid.uuid4().hex[:8]
+    tester = f"sched-tester-{token}@example.com"
+    added = f"sched-added-{token}@example.com"
+    payload = _payload(token, sale=timedelta(hours=1))
+    event_id = _create(admin_client, payload)
     assert admin_client.post(
         "/admin/email/test-recipients", json={"email": tester}
     ).status_code == 200
 
     try:
-        # The pass writes the draft. A second pass (or the scheduler's own
-        # tick racing this one) must not write another.
-        _run_pass_until_drafted(admin_client, event["id"])
-        assert admin_client.post("/admin/email/announce-now").status_code == 200
-        drafts = _drafts_for(admin_client, event["id"])
-        assert len(drafts) == 1, drafts
-        draft_id = drafts[0]["id"]
-        assert drafts[0]["kind"] == "on_sale"
-
-        # ...and nothing about this event reached its audience.
-        assert _audience_mail(mailpit, event) == []
-
-        # Edit: new words, only the test list ticked, one address added, and
-        # one added-then-taken-off to prove removal sticks.
-        subject = f"Approved {token}: tickets are out"
+        draft_id = _the_draft(admin_client, event_id)["id"]
+        subject = f"Scheduled {token}: tickets are out"
         edited = admin_client.put(
             f"/admin/email/queue/{draft_id}",
-            json={
-                "subject": subject,
-                "body": f"Hand-edited opening {token}.",
-                "audiences": ["test"],
-                "extra": [added, removed],
-                "excluded": [removed],
-            },
+            json={"subject": subject, "body": f"Hand-edited opening {token}.",
+                  "audiences": ["test"], "extra": [added]},
         )
         assert edited.status_code == 200, edited.text
-        detail = edited.json()
-        listed = {r["email"] for r in detail["recipientList"]}
-        assert {tester, added} <= listed
-        assert removed not in listed
-        assert detail["preview"]["subject"] == subject
-        assert f"Hand-edited opening {token}." in detail["preview"]["html"]
+        assert {tester, added} <= {r["email"] for r in edited.json()["recipientList"]}
 
-        # A test goes to the test list only, marked as a test, and the draft
-        # stays in the queue.
+        # Approve for its time; while approved it cannot be edited; taken back
+        # and approved again.
+        assert admin_client.post(f"/admin/email/queue/{draft_id}/schedule").status_code == 200
+        assert _the_draft(admin_client, event_id)["status"] == "scheduled"
+        refused = admin_client.put(f"/admin/email/queue/{draft_id}", json={"subject": "x"})
+        assert refused.status_code == 409, refused.text
+        assert admin_client.post(f"/admin/email/queue/{draft_id}/unschedule").status_code == 200
+        assert _the_draft(admin_client, event_id)["status"] == "awaiting_approval"
+        assert admin_client.post(f"/admin/email/queue/{draft_id}/schedule").status_code == 200
+
+        # Bring the sale forward to a few seconds from now. The approval holds
+        # (the words were hand-edited, so they do not change); the send moves.
+        _update(admin_client, event_id, {**payload, "sales_open_at": _iso(timedelta(seconds=4))})
+        moved = _the_draft(admin_client, event_id)
+        assert moved["status"] == "scheduled"
+        assert datetime.fromisoformat(moved["sendAt"]) < datetime.now(timezone.utc) + timedelta(minutes=1)
+
+        # Nobody presses anything: it goes at its time.
+        _wait_for_status(admin_client, draft_id, "sent")
+        real = [m for m in _messages(mailpit, subject) if not m["Subject"].startswith("[Test]")]
+        assert len(real) == 1, "one BCC'd message, not one per recipient"
+        assert {tester, added} <= _addresses(real[0], "To", "Bcc")
+        assert not ({tester, added} & _addresses(real[0], "To")), "BCC'd"
+        assert f"Hand-edited opening {token}." in (real[0].get("Text") or "")
+        assert _drafts(admin_client, event_id) == []
+    finally:
+        admin_client.delete("/admin/email/test-recipients", params={"email": tester})
+        _cleanup(admin_client, event_id)
+
+
+def test_unpublishing_takes_an_approved_email_off_the_schedule(admin_client):
+    token = uuid.uuid4().hex[:8]
+    payload = _payload(token, sale=timedelta(hours=1))
+    event_id = _create(admin_client, payload)
+    try:
+        draft_id = _the_draft(admin_client, event_id)["id"]
+        admin_client.put(
+            f"/admin/email/queue/{draft_id}",
+            json={"audiences": [], "extra": [f"unpub-{token}@example.com"]},
+        )
+        assert admin_client.post(f"/admin/email/queue/{draft_id}/schedule").status_code == 200
+
+        _update(admin_client, event_id, {**payload, "published": False})
+
+        draft = _the_draft(admin_client, event_id)
+        assert draft["status"] == "awaiting_approval"
+        assert "Taken off the schedule" in (draft["note"] or "")
+    finally:
+        _cleanup(admin_client, event_id)
+
+
+def test_a_draft_whose_sale_has_opened_is_sent_now_and_tested_first(admin_client, mailpit):
+    token = uuid.uuid4().hex[:8]
+    tester = f"now-tester-{token}@example.com"
+    payload = _payload(token, sale=-timedelta(minutes=5))
+    event_id = _create(admin_client, payload)
+    admin_client.post("/admin/email/test-recipients", json={"email": tester})
+    try:
+        draft_id = _the_draft(admin_client, event_id)["id"]
+        subject = f"Sent now {token}"
+        admin_client.put(
+            f"/admin/email/queue/{draft_id}", json={"subject": subject, "audiences": ["test"]}
+        )
+        late = admin_client.post(f"/admin/email/queue/{draft_id}/schedule")
+        assert late.status_code == 400, "its time has passed — send it now instead"
+
         tested = admin_client.post(f"/admin/email/queue/{draft_id}/test")
         assert tested.status_code == 200, tested.text
-        test_messages = _messages(mailpit, f"[Test] {subject}")
-        assert test_messages, "the test send never reached the sink"
-        assert added not in set().union(*(_addresses(m, "To", "Bcc") for m in test_messages))
-        assert _drafts_for(admin_client, event["id"]), "a test send must not take it off the queue"
+        assert _messages(mailpit, f"[Test] {subject}"), "the test never reached the sink"
+        assert _the_draft(admin_client, event_id)["status"] == "awaiting_approval"
 
-        # Send.
         sent = admin_client.post(f"/admin/email/queue/{draft_id}/send")
         assert sent.status_code == 200, sent.text
         _wait_for_status(admin_client, draft_id, "sent")
-
-        real = [m for m in _messages(mailpit, subject) if not m["Subject"].startswith("[Test]")]
-        assert len(real) == 1, "the batch must be one message, not one per recipient"
-        envelope = _addresses(real[0], "To", "Bcc")
-        assert {tester, added} <= envelope
-        assert removed not in envelope
-        # BCC'd: the visible To is not any recipient.
-        assert not ({tester, added} & _addresses(real[0], "To"))
-        assert f"Hand-edited opening {token}." in (real[0].get("Text") or "")
-
-        # Gone from the queue, and a second Send cannot repeat it.
-        assert _drafts_for(admin_client, event["id"]) == []
         again = admin_client.post(f"/admin/email/queue/{draft_id}/send")
         assert again.status_code == 409, again.text
     finally:
         admin_client.delete("/admin/email/test-recipients", params={"email": tester})
-        admin_client.delete(f"/admin/events/{event['id']}")
+        _cleanup(admin_client, event_id)
 
 
-def test_dismissed_draft_sends_nothing(admin_client, mailpit):
+def test_dismissed_draft_sends_nothing_and_is_not_written_again(admin_client, mailpit):
     token = uuid.uuid4().hex[:8]
-    event = _create_on_sale_event(admin_client, token)
+    payload = _payload(token, sale=timedelta(hours=1))
+    event_id = _create(admin_client, payload)
     try:
-        [draft] = _run_pass_until_drafted(admin_client, event["id"])
+        draft_id = _the_draft(admin_client, event_id)["id"]
+        assert admin_client.post(f"/admin/email/queue/{draft_id}/dismiss").status_code == 200
+        assert admin_client.post(f"/admin/email/queue/{draft_id}/send").status_code == 409
 
-        dismissed = admin_client.post(f"/admin/email/queue/{draft['id']}/dismiss")
-        assert dismissed.status_code == 200, dismissed.text
-        assert _drafts_for(admin_client, event["id"]) == []
-
-        refused = admin_client.post(f"/admin/email/queue/{draft['id']}/send")
-        assert refused.status_code == 409, refused.text
-        edit = admin_client.put(f"/admin/email/queue/{draft['id']}", json={"subject": "x"})
-        assert edit.status_code == 409, edit.text
-
-        # Another pass does not bring it back.
-        admin_client.post("/admin/email/announce-now")
-        assert _drafts_for(admin_client, event["id"]) == []
-        assert _audience_mail(mailpit, event) == []
+        _update(admin_client, event_id, {**payload, "title": f"Still dismissed {token}"})
+        assert _drafts(admin_client, event_id) == []
+        assert _on_sale_mail(mailpit, payload["title"]) == []
     finally:
-        admin_client.delete(f"/admin/events/{event['id']}")
+        _cleanup(admin_client, event_id)
 
 
-def test_dashboard_counts_what_is_waiting(admin_client):
+def test_dashboard_counts_what_needs_approval(admin_client):
     token = uuid.uuid4().hex[:8]
-    event = _create_on_sale_event(admin_client, token)
+    event_id = _create(admin_client, _payload(token, sale=timedelta(hours=1)))
     try:
-        assert _run_pass_until_drafted(admin_client, event["id"])
         dash = admin_client.get("/admin/dashboard").json()
         assert dash["emailsAwaitingApproval"] >= 1
         assert any(w.get("action") == "email" for w in dash["warnings"])
     finally:
-        for draft in _drafts_for(admin_client, event["id"]):
-            admin_client.post(f"/admin/email/queue/{draft['id']}/dismiss")
-        admin_client.delete(f"/admin/events/{event['id']}")
+        _cleanup(admin_client, event_id)

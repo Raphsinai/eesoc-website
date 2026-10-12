@@ -1,12 +1,13 @@
-// The email approval queue, as a committee member uses it: an on-sale email
-// the site wrote on its own sits in "Waiting for approval" on the Email tab,
-// opens for review with a preview of the whole message, takes an edit, and
-// can be dismissed without anything being sent.
+// The email queue, as a committee member uses it: publishing an event with a
+// sale time puts its "tickets are on sale" email in the queue straight away;
+// it opens for review with a preview of the whole message, takes an edit, is
+// approved for when sales open, taken back off the schedule, and dismissed —
+// without anything being sent.
 //
 // NEEDS THE COMPOSE TEST STACK — runs in CI only (see tests/README.md). The
-// event is created through the admin write path in beforeAll, and the on-sale
-// pass is run through the api, so the spec never depends on the scheduler's
-// clock. Sending is covered against mailpit by tests/email-approval/.
+// event is created through the admin write path in beforeAll. Sending, and
+// sending at the scheduled time, are covered against mailpit by
+// tests/email-approval/.
 const { test, expect } = require('@playwright/test')
 
 const STAMP = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -41,23 +42,16 @@ test.beforeAll(async ({ request }) => {
       venue: 'EEE 403',
       starts_at: new Date(Date.now() + 30 * 24 * hour).toISOString(),
       ends_at: new Date(Date.now() + 30 * 24 * hour + 2 * hour).toISOString(),
-      // Already open, so the on-sale pass writes its email straight away.
-      sales_open_at: new Date(Date.now() - hour).toISOString(),
+      // A day ahead: the email is drafted now, to be approved for then.
+      sales_open_at: new Date(Date.now() + 24 * hour).toISOString(),
       published: true,
     },
     headers: { 'X-CSRF-Token': csrfToken },
   })
   expect(created.ok()).toBeTruthy()
   EVENT_ID = (await created.json()).id
-
-  // Polled: a pass already running (the scheduler's tick) makes announce-now
-  // skip, and that pass writes the draft a moment later.
-  await expect(async () => {
-    await request.post('/api/admin/email/announce-now', {
-      headers: { 'X-CSRF-Token': csrfToken },
-    })
-    expect(await draftsForEvent(request)).toHaveLength(1)
-  }).toPass({ timeout: 20_000 })
+  // Written by the save itself — no timer to wait for.
+  expect(await draftsForEvent(request)).toHaveLength(1)
 })
 
 test.afterAll(async ({ request }) => {
@@ -73,15 +67,15 @@ test.afterAll(async ({ request }) => {
   })
 })
 
-test('committee reviews, edits and dismisses an on-sale email waiting for approval', async ({ page }) => {
+test('committee reviews, schedules, unschedules and dismisses an on-sale email', async ({ page }) => {
   test.skip(test.info().project.name !== 'admin', 'needs the admin storage state')
-  // Dismiss asks "are you sure" with window.confirm.
+  // Approve and Dismiss both ask "are you sure" with window.confirm.
   page.on('dialog', (d) => d.accept())
 
   await page.goto('/admin?tab=email')
   const row = page.locator('.queue-row').filter({ hasText: TITLE })
   await expect(row).toBeVisible()
-  await expect(row).toContainText('Tickets on sale')
+  await expect(row).toContainText('needs approval')
   await row.getByRole('button', { name: 'Review' }).click()
 
   const review = page.getByRole('dialog', { name: /^Review/ })
@@ -96,6 +90,21 @@ test('committee reviews, edits and dismisses an on-sale email waiting for approv
   await review.locator('.ees-field input').first().fill(edited)
   await review.getByRole('button', { name: 'Save and update the preview' }).click()
   await expect(review).toContainText(`“${edited}”`)
+
+  // Approve it for when sales open.
+  await review.getByRole('button', { name: /^Approve for / }).click()
+  await expect(review).toHaveCount(0)
+  const scheduled = page.locator('.queue-row').filter({ hasText: STAMP })
+  await expect(scheduled).toContainText('approved')
+  await expect(scheduled).toContainText('goes out')
+
+  // While approved it is read-only; take it back off the schedule.
+  await scheduled.getByRole('button', { name: 'Review' }).click()
+  await expect(review.locator('.review-scheduled')).toBeVisible()
+  await expect(review.locator('.ees-field input').first()).toBeDisabled()
+  await review.getByRole('button', { name: 'Take off schedule' }).click()
+  await expect(review.locator('.review-scheduled')).toHaveCount(0)
+  await expect(review.locator('.ees-field input').first()).toBeEnabled()
 
   await review.getByRole('button', { name: 'Dismiss', exact: true }).click()
   await expect(review).toHaveCount(0)

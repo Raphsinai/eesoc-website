@@ -157,10 +157,8 @@ class Settings(BaseSettings):
     # default against a 48h hold: late enough that most people have already
     # paid and will never see it, early enough to still act on.
     purchase_reminder_hours_before: int = 24
-    # How often the announcer looks for events that have just gone on sale and
-    # holds that are about to lapse. Both are database-only, so this is cheap:
-    # it never touches eActivities.
-    announce_interval_minutes: int = 10
+    # The reminder pass runs once an hour, on the hour (utils/clock.py) — not
+    # configurable, because nothing recurring here runs more often than that.
 
     # --- guest booking ---
     # Guests have not proved they control the address, so their hold is short:

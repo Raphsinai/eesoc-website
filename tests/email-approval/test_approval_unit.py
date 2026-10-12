@@ -1,22 +1,27 @@
-"""The email approval queue, without the stack.
+"""The email queue and scheduled sending, without the stack.
 
 Pure unit tests: the database adapter is replaced by an in-memory fake and the
 SMTP layer by a recorder, so they run anywhere the api's requirements are
-installed. They pin the three rules the queue exists for:
+installed. They pin the rules the queue exists for:
 
-  1. the timer writes the on-sale email and sends nothing;
-  2. what is sent is one BCC'd message per batch — the people who asked about
-     the event included, no longer one message each — and their alerts are
-     marked as they are told;
-  3. who it goes to is the ticked audiences plus hand-added addresses minus
+  1. saving an event with a sale time drafts its on-sale email at once, sends
+     nothing, and keeps the draft in step with the event — without ever
+     sending on an approval of words that have since changed;
+  2. an approved email goes at its time, once, from the scheduler; one whose
+     event has gone is held, not sent;
+  3. what is sent is one BCC'd message per batch — the people who asked about
+     the event included — and their alerts are marked as they are told;
+  4. who it goes to is the ticked audiences plus hand-added addresses minus
      hand-removed ones, and a hand-added address that has unsubscribed is
-     skipped rather than mailed.
+     skipped rather than mailed;
+  5. recurring jobs run on the hour.
 """
 
 import asyncio
 import importlib
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -30,11 +35,15 @@ if str(API_DIR) not in sys.path:
 pytest.importorskip("fastapi")
 pytest.importorskip("pydantic_settings")
 
+from fastapi import HTTPException  # noqa: E402
+
 database = importlib.import_module("clients.database")
 mailer = importlib.import_module("utils.email")
+clock = importlib.import_module("utils.clock")
 emailing = importlib.import_module("services.emailing")
 campaigns = importlib.import_module("services.campaigns")
-announce = importlib.import_module("services.announce")
+
+SALE = "2099-02-01T12:00:00+00:00"
 
 EVENT = {
     "id": 7,
@@ -45,6 +54,8 @@ EVENT = {
     "published": True,
     "starts_at": "2099-03-01T18:00:00+00:00",
     "ends_at": "2099-03-01T20:00:00+00:00",
+    "sales_open_at": SALE,
+    "sales_announced_at": None,
     "doors_close_at": None,
     "purchase_url": "https://shop.example.com/robot-wars",
     "ticket_types": [{"id": 1, "name": "Standard", "price_pence": 500}],
@@ -52,9 +63,10 @@ EVENT = {
 
 
 class FakeDatabase:
-    """The adapter routes this flow touches, in memory."""
+    """The adapter routes this flow touches, in memory, with its 409s."""
 
     def __init__(self):
+        self.events = {7: dict(EVENT)}
         self.campaigns: dict[int, dict] = {}
         self.alerts = [
             {"id": 11, "email": "asker@example.com", "event_id": 7},
@@ -62,6 +74,7 @@ class FakeDatabase:
         ]
         self.notified: list[int] = []
         self.optouts: list[dict] = []
+        self.seeded: list[dict] = []
         # (kind, topic-or-event) -> rows the audience query returns.
         self.audience = {
             ("alerts", 7): [{"email": "asker@example.com"}, {"email": "both@example.com"}],
@@ -70,14 +83,30 @@ class FakeDatabase:
             ],
             ("topic", "events_category:socials"): [{"email": "social@example.com"}],
         }
-        self.due = [EVENT]
+
+    def _campaign(self, path):
+        return self.campaigns.get(int(path.split("/")[3]))
 
     async def get(self, path, params=None):
         params = params or {}
-        if path == "/events/due-announcement":
-            return self.due
+        if path == "/events":
+            return [dict(e) for e in self.events.values()]
         if path.startswith("/events/"):
-            return EVENT if int(path.split("/")[2]) == EVENT["id"] else None
+            event = self.events.get(int(path.split("/")[2]))
+            return dict(event) if event else None
+        if path == "/email/campaigns":
+            rows = sorted(self.campaigns.values(), key=lambda r: -r["id"])
+            if params.get("status"):
+                wanted = params["status"].split(",")
+                rows = [r for r in rows if r["status"] in wanted]
+            if params.get("kind"):
+                rows = [r for r in rows if r.get("kind") == params["kind"]]
+            if params.get("event_id") is not None:
+                rows = [r for r in rows if r.get("event_id") == params["event_id"]]
+            return [dict(r) for r in rows[: params.get("limit", 50)]]
+        if path.startswith("/email/campaigns/"):
+            row = self._campaign(path)
+            return dict(row) if row else None
         if path == "/email/sale-alerts":
             return [a for a in self.alerts if a["id"] not in self.notified]
         if path == "/email/optouts":
@@ -87,8 +116,6 @@ class FakeDatabase:
             return [dict(r) for r in self.audience.get(key, [])]
         if path == "/email/test-recipients":
             return []
-        if path.startswith("/email/campaigns/"):
-            return self.campaigns.get(int(path.rsplit("/", 1)[1]))
         if path == "/product-links":
             return []
         return None
@@ -96,20 +123,50 @@ class FakeDatabase:
     async def post(self, path, json=None, params=None):
         if path == "/email/campaigns":
             row = {
-                "id": len(self.campaigns) + 1, "recipients": 0, "sent": 0, "failed": 0,
-                "extra_recipients": [], "excluded_recipients": [], **json,
+                "id": len(self.campaigns) + 1, "status": "draft", "kind": "newsletter",
+                "recipients": 0, "sent": 0, "failed": 0, "error": None,
+                "extra_recipients": [], "excluded_recipients": [], "send_at": None,
+                "edited_at": None, "reviewed_by": None, "created_at": "2099-01-01T00:00:00+00:00",
+                **{k: v for k, v in json.items() if v is not None},
             }
             self.campaigns[row["id"]] = row
             return dict(row)
-        if path.endswith("/announced"):
+        if path.endswith("/decide"):
+            row = self._campaign(path)
+            if row["status"] != json.get("expect", "awaiting_approval"):
+                raise HTTPException(409, f"no longer waiting ({row['status']})")
+            row.update(status=json["status"], reviewed_by=json.get("reviewed_by"),
+                       error=json.get("note"))
+            if json.get("recipients") is not None:
+                row["recipients"] = json["recipients"]
+            return dict(row)
+        if path.startswith("/events/") and path.endswith("/announced"):
+            self.events[int(path.split("/")[2])]["sales_announced_at"] = "now"
             return {"claimed": True}
+        if path == "/campaign-recipients":
+            self.seeded.append(json)
+            return {"inserted": len(json["emails"])}
         if path.startswith("/email/sale-alerts/") and path.endswith("/notified"):
             self.notified.append(int(path.split("/")[3]))
             return None
         raise AssertionError(f"unexpected POST {path}")
 
+    async def put(self, path, json=None, params=None):
+        assert path.endswith("/draft"), path
+        row = self._campaign(path)
+        by_hand = json.get("by_hand", True)
+        if not (row["status"] == "awaiting_approval"
+                or (not by_hand and row["status"] == "scheduled")):
+            raise HTTPException(409, f"no longer waiting ({row['status']})")
+        for key, value in json.items():
+            if key != "by_hand" and value is not None:
+                row[key] = value
+        if by_hand:
+            row["edited_at"] = "now"
+        return dict(row)
+
     async def patch(self, path, json=None, params=None):
-        row = self.campaigns[int(path.rsplit("/", 1)[1])]
+        row = self._campaign(path)
         row.update({k: v for k, v in (params or {}).items() if v is not None})
         return dict(row)
 
@@ -117,7 +174,7 @@ class FakeDatabase:
 @pytest.fixture()
 def fake(monkeypatch):
     db = FakeDatabase()
-    for name in ("get", "post", "patch"):
+    for name in ("get", "post", "put", "patch"):
         monkeypatch.setattr(database, name, getattr(db, name))
     return db
 
@@ -135,29 +192,201 @@ def outbox(monkeypatch):
     return sent
 
 
+@pytest.fixture()
+def sends(monkeypatch):
+    """Bulk sends started (campaign id, recipient addresses), not run."""
+    started = []
+    monkeypatch.setattr(mailer, "configured", lambda *a, **k: True)
+    monkeypatch.setattr(
+        emailing, "send_bulk",
+        lambda cid, recipients, build, **kw: ("send_bulk", cid, [r["email"] for r in recipients]),
+    )
+    monkeypatch.setattr(campaigns, "dispatch", started.append)
+    return started
+
+
 def run(coro):
     return asyncio.run(coro)
 
 
-# ------------------------------------------------------- 1. nothing auto-sends
+def iso(delta: timedelta) -> str:
+    return (datetime.now(timezone.utc) + delta).isoformat()
 
 
-def test_on_sale_pass_queues_a_draft_and_sends_nothing(fake, outbox):
-    result = run(announce.announce_sales())
+def only_draft(fake) -> dict:
+    [row] = fake.campaigns.values()
+    return row
 
-    assert outbox == [], "the on-sale pass must not send anything itself"
-    assert result["events"] == 1
-    [draft] = fake.campaigns.values()
+
+# ------------------------------------------------ 1. drafts follow the event
+
+
+def test_saving_an_event_with_a_sale_time_drafts_its_email_and_sends_nothing(fake, outbox):
+    run(campaigns.sync_on_sale(7))
+
+    assert outbox == [], "drafting must not send anything"
+    draft = only_draft(fake)
     assert draft["status"] == "awaiting_approval"
-    assert draft["kind"] == "on_sale"
-    assert draft["event_id"] == EVENT["id"]
+    assert draft["kind"] == "on_sale" and draft["event_id"] == 7
+    assert draft["send_at"] == SALE, "timed for when sales open"
     assert draft["subject"] == "Tickets for Robot Wars are on sale"
     assert draft["audiences"] == [
         "alerts:7", "topic:tickets_on_sale", "topic:events_category:socials",
     ]
-    # asker, both, fan, social — de-duplicated across audiences.
-    assert draft["recipients"] == 4
-    assert fake.notified == [], "queueing must not mark anybody's alert as told"
+    assert draft["recipients"] == 4  # asker, both, fan, social — de-duplicated
+    assert fake.events[7]["sales_announced_at"], "marked so nothing else announces it"
+    assert fake.notified == [], "drafting must not mark anybody's alert as told"
+
+
+def test_saving_again_does_not_write_a_second_draft(fake):
+    run(campaigns.sync_on_sale(7))
+    run(campaigns.sync_on_sale(7))
+    run(campaigns.reconcile_on_sale())
+    assert len(fake.campaigns) == 1
+
+
+@pytest.mark.parametrize("change", [
+    {"published": False},
+    {"sales_open_at": None},
+    {"starts_at": "2000-01-01T10:00:00+00:00"},
+    {"sales_announced_at": "2026-01-01T00:00:00+00:00"},
+])
+def test_no_draft_for_an_event_that_does_not_want_one(fake, change):
+    fake.events[7].update(change)
+    run(campaigns.sync_on_sale(7))
+    assert fake.campaigns == {}
+
+
+def test_a_dismissed_email_is_not_written_again(fake):
+    run(campaigns.sync_on_sale(7))
+    only_draft(fake)["status"] = "dismissed"
+    fake.events[7]["sales_announced_at"] = None  # even without the marker
+    run(campaigns.sync_on_sale(7))
+    assert len(fake.campaigns) == 1
+
+
+def test_an_untouched_draft_follows_the_event(fake):
+    run(campaigns.sync_on_sale(7))
+    fake.events[7].update(title="Robot Wars II", sales_open_at="2099-02-02T09:30:00+00:00")
+    run(campaigns.sync_on_sale(7))
+    draft = only_draft(fake)
+    assert draft["subject"] == "Tickets for Robot Wars II are on sale"
+    assert "Robot Wars II" in draft["body"]
+    assert campaigns.parse_time(draft["send_at"]) == campaigns.parse_time("2099-02-02T09:30:00+00:00")
+
+
+def test_a_hand_edited_draft_keeps_its_words_but_follows_the_sale(fake):
+    run(campaigns.sync_on_sale(7))
+    run(database.put("/email/campaigns/1/draft", {"subject": "Our words"}))
+    fake.events[7].update(title="Renamed", sales_open_at="2099-02-03T09:00:00+00:00")
+    run(campaigns.sync_on_sale(7))
+    draft = only_draft(fake)
+    assert draft["subject"] == "Our words"
+    assert campaigns.parse_time(draft["send_at"]) == campaigns.parse_time("2099-02-03T09:00:00+00:00")
+
+
+def test_an_approved_email_moves_with_its_sale_and_stays_approved(fake):
+    run(campaigns.sync_on_sale(7))
+    only_draft(fake)["status"] = "scheduled"
+    fake.events[7]["sales_open_at"] = "2099-02-05T12:00:00+00:00"
+    run(campaigns.sync_on_sale(7))
+    draft = only_draft(fake)
+    assert draft["status"] == "scheduled"
+    assert campaigns.parse_time(draft["send_at"]) == campaigns.parse_time("2099-02-05T12:00:00+00:00")
+
+
+def test_approved_words_never_change_without_a_new_approval(fake):
+    run(campaigns.sync_on_sale(7))
+    only_draft(fake)["status"] = "scheduled"
+    fake.events[7]["title"] = "Robot Wars: The Sequel"
+    run(campaigns.sync_on_sale(7))
+    draft = only_draft(fake)
+    assert draft["status"] == "awaiting_approval", "back to a person"
+    assert "approving again" in draft["error"]
+    assert draft["subject"] == "Tickets for Robot Wars: The Sequel are on sale"
+
+
+@pytest.mark.parametrize("change", [{"published": False}, {"sales_open_at": None}])
+def test_unpublishing_takes_an_approved_email_off_the_schedule(fake, change):
+    run(campaigns.sync_on_sale(7))
+    only_draft(fake)["status"] = "scheduled"
+    fake.events[7].update(change)
+    run(campaigns.sync_on_sale(7))
+    draft = only_draft(fake)
+    assert draft["status"] == "awaiting_approval"
+    assert draft["error"].startswith("Taken off the schedule")
+
+
+def test_deleting_the_event_takes_an_approved_email_off_the_schedule(fake):
+    run(campaigns.sync_on_sale(7))
+    only_draft(fake)["status"] = "scheduled"
+    del fake.events[7]
+    run(campaigns.sync_on_sale(7))
+    assert only_draft(fake)["status"] == "awaiting_approval"
+
+
+# --------------------------------------------- 2. sent at its time, once
+
+
+def test_scheduler_sends_what_is_due_once_and_sleeps_until_the_next(fake, sends):
+    run(campaigns.sync_on_sale(7))
+    due = only_draft(fake)
+    due.update(status="scheduled", send_at=iso(-timedelta(seconds=1)), reviewed_by=3)
+    later = iso(timedelta(hours=2))
+    fake.campaigns[2] = {**due, "id": 2, "send_at": later, "event_id": 7, "kind": "newsletter",
+                         "audiences": ["topic:tickets_on_sale"], "body": "Hi."}
+
+    upcoming = run(campaigns.fire_due())
+
+    assert campaigns.parse_time(later) == upcoming, "next wake-up is the next email's time"
+    assert [s[1] for s in sends] == [1], "only the due one started"
+    assert sorted(sends[0][2]) == [
+        "asker@example.com", "both@example.com", "fan@example.com", "social@example.com",
+    ]
+    assert due["status"] == "sending" and due["reviewed_by"] == 3, "approver kept"
+    assert fake.seeded and fake.seeded[0]["campaign_id"] == 1
+    assert fake.campaigns[2]["status"] == "scheduled"
+
+    run(campaigns.fire_due())
+    assert len(sends) == 1, "never started twice"
+
+
+def test_a_due_email_whose_event_is_gone_is_held_not_sent(fake, sends):
+    run(campaigns.sync_on_sale(7))
+    only_draft(fake).update(status="scheduled", send_at=iso(-timedelta(seconds=1)))
+    fake.events[7]["published"] = False
+
+    run(campaigns.fire_due())
+
+    assert sends == []
+    draft = only_draft(fake)
+    assert draft["status"] == "awaiting_approval"
+    assert draft["error"].startswith("Held at its send time")
+
+
+def test_a_due_email_is_left_scheduled_while_mail_is_down(fake, sends, monkeypatch):
+    run(campaigns.sync_on_sale(7))
+    only_draft(fake).update(status="scheduled", send_at=iso(-timedelta(seconds=1)))
+    monkeypatch.setattr(mailer, "configured", lambda *a, **k: False)
+
+    run(campaigns.fire_due())
+
+    assert sends == []
+    assert only_draft(fake)["status"] == "scheduled", "goes as soon as mail is back"
+
+
+# ------------------------------------------------- 5. recurring = on the hour
+
+
+@pytest.mark.parametrize("now, expected", [
+    ("2026-10-12T13:20:00+00:00", 40 * 60),
+    ("2026-10-12T13:00:00+00:00", 60 * 60),
+    # A wake-up a hair early has done this hour's run: the next is a full hour on.
+    ("2026-10-12T13:59:58+00:00", 60 * 60 + 2),
+    ("2026-10-12T14:00:00.500000+00:00", 60 * 60 - 0.5),
+])
+def test_recurring_jobs_wake_on_the_hour(now, expected):
+    assert clock.seconds_until_next_hour(datetime.fromisoformat(now)) == expected
 
 
 # ---------------------------------------------------- 2. one BCC'd message

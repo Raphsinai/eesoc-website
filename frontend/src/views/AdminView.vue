@@ -698,13 +698,12 @@ function closeCompose() {
   previewSample.value = []
 }
 
-async function runAnnouncePass() {
+async function runReminderPass() {
   busy.value = true
   try {
     const res = await api.post('/admin/email/announce-now')
-    const announced = res.announced?.events ?? 0
     const chased = res.chased?.sent ?? 0
-    flash(`${announced} on-sale email(s) written for approval, ${chased} purchase reminder(s) sent.`)
+    flash(`${chased} purchase reminder(s) sent.`)
     await loadEmail()
   } catch (e) {
     error.value = e.message
@@ -715,13 +714,13 @@ async function runAnnouncePass() {
 
 const campaignTone = {
   sent: 'success', sending: 'accent', failed: 'danger', draft: 'neutral',
-  awaiting_approval: 'brand', dismissed: 'neutral',
+  awaiting_approval: 'brand', scheduled: 'accent', dismissed: 'neutral',
 }
 
 // ------------------------------------------------------- approval queue ---
-// Bulk email the site wrote on its own — today, "tickets are on sale". None of
-// it has gone anywhere: it waits here until somebody reads it, changes what
-// needs changing, and sends or dismisses it.
+// Bulk email the site wrote on its own — today, "tickets are on sale", written
+// as soon as an event has a sale time. None of it goes until somebody approves
+// it: sent now, or approved for its time (scheduled) and sent then by itself.
 const queue = ref([])
 // The draft open in the review dialog, exactly as the server last described it
 // (recipients resolved, preview rendered). `mailDraft` is the editable copy.
@@ -732,11 +731,14 @@ const recipientFilter = ref('')
 const reviewError = ref('')
 const reviewNotice = ref('')
 
+const awaitingCount = computed(() => queue.value.filter((q) => q.status === 'awaiting_approval').length)
+
 function setQueue(items) {
   queue.value = items
   // The tab label's count comes from the dashboard until the queue itself has
-  // been loaded; keep the two saying the same thing.
-  if (dash.value) dash.value.emailsAwaitingApproval = items.length
+  // been loaded; keep the two saying the same thing. Scheduled emails are
+  // already approved, so only the ones still needing a decision count.
+  if (dash.value) dash.value.emailsAwaitingApproval = items.filter((q) => q.status === 'awaiting_approval').length
 }
 
 function fillDraft(d) {
@@ -852,14 +854,48 @@ function testDraft() {
   })
 }
 
-function approveDraft() {
+/** Approved, waiting for its time: read-only until taken off the schedule,
+ *  so nothing approved changes without being approved again. */
+const isScheduled = computed(() => reviewing.value?.status === 'scheduled')
+
+/** Whether "approve for its time" is on offer: it has a time, still ahead. */
+const canSchedule = computed(() => {
+  const at = reviewing.value?.sendAt
+  return !isScheduled.value && Boolean(at) && new Date(at) > new Date()
+})
+
+function sendNowDraft() {
   draftAction(async () => {
-    await saveDraft()
+    if (!isScheduled.value) await saveDraft()
     const d = reviewing.value
-    if (!confirm(`Send "${d.subject}" to ${d.count} recipient(s)? This cannot be undone.`)) return
+    if (!confirm(`Send "${d.subject}" to ${d.count} recipient(s) now? This cannot be undone.`)) return
     const res = await api.post(`/admin/email/queue/${d.id}/send`)
     flash(res.message)
     closeReview()
+    await loadEmail()
+  })
+}
+
+function scheduleDraft() {
+  draftAction(async () => {
+    await saveDraft()
+    const d = reviewing.value
+    if (!confirm(
+      `Approve "${d.subject}" to go out ${d.sendAtText}?\n\n` +
+      `It goes to whoever is on the list then (${d.count} now), with nobody needing to press anything.`,
+    )) return
+    const res = await api.post(`/admin/email/queue/${d.id}/schedule`)
+    flash(res.message)
+    closeReview()
+    await loadEmail()
+  })
+}
+
+function unscheduleDraft() {
+  draftAction(async () => {
+    const res = await api.post(`/admin/email/queue/${reviewing.value.id}/unschedule`)
+    reviewNotice.value = res.message
+    fillDraft(await api.get(`/admin/email/queue/${reviewing.value.id}`))
     await loadEmail()
   })
 }
@@ -2352,18 +2388,21 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
 
         <!-- The approval queue. Above the composer, because a draft here is
              something the site has already decided somebody should hear about
-             and is only waiting on a person — "tickets are on sale" loses its
-             point by the hour. -->
-        <Card :variant="queue.length ? 'raised' : 'outline'" :class="{ 'pending-card': queue.length }" style="margin-bottom:var(--space-6)">
+             and is only waiting on a person. -->
+        <Card :variant="awaitingCount ? 'raised' : 'outline'" :class="{ 'pending-card': awaitingCount }" style="margin-bottom:var(--space-6)">
           <h2 style="margin:0 0 var(--space-2); font:var(--type-h4); display:flex; gap:var(--space-3); align-items:center">
-            Waiting for approval
-            <Badge v-if="queue.length" tone="danger">{{ queue.length }}</Badge>
+            Email queue
+            <Badge v-if="awaitingCount" tone="danger">{{ awaitingCount }} to approve</Badge>
           </h2>
           <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
-            Emails the site writes on its own — like “tickets are on sale” — wait
-            here. Nothing in this list has been sent: read it, change the words or
-            who it goes to, then send or dismiss it. Email about somebody's own
+            Emails the site writes on its own wait here — “tickets are on sale”
+            is written as soon as an event is published with a sale time. Nothing
+            goes until somebody approves it: send it now, or approve it for its
+            time and it goes out then by itself. Email about somebody's own
             booking or sign-in still goes straight to them.
+          </p>
+          <p v-if="!queue.length" style="margin:var(--space-3) 0 0; font:var(--type-small); color:var(--text-faint)">
+            Nothing queued.
           </p>
           <div
             v-for="q in queue"
@@ -2372,9 +2411,17 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           >
             <div style="display:grid; gap:var(--space-1, 4px); min-width:0">
               <strong style="font:var(--type-small); overflow-wrap:anywhere">{{ q.subject }}</strong>
+              <span style="display:flex; gap:var(--space-2); align-items:center; flex-wrap:wrap; font:var(--type-2xs); color:var(--text-muted)">
+                <Badge :tone="q.status === 'scheduled' ? 'accent' : 'brand'">
+                  {{ q.status === 'scheduled' ? 'approved' : 'needs approval' }}
+                </Badge>
+                <template v-if="q.status === 'scheduled'">goes out {{ q.sendAtText }}</template>
+                <template v-else-if="q.sendAtText">due {{ q.sendAtText }}</template>
+              </span>
               <span style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">
                 {{ q.kindLabel }} · {{ q.recipients }} recipient(s) · written {{ new Date(q.createdAt).toLocaleString() }}
               </span>
+              <span v-if="q.note" style="font:var(--type-2xs); color:var(--danger)">{{ q.note }}</span>
               <span v-if="q.warning" style="font:var(--type-2xs); color:var(--danger)">{{ q.warning }}</span>
             </div>
             <Button size="sm" :disabled="busy" @click="openReview(q.id)">Review</Button>
@@ -2468,8 +2515,8 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             <Card variant="outline">
               <div style="display:flex; align-items:baseline; justify-content:space-between; gap:var(--space-3); flex-wrap:wrap">
                 <h2 style="margin:0; font:var(--type-h4)">Sent</h2>
-                <Button size="sm" variant="ghost" :disabled="busy" @click="runAnnouncePass">
-                  Run on-sale &amp; reminder pass
+                <Button size="sm" variant="ghost" :disabled="busy" title="Send any due last-chance reminders now, instead of at the next ten-minute pass" @click="runReminderPass">
+                  Run reminder pass
                 </Button>
               </div>
               <p v-if="!campaigns.length" style="margin:var(--space-4) 0 0; font:var(--type-small); color:var(--text-faint)">
@@ -2880,15 +2927,22 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
       @close="closeReview"
     >
       <div v-if="reviewing" style="display:grid; gap:var(--space-4)">
+        <p v-if="isScheduled" class="review-scheduled">
+          Approved — it goes out <strong>{{ reviewing.sendAtText }}</strong> by itself.
+          Take it off the schedule to change anything.
+        </p>
+        <p v-if="reviewing.note" class="review-warning">{{ reviewing.note }}</p>
         <p v-if="reviewing.warning" class="review-warning">{{ reviewing.warning }}</p>
         <p v-if="reviewing.event" style="margin:0; font:var(--type-small); color:var(--text-muted)">
           About <RouterLink :to="`/events/${reviewing.event.slug}`">{{ reviewing.event.title }}</RouterLink>.
-          Written {{ new Date(reviewing.createdAt).toLocaleString() }} — nothing has been sent.
+          <template v-if="reviewing.kind === 'on_sale' && reviewing.sendAtText">Sales open {{ reviewing.sendAtText }}; this follows if the sale moves.</template>
+          Nothing has been sent.
+          <template v-if="!reviewing.editedAt && reviewing.kind === 'on_sale'">Until somebody edits it, it is rewritten when the event changes.</template>
         </p>
 
-        <Field label="Subject"><Input v-model="mailDraft.subject" /></Field>
+        <Field label="Subject"><Input v-model="mailDraft.subject" :disabled="isScheduled" /></Field>
         <Field label="Heading" help="The big line inside the email. Blank uses the subject.">
-          <Input v-model="mailDraft.heading" />
+          <Input v-model="mailDraft.heading" :disabled="isScheduled" />
         </Field>
         <Field
           :label="reviewing.event ? 'Opening' : 'Body'"
@@ -2896,9 +2950,9 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             ? 'What comes first. The date, venue, prices and booking link are added underneath from the event when it is sent, so they are always current. **bold**, - bullets, [link](https://…).'
             : 'Blank line between paragraphs. **bold**, - bullets, ## heading, [link](https://…).'"
         >
-          <textarea v-model="mailDraft.body" rows="5" class="ees-textarea" />
+          <textarea v-model="mailDraft.body" rows="5" class="ees-textarea" :disabled="isScheduled" />
         </Field>
-        <div style="display:flex; gap:var(--space-3); align-items:center">
+        <div v-if="!isScheduled" style="display:flex; gap:var(--space-3); align-items:center">
           <Button size="sm" variant="secondary" :disabled="busy || !draftDirty" @click="draftAction(saveDraft)">
             Save and update the preview
           </Button>
@@ -2921,7 +2975,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             <input
               type="checkbox"
               :checked="mailDraft.audiences.includes(a.key)"
-              :disabled="busy"
+              :disabled="busy || isScheduled"
               @change="toggleDraftAudience(a.key)"
             />
             <span>
@@ -2932,7 +2986,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           </label>
         </div>
 
-        <form class="test-list__add" @submit.prevent="addRecipients">
+        <form v-if="!isScheduled" class="test-list__add" @submit.prevent="addRecipients">
           <Input v-model="addAddresses" placeholder="Add addresses — name@ic.ac.uk, another@ic.ac.uk" aria-label="Add recipients" />
           <Button type="submit" size="sm" variant="secondary" :disabled="busy || !addAddresses.includes('@')">Add</Button>
         </form>
@@ -2948,7 +3002,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             <span class="recipients__source">
               {{ r.list ? 'department list' : (sourceLabels[r.source] || r.source) }}
             </span>
-            <Button size="sm" variant="ghost" :disabled="busy" @click="removeRecipient(r.email)">Remove</Button>
+            <Button size="sm" variant="ghost" :disabled="busy || isScheduled" @click="removeRecipient(r.email)">Remove</Button>
           </div>
           <span v-if="!reviewing.count" style="font:var(--type-small); color:var(--text-faint)">
             Nobody yet — tick an audience above or add an address.
@@ -2963,7 +3017,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           <div v-for="email in mailDraft.excluded" :key="email" class="recipients__row">
             <span style="font-family:var(--font-mono); font-size:var(--text-xs); color:var(--text-muted); text-decoration:line-through">{{ email }}</span>
             <span />
-            <Button size="sm" variant="ghost" :disabled="busy" @click="restoreRecipient(email)">Put back</Button>
+            <Button size="sm" variant="ghost" :disabled="busy || isScheduled" @click="restoreRecipient(email)">Put back</Button>
           </div>
         </div>
 
@@ -2980,7 +3034,19 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           <Button variant="secondary" :disabled="busy" title="Send it, as it stands, to the Test list only" @click="testDraft">
             Send a test
           </Button>
-          <Button :disabled="busy || !reviewing?.count || !mailDraft.subject.trim()" @click="approveDraft">
+          <template v-if="isScheduled">
+            <Button variant="secondary" :disabled="busy" @click="unscheduleDraft">Take off schedule</Button>
+            <Button variant="secondary" :disabled="busy || !reviewing?.count" @click="sendNowDraft">Send now</Button>
+          </template>
+          <template v-else-if="canSchedule">
+            <Button variant="secondary" :disabled="busy || !reviewing?.count || !mailDraft.subject.trim()" @click="sendNowDraft">
+              Send now
+            </Button>
+            <Button :disabled="busy || !reviewing?.count || !mailDraft.subject.trim()" @click="scheduleDraft">
+              {{ busy ? 'Working…' : `Approve for ${reviewing.sendAtText}` }}
+            </Button>
+          </template>
+          <Button v-else :disabled="busy || !reviewing?.count || !mailDraft.subject.trim()" @click="sendNowDraft">
             {{ busy ? 'Working…' : `Send to ${reviewing?.count ?? 0}` }}
           </Button>
         </div>
@@ -3146,6 +3212,15 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
   margin-top: var(--space-4);
   padding-top: var(--space-4);
   border-top: 1px solid var(--border-faint);
+}
+
+.review-scheduled {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-left: 4px solid var(--action-primary);
+  background: var(--surface-brand-subtle);
+  font: var(--type-small);
+  color: var(--text-strong);
 }
 
 .review-warning {

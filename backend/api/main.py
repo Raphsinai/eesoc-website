@@ -32,6 +32,7 @@ from routes.search import router as search_router
 from routes.seo import router as seo_router
 from routes.sponsors import router as sponsors_router
 from services import announce as announce_service
+from services import campaigns as campaigns_service
 from services import emailing as emailing_service
 from services import maintenance
 from services import storage
@@ -104,20 +105,21 @@ async def lifespan(app: FastAPI):
     else:
         log.warning("UNION_API_URL not set — ICU sync disabled")
 
-    # Separate from the daily ICU sync, and on a much shorter cycle. These two
-    # jobs only read our own database, so they cost nothing upstream — and both
-    # are time-critical in a way the nightly pass cannot serve: "tickets are on
-    # sale" is worthless the morning after, and a last-chance warning that
-    # arrives once the hold has already lapsed is worse than none.
+    # Separate from the daily ICU sync, and hourly on the hour: a last-chance
+    # warning that arrives once the hold has already lapsed is worse than none.
+    # Database-only, so it costs nothing upstream.
     announce_task: asyncio.Task | None = None
     if mailer.configured():
         announce_task = asyncio.create_task(announce_service.scheduler())
-        log.info(
-            "On-sale announcements and purchase reminders every %d minutes",
-            settings.announce_interval_minutes,
-        )
+        log.info("Purchase reminders hourly, on the hour")
     else:
-        log.warning("No SMTP credentials — on-sale and reminder emails disabled")
+        log.warning("No SMTP credentials — purchase reminders disabled")
+
+    # Approved emails go at their time — "tickets are on sale" the moment sales
+    # open. Runs with or without mail credentials: it also writes the on-sale
+    # drafts for events saved before it was running, and anything due while
+    # the mailbox is down stays scheduled until it is back.
+    scheduled_task = asyncio.create_task(campaigns_service.scheduler())
 
     # A bulk send that the previous pod was mid-flight on is deliberately left
     # `status='sending'` in the database, so this pod — its replacement, under a
@@ -130,7 +132,7 @@ async def lifespan(app: FastAPI):
     yield
 
     seed_task.cancel()
-    for background in (task, announce_task, resume_task):
+    for background in (task, announce_task, scheduled_task, resume_task):
         if background is None:
             continue
         background.cancel()

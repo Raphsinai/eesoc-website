@@ -17,7 +17,7 @@ every assumption: `DECISIONS.md`. **Staging only; nothing is promoted without Ra
 | 06 | Sign-up questions (rescoped) | not started (after 12) |
 | 07 | Rich event pages, archive | built on `plan-07-rich-events`, **unmerged**; wave 2 (merge main in, re-validate) |
 | 08 | Event admin workflow | not started (after 07) |
-| 09 | Email approval queue | not started (after 08) |
+| 09 | Email approval queue | **core landed out-of-plan 2026-10-12** (Raph's direct request, migration 073): queue, edit words + recipients, test send, approve/dismiss, BCC send; on-sale is the only trigger wired. Still to do from the spec: the other triggers, staleness, source-sync of unedited drafts |
 | 10 | Committee-added tickets | superseded — landed on the origin line (a43c4b5) |
 | 11 | Form builder | proposed, **awaiting approval** (migrations to renumber to 070–071 when approved) |
 | 12 | Ticket perms + audit log | wave 1, building (migrations 068–069) |
@@ -29,7 +29,13 @@ every assumption: `DECISIONS.md`. **Staging only; nothing is promoted without Ra
 | 18 | Cancellation email | wave 2 (note of 2026-10-10; after 16) |
 
 Out-of-plan work landed and pushed since round 4 (Raph's direct sessions): passkeys
-(migration 065), CI made to actually run pytest + e2e, uvicorn entrypoint fix.
+(migration 065), CI made to actually run pytest + e2e, uvicorn entrypoint fix, and
+(2026-10-12) the email approval queue core — see row 09. Its ruling, which departs
+from 09's spec: the per-event "tell me when it's on sale" askers are **not** sent
+automatically any more; they are one ticked audience on the on-sale draft and go
+out BCC'd with everybody else when it is approved ("every automated email needs
+approval, only emails directed to people can be sent automatically"). Migration
+**073** is taken (072 is the uncommitted free-tickets work in the main checkout).
 
 ## This round (2026-10-10)
 

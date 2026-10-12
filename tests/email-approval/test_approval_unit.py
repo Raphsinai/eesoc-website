@@ -186,6 +186,16 @@ def test_send_is_one_bcc_message_including_the_people_who_asked(fake, outbox):
     assert sorted(fake.notified) == [11, 12]
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 13),
+    reason=(
+        "builds a real message: on Python 3.12 the stdlib cannot serialise ANY "
+        "message under utils/email.py's unfolded policy (max_line_length=0 sends "
+        "it to a quoted-printable encoder that rejects 0). The api image runs "
+        "3.14; the CI runner's own python3 is 3.12. The stack tests cover the "
+        "same BCC property through the real api."
+    ),
+)
 def test_bcc_send_hides_the_audience_from_each_other(monkeypatch):
     """Through the real send_many: more than one recipient means the visible
     To is our own mailbox and everybody is on the envelope only."""

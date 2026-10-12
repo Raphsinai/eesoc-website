@@ -178,9 +178,19 @@ Creates a **hold**, not a purchase. Returns `next.action`:
 `buy` (members — matched automatically on their ICU login),
 `buy_and_supply_order` (externals), or `none` (free tickets).
 
-**409** when full, with the reason in `detail`. Capacity is enforced under a row
-lock on the event, so concurrent requests cannot oversell — verified at 30
+**409** when full, or once booking has closed (`detail`: "Booking for this event
+has closed."), with the reason in `detail`. Capacity is enforced under a row lock
+on the event, so concurrent requests cannot oversell — verified at 30
 simultaneous bookings against a cap of 6.
+
+**Sale windows.** An event may set `reservations_close_at` (nobody can reserve,
+hold a guest seat, or join the waitlist after it; the adapter refuses too, with
+reason `reservations_closed`; committee-added tickets are not gated) and
+`union_sales_close_at` (no hold's pay-by deadline passes it — saving an earlier
+one brings live holds forward to it). Reservations must not close after Union
+sales do, and neither after the event ends (422). The event payload carries
+`bookingClosesAt` and `unionSalesCloseAt`, and `salesState` is `closed` once
+booking has closed.
 
 ### `GET /me/reservations` 🔒 · `POST /reservations/{id}/cancel` 🔒
 ### `PATCH /reservations/{id}/order-number` 🔒
@@ -414,7 +424,7 @@ Check either with `python3 scripts/check-smtp.py [--pub]`.
 | Trigger | Email | Profile |
 |---|---|---|
 | A hold is taken | "We're holding your ticket" — with the Union purchase link and the pay-by deadline | transactional |
-| ~24h before a hold lapses unpaid | "Last chance" | transactional |
+| ~6h before a hold lapses unpaid (never within 2h of booking) | "Last chance" | transactional |
 | A seat frees on a waitlist | The offer, with its deadline | transactional |
 | An event is published with a sale time | "Tickets are on sale", to everyone who asked about the event and the subscribers — **drafted into the queue at once, and sent when sales open once a committee member has approved it** (or sooner, if they press Send now) | publicity |
 | Committee presses send | Newsletter, or a message about one event | publicity |
@@ -518,8 +528,14 @@ reserve ──> held ──(matching Union sale found)──> confirmed
 ```
 
 eActivities refreshes online sales **once a day at 06:00**, so the api service
-syncs at 06:15 and holds last `hold_hours` (default 72, minimum 24 — anything
-less would expire bookings that had been paid for).
+syncs at 06:15. A hold on a ticket linked to a Union product lasts whole days
+and ends at **midnight London time**: `hold_hours` rounded up to days (at least
+one), ending 23:59:59 on the booking day plus days − 1 — a day later if booked
+at 23:00 or after — and never after `union_sales_close_at`. A purchase made
+before midnight is matched by the next morning's sync, which confirms a held
+booking even once its deadline has passed. A hold on an unlinked ticket lasts
+until the event, as nothing but the committee can confirm it. The rule lives in
+SQL (`HOLD_EXPIRES`) with a tested Python mirror in `api/utils/holds.py`.
 
 Matching:
 - **Members** — on `customer_login` / `customer_cid` from the sale. Nothing to do.

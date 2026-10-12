@@ -64,6 +64,11 @@ class Event(BaseModel):
     # When tickets go on sale. None = not announced yet, which the site
     # shows as "On sale soon" and refuses to book.
     sales_open_at: datetime | None = None
+    # The sale window's end (066). After `reservations_close_at` nobody can
+    # reserve; no hold's pay-by deadline may pass `union_sales_close_at`.
+    # Either None = no limit, as before.
+    reservations_close_at: datetime | None = None
+    union_sales_close_at: datetime | None = None
     # Set when the "tickets are on sale" emails went out. Read-only from the
     # admin form: it is the announcer's own bookkeeping, and letting an edit
     # clear it would re-announce the event.
@@ -133,6 +138,11 @@ class EventWrite(BaseModel):
     # as "On sale soon" and refuses to book. Must be on THIS model, not just
     # on Event: create and update both read it off the write payload.
     sales_open_at: datetime | None = None
+    # The sale window's end (066). After `reservations_close_at` nobody can
+    # reserve; no hold's pay-by deadline may pass `union_sales_close_at`.
+    # Either None = no limit, as before.
+    reservations_close_at: datetime | None = None
+    union_sales_close_at: datetime | None = None
     purchase_url: str | None = None
     signup_url: str | None = None
     sponsorship_claimable: bool = False

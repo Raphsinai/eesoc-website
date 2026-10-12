@@ -153,17 +153,22 @@ class Settings(BaseSettings):
     email_approval_notify: str = ""
 
     # --- automated reminders ---
-    # How long before a hold expires the "last chance" email goes out. 24h by
-    # default against a 48h hold: late enough that most people have already
-    # paid and will never see it, early enough to still act on.
-    purchase_reminder_hours_before: int = 24
+    # How long before a hold expires the "last chance" email goes out. Holds
+    # end at midnight (section 17), so 6h is the early evening of the last day
+    # — late enough that most people have already paid and never see it, early
+    # enough to still act on. Never within 2h of booking: the "we're holding
+    # your ticket" email has only just told them the deadline.
+    purchase_reminder_hours_before: int = 6
+    purchase_reminder_min_age_hours: int = 2
     # The reminder pass runs once an hour, on the hour (utils/clock.py) — not
     # configurable, because nothing recurring here runs more often than that.
 
     # --- guest booking ---
     # Guests have not proved they control the address, so their hold is short:
     # long enough to finish paying, not long enough to squat on a seat. A
-    # verified account's hold is the event's own hold_hours (72 by default).
+    # verified account's hold is the event's own hold_hours. Holds are whole
+    # days ending at midnight London time (section 17), so 24 means the end of
+    # the day they book (the next day's, if they book after 23:00).
     guest_hold_hours: int = 24
     # How long a seat is held while somebody fills in the guest form. Short by
     # design: it exists to stop an oversell mid-typing, not to reserve a ticket.

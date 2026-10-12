@@ -51,7 +51,10 @@ async def chase_unpaid() -> dict:
     """One warning per unpaid hold, shortly before it lapses."""
     due = await database.get(
         "/reservations/needing-reminder",
-        {"within_hours": settings.purchase_reminder_hours_before},
+        {
+            "within_hours": settings.purchase_reminder_hours_before,
+            "min_age_hours": settings.purchase_reminder_min_age_hours,
+        },
     ) or []
 
     sent = 0

@@ -80,20 +80,30 @@ def format_price(pence) -> str:
 
 
 def sales_state(event: dict) -> tuple[str, str | None]:
-    """When this event's tickets open: ("open" | "scheduled" | "soon", iso).
+    """Where this event's booking stands, and when it opens:
+    ("open" | "scheduled" | "soon" | "closed", opening iso).
 
-    Three states, not two. NULL is not "on sale" — it means the committee has
-    not decided yet, and the honest thing to show is "On sale soon" rather than
-    a booking form or a date we do not have.
+    Not two states. NULL is not "on sale" — it means the committee has not
+    decided yet, and the honest thing to show is "On sale soon" rather than a
+    booking form or a date we do not have. And once `reservations_close_at`
+    has passed, booking is "closed" (section 17) — every check that refuses a
+    booking before the sale opens refuses one after it closes, too.
     """
     opens = _parse(event.get("sales_open_at"))
     if opens is None:
         return "soon", None
     if opens.tzinfo is None:
         opens = opens.replace(tzinfo=timezone.utc)
-    if opens <= datetime.now(timezone.utc):
-        return "open", opens.isoformat()
-    return "scheduled", opens.isoformat()
+    now = datetime.now(timezone.utc)
+    if opens > now:
+        return "scheduled", opens.isoformat()
+    closes = _parse(event.get("reservations_close_at"))
+    if closes is not None:
+        if closes.tzinfo is None:
+            closes = closes.replace(tzinfo=timezone.utc)
+        if closes <= now:
+            return "closed", opens.isoformat()
+    return "open", opens.isoformat()
 
 
 def sales_open(event: dict) -> bool:
@@ -126,6 +136,8 @@ def event_status(event: dict) -> tuple[str, str]:
         return "On sale soon", "neutral"
     if state == "scheduled":
         return f"On sale {format_date(_parse(opens))}", "accent"
+    if state == "closed":
+        return "Booking closed", "neutral"
 
     remaining = event.get("remaining")
     if remaining is None:
@@ -172,6 +184,9 @@ def event_card(event: dict) -> dict:
         "published": bool(event.get("published")),
         "salesState": sales_state(event)[0],
         "salesOpenAt": sales_state(event)[1],
+        # The end of the sale window (section 17), for "Booking closes …".
+        "bookingClosesAt": event.get("reservations_close_at"),
+        "unionSalesCloseAt": event.get("union_sales_close_at"),
     }
 
 

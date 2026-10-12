@@ -222,11 +222,20 @@ async function reconcile() {
 // -------------------------------------------------------------- events -----
 const blank = () => ({
   slug: '', title: '', category: 'Social', description: '', image_url: '', venue: '',
-  starts_at: '', ends_at: '', doors_close_at: '', capacity: null, hold_hours: 48, published: false,
+  starts_at: '', ends_at: '', doors_close_at: '', capacity: null, published: false,
+  // Holds are whole days ending at midnight London time (section 17); the
+  // form edits days and sends hold_hours = days × 24.
+  hold_days: 2,
   // Not announced is the default for a new event: the site shows On sale
   // soon and refuses bookings until someone chooses a date.
   sales_scheduled: false,
   sales_open_at: '',
+  // The end of the sale window, each optional and off by default. A tickbox
+  // rather than "leave the time blank", for the same Safari reason as above.
+  reservations_close_enabled: false,
+  reservations_close_at: '',
+  union_close_enabled: false,
+  union_sales_close_at: '',
   // Where to buy, for the emails. Only needed when the Union's own product
   // feed carries no URL — which, for our centre, is most of the time.
   purchase_url: '',
@@ -279,6 +288,11 @@ function editEvent(e) {
     doors_close_at: toLocalInput(e.doors_close_at),
     sales_scheduled: Boolean(e.sales_open_at),
     sales_open_at: toLocalInput(e.sales_open_at),
+    hold_days: Math.max(1, Math.ceil((e.hold_hours ?? 48) / 24)),
+    reservations_close_enabled: Boolean(e.reservations_close_at),
+    reservations_close_at: toLocalInput(e.reservations_close_at),
+    union_close_enabled: Boolean(e.union_sales_close_at),
+    union_sales_close_at: toLocalInput(e.union_sales_close_at),
     signup_url: e.signup_url ?? '',
     map_url: e.map_url ?? '',
     meeting_url: e.meeting_url ?? '',
@@ -324,6 +338,17 @@ async function saveEvent() {
       sales_open_at:
         draft.sales_scheduled && draft.sales_open_at
           ? new Date(draft.sales_open_at).toISOString()
+          : null,
+      hold_hours: Math.max(1, Math.round(draft.hold_days) || 1) * 24,
+      // Only while tickets are on sale from a date: closing a sale that never
+      // opened means nothing, and a hidden value must not linger.
+      reservations_close_at:
+        draft.sales_scheduled && draft.reservations_close_enabled && draft.reservations_close_at
+          ? new Date(draft.reservations_close_at).toISOString()
+          : null,
+      union_sales_close_at:
+        draft.sales_scheduled && draft.union_close_enabled && draft.union_sales_close_at
+          ? new Date(draft.union_sales_close_at).toISOString()
           : null,
       signup_url: draft.signup_url.trim() || null,
       map_url: draft.map_url.trim() || null,
@@ -1831,7 +1856,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               </Field>
               <div style="display:grid; grid-template-columns:1fr 1fr; gap:var(--space-3)">
                 <Field label="Total capacity" help="Blank = per-type only."><Input v-model.number="draft.capacity" type="number" min="1" /></Field>
-                <Field label="Hold hours" help="Min 24."><Input v-model.number="draft.hold_hours" type="number" min="24" /></Field>
+                <Field label="Hold (days)" help="Pay by midnight on the last day; 1 = the day they book."><Input v-model.number="draft.hold_days" type="number" min="1" /></Field>
               </div>
               <Field
                 label="External sign-up form (optional)"
@@ -2018,6 +2043,32 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                       : 'The event is listed, but cannot be booked until you set a date.'
                   }}
                 </p>
+
+                <!-- The end of the sale window (section 17). Both optional;
+                     unticked, booking stays open until the event. -->
+                <template v-if="draft.sales_scheduled">
+                  <label style="margin-top:var(--space-2); font:var(--type-small); color:var(--text-body); display:flex; gap:var(--space-2); align-items:center">
+                    <input v-model="draft.reservations_close_enabled" type="checkbox" />
+                    Stop taking reservations at a set time
+                  </label>
+                  <template v-if="draft.reservations_close_enabled">
+                    <Input v-model="draft.reservations_close_at" type="datetime-local" aria-label="Reservations close" />
+                    <p style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
+                      Nobody can reserve after this. Tickets you add for someone still work.
+                    </p>
+                  </template>
+                  <label style="font:var(--type-small); color:var(--text-body); display:flex; gap:var(--space-2); align-items:center">
+                    <input v-model="draft.union_close_enabled" type="checkbox" />
+                    The Union shop stops selling at a set time
+                  </label>
+                  <template v-if="draft.union_close_enabled">
+                    <Input v-model="draft.union_sales_close_at" type="datetime-local" aria-label="Union sales close" />
+                    <p style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
+                      No pay-by deadline goes past this: booked at 12:00 with a 16:00
+                      close, they have until 16:00. Must not be before reservations close.
+                    </p>
+                  </template>
+                </template>
               </fieldset>
 
               <label style="font:var(--type-small)"><input v-model="draft.published" type="checkbox" /> Published</label>

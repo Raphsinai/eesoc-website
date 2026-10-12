@@ -78,6 +78,7 @@ def _ensure_visitor(request: Request, response: Response) -> str:
 
 
 REASONS = {
+    "reservations_closed": "Booking for this event has closed.",
     "sold_out": "This event is full.",
     "type_sold_out": "That ticket type has sold out.",
     "over_user_limit": (
@@ -121,6 +122,8 @@ def _require_sales_open(event: dict) -> None:
     state, opens = sales_state(event)
     if state == "open":
         return
+    if state == "closed":
+        raise HTTPException(409, REASONS["reservations_closed"])
     if state == "soon":
         raise HTTPException(409, "Tickets for this event are not on sale yet.")
     when = datetime.fromisoformat(opens)
@@ -899,6 +902,8 @@ async def notify_when_on_sale(
         raise HTTPException(400, "Tell us where to email you.")
 
     state, _ = sales_state(event)
+    if state == "closed":
+        raise HTTPException(409, REASONS["reservations_closed"])
     if state == "open":
         # Not an error: they can book right now, and saying so is more use than
         # a promise to email them about something that has already happened.

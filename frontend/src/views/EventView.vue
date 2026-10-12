@@ -340,6 +340,16 @@ const salesOpensText = computed(() => {
     hour: '2-digit', minute: '2-digit',
   })
 })
+
+// When booking stops (section 17), if the committee set a time — shown above
+// the form while it is open, and in the notice that replaces it once closed.
+const bookingClosesText = computed(() => {
+  if (!event.value?.bookingClosesAt) return ''
+  return new Date(event.value.bookingClosesAt).toLocaleString(undefined, {
+    weekday: 'short', day: '2-digit', month: 'short',
+    hour: '2-digit', minute: '2-digit',
+  })
+})
 </script>
 
 <template>
@@ -480,6 +490,17 @@ const salesOpensText = computed(() => {
             title="Booking is unavailable"
           />
 
+          <!-- Booking has closed. The picker goes, like every other state in
+               which nothing can be booked; anything already booked is still
+               listed below. -->
+          <div v-else-if="event.salesState === 'closed'" class="sales-notice booking-closed">
+            <p style="margin:0; font:var(--type-small); color:var(--text-strong)">Booking has closed</p>
+            <p style="margin:var(--space-2) 0 0; font:var(--type-small); color:var(--text-muted)">
+              Reservations for this event closed{{ bookingClosesText ? ` ${bookingClosesText}` : '' }}.
+              If you already have a ticket, it's below.
+            </p>
+          </div>
+
           <!-- Same reasoning as the maintenance case: the whole picker goes,
                rather than leaving a form that cannot be submitted. -->
           <div v-else-if="event.salesState !== 'open'" class="sales-notice">
@@ -532,6 +553,9 @@ const salesOpensText = computed(() => {
           </div>
 
           <template v-else>
+          <p v-if="bookingClosesText" class="booking-closes">
+            Booking closes {{ bookingClosesText }}
+          </p>
           <p v-if="!session.authenticated" style="margin:0 0 var(--space-4); font:var(--type-small); color:var(--text-muted)">
             Log in to book. Members and guests both welcome.
           </p>
@@ -825,5 +849,12 @@ const salesOpensText = computed(() => {
   height: 28px;
   max-width: 120px;
   object-fit: contain;
+}
+
+/* "Booking closes …" above the form: a deadline, so it reads as one. */
+.booking-closes {
+  margin: 0 0 var(--space-4);
+  font: var(--type-small);
+  color: var(--text-strong);
 }
 </style>

@@ -43,7 +43,8 @@ EVENT_COLUMNS = """
     capacity, hold_hours, published, sponsorship_claimable,
     requested_by_sponsor_id, academic_year, created_by, created_at, updated_at,
     sales_open_at, sales_announced_at, purchase_url, industry, signup_url,
-    map_url, meeting_url, meeting_url_private, target_years
+    map_url, meeting_url, meeting_url_private, target_years,
+    reservations_close_at, union_sales_close_at
 """
 
 TT_COLUMNS = """
@@ -76,13 +77,38 @@ MINE_OF_TYPE = """
        AND id <> $4;
 """
 
+# The pay-by deadline of a hold on a ticket to be bought (section 17).
+#
+# The end of a London calendar day, not "now + N hours": the Union's sales
+# reach us at the 06:05 sync, so a hold that ends at midnight is one whose
+# purchase is matched the next morning (the matcher confirms a held booking
+# whatever its deadline, as long as the sale was made). A hold of N days
+# (`hold_hours` rounded up to whole days, at least one) ends 23:59:59 on the
+# day it was made plus N-1 — and booked at 23:00 or later, a day on, so
+# nobody gets a deadline minutes away. Never later than the Union stops
+# selling (`union_sales_close_at`).
+#
+# The arithmetic is on London wall-clock time, converted back at the end, so
+# a hold made on a clock-change day still ends at local midnight. Mirrored in
+# api/utils/holds.py, and tested to agree.
+#
+# A hold on a ticket with no Union product linked is different, and unchanged:
+# nothing can confirm it but the committee, so it lasts until the event.
 HOLD_EXPIRES = """
     CASE WHEN EXISTS (
             SELECT 1 FROM public.product_links pl
              WHERE pl.purpose = 'event_ticket'
                AND (pl.ticket_type_id = {tt}
                     OR (pl.ticket_type_id IS NULL AND pl.event_id = {ev})))
-         THEN NOW() + make_interval(hours => {hours})
+         THEN LEAST(
+                (date_trunc('day', NOW() AT TIME ZONE 'Europe/London')
+                   + CASE WHEN extract(hour FROM NOW() AT TIME ZONE 'Europe/London') >= 23
+                          THEN interval '1 day' ELSE interval '0' END
+                   + make_interval(days => GREATEST(1, ({hours}::int + 23) / 24) - 1)
+                   + interval '1 day' - interval '1 second'
+                ) AT TIME ZONE 'Europe/London',
+                COALESCE((SELECT e.union_sales_close_at FROM public.events e
+                           WHERE e.id = {ev}), 'infinity'::timestamptz))
          ELSE GREATEST({starts}, NOW() + make_interval(hours => {hours}))
     END
 """
@@ -170,6 +196,32 @@ def _check_doors_close(event: EventWrite) -> None:
             "Doors close cannot be after the event ends. "
             "It may be before the event starts.",
         )
+
+
+def _check_sale_windows(event: EventWrite) -> None:
+    """Booking closes no later than selling does, and neither after the event.
+
+    The database holds the first as a check too (066); here it gets a message
+    somebody can act on rather than a constraint name.
+    """
+    reserve = _utc(event.reservations_close_at) if event.reservations_close_at else None
+    union = _utc(event.union_sales_close_at) if event.union_sales_close_at else None
+    end = _utc(event.ends_at or event.starts_at)
+    if reserve and union and reserve > union:
+        raise HTTPException(
+            422,
+            "Reservations close cannot be after Union sales close — nobody could "
+            "pay for a ticket reserved in between.",
+        )
+    for label, when in (("Reservations close", reserve), ("Union sales close", union)):
+        if when and when > end:
+            raise HTTPException(422, f"{label} cannot be after the event ends.")
+
+
+def _reservations_closed(event) -> bool:
+    """Whether booking has closed for this event row."""
+    closes = event["reservations_close_at"]
+    return closes is not None and closes <= datetime.now(timezone.utc)
 
 
 # A failed confirmation email is retried this many times in all, then left for
@@ -340,6 +392,7 @@ async def create_event(event: EventWrite, created_by: int | None = None) -> Even
     event with no way to book it is not a useful intermediate state."""
     pool = await get_pool()
     _check_doors_close(event)
+    _check_sale_windows(event)
     async with pool.acquire() as conn, conn.transaction():
         try:
             row = await conn.fetchrow(
@@ -350,9 +403,10 @@ async def create_event(event: EventWrite, created_by: int | None = None) -> Even
                      capacity, hold_hours, published, sponsorship_claimable,
                      requested_by_sponsor_id, academic_year, created_by, sales_open_at,
                      purchase_url, industry, signup_url,
-                     map_url, meeting_url, meeting_url_private, target_years)
+                     map_url, meeting_url, meeting_url_private, target_years,
+                     reservations_close_at, union_sales_close_at)
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-                        $19,$20,$21,$22,$23,$24)
+                        $19,$20,$21,$22,$23,$24,$25,$26)
                 RETURNING {EVENT_COLUMNS};
                 """,
                 event.slug, event.title, event.category, event.description,
@@ -364,6 +418,7 @@ async def create_event(event: EventWrite, created_by: int | None = None) -> Even
                 event.purchase_url, event.industry, event.signup_url,
                 event.map_url, event.meeting_url, event.meeting_url_private,
                 _target_years_text(event.target_years),
+                event.reservations_close_at, event.union_sales_close_at,
             )
         except UniqueViolationError:
             raise HTTPException(409, f"An event with slug '{event.slug}' already exists")
@@ -387,6 +442,7 @@ async def create_event(event: EventWrite, created_by: int | None = None) -> Even
 @router.put("/events/{event_id}")
 async def update_event(event_id: int, event: EventWrite) -> EventDetail:
     _check_doors_close(event)
+    _check_sale_windows(event)
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction():
         row = await conn.fetchrow(
@@ -406,6 +462,8 @@ async def update_event(event_id: int, event: EventWrite) -> EventDetail:
                 meeting_url=$22,
                 meeting_url_private=$23,
                 target_years=$24,
+                reservations_close_at=$25,
+                union_sales_close_at=$26,
                 updated_at=NOW()
              WHERE id=$1
             RETURNING {EVENT_COLUMNS};
@@ -419,9 +477,40 @@ async def update_event(event_id: int, event: EventWrite) -> EventDetail:
             event.industry, event.signup_url,
             event.map_url, event.meeting_url, event.meeting_url_private,
             _target_years_text(event.target_years),
+            event.reservations_close_at, event.union_sales_close_at,
         )
         if row is None:
             raise HTTPException(404, "No such event")
+        # Union sales closing earlier than some live holds' deadlines: those
+        # deadlines come forward to it, in this transaction, so nobody is told
+        # they have until Friday to buy what the shop stops selling on
+        # Wednesday. Linked tickets only — an unlinked hold was never on a
+        # Union clock. Confirmed bookings are untouched.
+        clamped = await conn.fetch(
+            """
+            UPDATE public.reservations r
+               SET expires_at = e.union_sales_close_at
+              FROM public.events e
+             WHERE e.id = $1 AND r.event_id = e.id
+               AND e.union_sales_close_at IS NOT NULL
+               AND r.status = 'held'
+               AND r.expires_at > e.union_sales_close_at
+               AND EXISTS (
+                   SELECT 1 FROM public.product_links pl
+                    WHERE pl.purpose = 'event_ticket'
+                      AND (pl.ticket_type_id = r.ticket_type_id
+                           OR (pl.ticket_type_id IS NULL AND pl.event_id = e.id)))
+            RETURNING r.id, r.expires_at;
+            """,
+            event_id,
+        )
+        for hold in clamped:
+            # A waitlist offer's deadline is its hold's; keep them saying the same.
+            await conn.execute(
+                "UPDATE public.waitlist_entries SET offer_expires_at = $2 "
+                "WHERE reservation_id = $1 AND claimed_at IS NULL;",
+                hold["id"], hold["expires_at"],
+            )
         # Ticket types travel with the event, as they do on create. Without
         # this the handler updated the events row and returned, so every edit
         # to a price, cap or name made in the event form was silently thrown
@@ -586,12 +675,16 @@ async def reserve(req: ReservationRequest) -> ReservationResult:
     async with pool.acquire() as conn, conn.transaction():
         # 1. Serialise every reservation attempt for this event.
         event = await conn.fetchrow(
-            "SELECT id, capacity, hold_hours, published, starts_at "
+            "SELECT id, capacity, hold_hours, published, starts_at, reservations_close_at "
             "FROM public.events WHERE id = $1 FOR UPDATE;",
             req.event_id,
         )
         if event is None:
             raise HTTPException(404, "No such event")
+        # Here as well as in the api: the adapter is the one place every way of
+        # booking passes through.
+        if _reservations_closed(event):
+            return ReservationResult(ok=False, reason="reservations_closed")
 
         tt = await conn.fetchrow(
             f"SELECT {TT_COLUMNS} FROM public.ticket_types WHERE id = $1 AND event_id = $2;",
@@ -742,8 +835,15 @@ async def overdue_reservations() -> list[ReservationDetail]:
 
 
 @router.get("/reservations/needing-reminder")
-async def reservations_needing_reminder(within_hours: int = 24) -> list[ReservationDetail]:
+async def reservations_needing_reminder(
+    within_hours: int = 24, min_age_hours: int = 0
+) -> list[ReservationDetail]:
     """Unpaid holds about to run out, which have not been chased yet.
+
+    `min_age_hours` leaves alone a hold made only just now: somebody who booked
+    at 20:00 for a midnight deadline was told that deadline by the "we're
+    holding your ticket" email minutes ago, and a "last chance" straight after
+    it is noise.
 
     `requires_purchase` is the filter that matters: a free ticket has nothing to
     pay for, and chasing somebody for money they do not owe is the kind of email
@@ -776,9 +876,10 @@ async def reservations_needing_reminder(within_hours: int = 24) -> list[Reservat
                AND t.requires_purchase
                AND r.expires_at > NOW()
                AND r.expires_at <= NOW() + make_interval(hours => $1)
+               AND r.created_at <= NOW() - make_interval(hours => $2)
              ORDER BY r.expires_at;
             """,
-            within_hours,
+            within_hours, min_age_hours,
         )
     return [ReservationDetail(**dict(r)) for r in rows]
 
@@ -1401,11 +1502,14 @@ async def create_draft(req: ReservationRequest, minutes: int = 15) -> Reservatio
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction():
         event = await conn.fetchrow(
-            "SELECT id, capacity FROM public.events WHERE id = $1 FOR UPDATE;",
+            "SELECT id, capacity, reservations_close_at FROM public.events "
+            "WHERE id = $1 FOR UPDATE;",
             req.event_id,
         )
         if event is None:
             raise HTTPException(404, "No such event")
+        if _reservations_closed(event):
+            return ReservationResult(ok=False, reason="reservations_closed")
 
         tt = await conn.fetchrow(
             f"SELECT {TT_COLUMNS} FROM public.ticket_types WHERE id = $1 AND event_id = $2;",
@@ -1470,7 +1574,7 @@ async def claim_draft(
             """
             SELECT r.id, r.event_id, r.ticket_type_id, r.quantity, r.expires_at,
                    r.status, r.visitor_hash, e.hold_hours, e.starts_at, tt.max_per_user,
-                   tt.requires_purchase, tt.members_only
+                   tt.requires_purchase, tt.members_only, e.reservations_close_at
               FROM public.reservations r
               JOIN public.events e        ON e.id  = r.event_id
               JOIN public.ticket_types tt ON tt.id = r.ticket_type_id
@@ -1493,6 +1597,10 @@ async def claim_draft(
 
         if draft["expires_at"] <= datetime.now(timezone.utc):
             return ReservationResult(ok=False, reason="draft_expired")
+        if _reservations_closed(draft):
+            # Booking closed while they filled the form in. The seat goes back.
+            await conn.execute("DELETE FROM public.reservations WHERE id = $1;", draft["id"])
+            return ReservationResult(ok=False, reason="reservations_closed")
 
         # The per-person limit, which this path used to skip entirely: a guest
         # could submit the form again and again and hold a ticket each time.
@@ -1646,10 +1754,13 @@ async def promote_waitlist(academic_year: str | None = None) -> dict:
             event_id = record["event_id"]
             async with conn.transaction():
                 event = await conn.fetchrow(
-                    "SELECT id, capacity, hold_hours, starts_at FROM public.events "
-                    "WHERE id=$1 FOR UPDATE;",
+                    "SELECT id, capacity, hold_hours, starts_at, reservations_close_at "
+                    "FROM public.events WHERE id=$1 FOR UPDATE;",
                     event_id,
                 )
+                # Booking has closed: no more offers, the queue just stops.
+                if event is not None and _reservations_closed(event):
+                    continue
                 if event is None:
                     continue
 
@@ -1714,7 +1825,10 @@ async def promote_waitlist(academic_year: str | None = None) -> dict:
                                      WHEN NOT $7::boolean
                                          THEN GREATEST($8::timestamptz,
                                                        NOW() + make_interval(hours => $5))
-                                     ELSE NOW() + make_interval(hours => $5) END,
+                                     -- An offer is a hold like any other: the
+                                     -- same end-of-day deadline, capped by the
+                                     -- Union close.
+                                     ELSE {HOLD_EXPIRES.format(tt="$2", ev="$1", hours="$5", starts="$8::timestamptz")} END,
                                 CASE WHEN $6::boolean THEN NOW() END,
                                 'from waitlist')
                         RETURNING {RESERVATION_COLUMNS};

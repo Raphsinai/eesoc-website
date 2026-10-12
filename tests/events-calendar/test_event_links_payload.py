@@ -32,6 +32,9 @@ ALLOWED_FIELDS = {
     # sponsors confirmed for the event (the 2026-27 agreement, 359badf — only
     # active sponsors, name and logo)
     "doorsClose", "doorsCloseAt", "sponsors",
+    # the end of the sale window (section 17), public by design: the page says
+    # when booking closes, and the purchase deadline is capped by the Union close
+    "bookingClosesAt", "unionSalesCloseAt",
 }
 
 

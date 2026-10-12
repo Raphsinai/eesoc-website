@@ -25,7 +25,7 @@ every assumption: `DECISIONS.md`. **Staging only; nothing is promoted without Ra
 | 14 | Doors close | merged |
 | 15 | My tickets | wave 1, finishing (built on `plan-15-my-tickets`; tests were uncommitted) |
 | 16 | Confirmation email ticket link + catch-up | wave 1, finishing (built on `plan-16-confirmation-ticket-link`) |
-| 17 | Sale windows + end-of-day hold deadlines | **proposed, awaiting approval** (note of 2026-10-10) |
+| 17 | Sale windows + end-of-day hold deadlines | **built 2026-10-12** (approved; same-day midnight reading; migration 066) |
 | 18 | Cancellation email | wave 2 (note of 2026-10-10; after 16) |
 
 Out-of-plan work landed and pushed since round 4 (Raph's direct sessions): passkeys

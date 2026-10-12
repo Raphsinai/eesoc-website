@@ -1,6 +1,11 @@
 # 17 — Sale windows and end-of-day hold deadlines
 
-**Status: PROPOSED — awaiting Raph's approval. Do not build until approved.**
+**Status: BUILT 2026-10-12** (approved by Raph the same day; hold ends at midnight the
+*same* day, rolling to the next after 23:00 — the reading below). Built on main after the
+free-tickets work landed, not after 07/12/15/16 as originally sequenced; those branches
+merge on top. Additions beyond the spec: guest seats and waitlist joins are gated too;
+last-chance reminders now go ~6h before the deadline and never within 2h of booking
+(a 24h lead fires straight after booking once holds end at midnight).
 
 **Goal:** an event can stop taking reservations at one time and stop Union shop sales at
 another; every hold's deadline is the end of a London calendar day (rolling to the next

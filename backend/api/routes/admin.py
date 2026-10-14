@@ -21,7 +21,7 @@ from services import agreement as agreement_service
 from services import announce as announce_service
 from services import campaigns as campaigns_service
 from services import confirmations, emailing, purchase, sponsor_notes, storage, whatsapp
-from services.identity import resolve_or_create_user
+from services.identity import clean_shortcode, find_member, is_shortcode, resolve_or_create_user
 from utils.auth import (
     generate_token,
     hash_token,
@@ -44,6 +44,7 @@ from utils.deps import (
     require_event_editor,
     require_feature,
     require_any_capability,
+    require_locker_allowances,
     require_site,
     require_sponsors,
     require_users,
@@ -1777,13 +1778,61 @@ async def release_locker_year(
 # ------------------------------------------------------- free locker grants
 
 
+# A typo guard, not a policy: nobody needs a dozen lockers, and an allowance of
+# 100 would let one person take a third of the building.
+MAX_FREE_LOCKERS = 10
+
+
+async def _allowance_shortcode(who: str) -> str:
+    """The shortcode an allowance is keyed on, from what a person typed.
+
+    'ab1234', 'AB1234' and 'ab1234@ic.ac.uk' are the shortcode as given. A
+    name-style address (jane.doe24@imperial.ac.uk) is looked up in the members
+    feed, which records each member's login. Anything still not shaped like a
+    shortcode is refused: stored, it would match nobody's account, and the
+    allowance would silently never apply.
+    """
+    typed = (who or "").strip()
+    shortcode = clean_shortcode(typed)
+    if "@" in typed and not is_shortcode(shortcode):
+        member = await find_member(typed)
+        shortcode = clean_shortcode(member.get("login")) if member else None
+    if not is_shortcode(shortcode):
+        raise HTTPException(
+            400,
+            f"Couldn't find a shortcode for “{typed}”. Give their college "
+            "shortcode, like ab1234.",
+        )
+    return shortcode
+
+
 @router.get("/locker-grants")
 async def locker_grants(
-    year: str | None = None, _: AuthSession = Depends(require_site)
-) -> list[dict]:
-    return await database.get(
-        "/lockers/grants", {"academic_year": year or academic_year()}
-    ) or []
+    year: str | None = None, _: AuthSession = Depends(require_locker_allowances)
+) -> dict:
+    """Everyone given free lockers this year, and how many they now hold."""
+    year = year or academic_year()
+    rows = await database.get("/lockers/grants", {"academic_year": year}) or []
+    return {
+        "year": year,
+        "max": MAX_FREE_LOCKERS,
+        "allowances": [
+            {
+                "shortcode": r["shortcode"],
+                "name": " ".join(
+                    p for p in [r.get("first_name"), r.get("last_name")] if p
+                ),
+                "email": r.get("email"),
+                "isMember": bool(r.get("is_member")),
+                "free": r["free_count"],
+                "held": r.get("held") or 0,
+                "note": r.get("note"),
+                "givenBy": r.get("granted_by_email"),
+                "givenAt": r["granted_at"],
+            }
+            for r in rows
+        ],
+    }
 
 
 @router.put("/locker-grants/{shortcode}", dependencies=[Depends(verify_csrf)])
@@ -1792,23 +1841,27 @@ async def set_locker_grant(
     free_count: int = Body(default=1, embed=True),
     note: str | None = Body(default=None, embed=True),
     year: str | None = Body(default=None, embed=True),
-    session: AuthSession = Depends(require_site),
+    session: AuthSession = Depends(require_locker_allowances),
 ) -> dict:
     """Give somebody free lockers, as the old system did for committee.
 
-    Keyed on shortcode so a grant can be made before that person has ever signed
-    in, and per academic year so it lapses at handover instead of following
-    somebody who has left the committee.
+    Keyed on shortcode so an allowance can be made before that person has ever
+    signed in, and per academic year so it lapses at handover instead of
+    following somebody who has left the committee. Setting it again replaces
+    the number rather than adding to it, so the form reads the same whether
+    the allowance is new or being changed.
     """
-    cleaned = (shortcode or "").strip().lower()
-    if not cleaned:
-        raise HTTPException(400, "Give a shortcode.")
+    if not 1 <= free_count <= MAX_FREE_LOCKERS:
+        raise HTTPException(
+            400, f"An allowance is between 1 and {MAX_FREE_LOCKERS} lockers."
+        )
+    cleaned = await _allowance_shortcode(shortcode)
     return await database.put(
         f"/lockers/grants/{cleaned}",
         params={
             "academic_year": year or academic_year(),
-            "free_count": max(1, free_count),
-            "note": note,
+            "free_count": free_count,
+            "note": (note or "").strip() or None,
             "granted_by": session.user.id,
         },
     )
@@ -1818,8 +1871,10 @@ async def set_locker_grant(
 async def delete_locker_grant(
     shortcode: str,
     year: str | None = None,
-    _: AuthSession = Depends(require_site),
+    _: AuthSession = Depends(require_locker_allowances),
 ) -> dict:
+    """Take an allowance away. A locker already booked with it stays booked —
+    the allowance is only checked when somebody books."""
     await database.delete(
         f"/lockers/grants/{shortcode}",
         {"academic_year": year or academic_year()},

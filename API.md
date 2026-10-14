@@ -329,6 +329,7 @@ reports who let them in and when.
 | `PATCH /admin/sponsor-marketing/{id}`, `POST …/preview`, `…/send` (**site**), `…/posted`, `…/complete`, `…/decline` | Work a marketing request |
 | `GET/POST /admin/sponsors/roles-digest` | Preview / send (**site**) one email of new roles to the "Jobs and internships" subscribers |
 | `GET/PATCH /admin/lockers`, `GET /admin/locker-bookings` | Locker estate |
+| `GET /admin/locker-grants`, `PUT/DELETE /admin/locker-grants/{shortcode}` | **Free locker allowances** for the academic year, on top of any bought — **superuser only** (`locker_allowances`). `PUT {free_count, note}` sets the number (1–10, replacing any earlier one); the path takes a shortcode or an Imperial address, resolved through the members feed. Removing one leaves a locker already booked with it in place |
 | `GET /admin/email/audiences` | Who can be mailed, with live counts, plus both mailboxes' state |
 | `POST /admin/email/preview` | Render the message and count the audience — **sends nothing** |
 | `POST /admin/email/send` | Send a newsletter |
@@ -363,12 +364,12 @@ fresh deployment that would be a committee with the keys locked inside.
 One role per account, in `admins.role`. The table of what each unlocks is
 `backend/api/utils/roles.py`; enforcement is `backend/api/utils/deps.py`.
 
-| Role | users | events | sponsors | site | passkey_links |
-|---|:--:|:--:|:--:|:--:|:--:|
-| `superuser` | ✓ | all | ✓ | ✓ | ✓ |
-| `admin` | — | all | ✓ | ✓ | ✓ |
-| `events` | — | all | — | — | — |
-| `industry` | — | industry events only | ✓ | — | — |
+| Role | users | events | sponsors | site | passkey_links | locker_allowances |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|
+| `superuser` | ✓ | all | ✓ | ✓ | ✓ | ✓ |
+| `admin` | — | all | ✓ | ✓ | ✓ | — |
+| `events` | — | all | — | — | — | — |
+| `industry` | — | industry events only | ✓ | — | — | — |
 
 * **users** — grant and revoke roles, and impersonate. Superuser only.
 * **events** — events, ticket types, bookings, waitlists, product links on an
@@ -382,6 +383,9 @@ One role per account, in `admins.role`. The table of what each unlocks is
   which is sponsorship work rather than access control.
 * **site** — resources, files, lockers, Union products, bulk email, the
   committee page's layout and other people's cards.
+* **locker_allowances** — give somebody free lockers for the year
+  (`/admin/locker-grants`). Superuser only: a locker is otherwise paid for, so
+  this gives away the society's money. Lockers themselves are still `site`.
 * **passkey_links** — make, list and revoke passkey setup links
   (`GET/POST /admin/passkey-links {email}`, `DELETE /admin/passkey-links/{id}`).
   A link lets whoever holds it into the account, so: never for the standing

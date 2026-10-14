@@ -115,6 +115,7 @@ _DENIED = {
         "Ask an admin."
     ),
     "passkey_links": "Only an admin or a superuser can make passkey links.",
+    "locker_allowances": "Only a superuser can give out free lockers.",
 }
 
 
@@ -126,6 +127,7 @@ require_events = require_capability("events")
 require_sponsors = require_capability("sponsors")
 require_site = require_capability("site")
 require_passkey_links = require_capability("passkey_links")
+require_locker_allowances = require_capability("locker_allowances")
 
 
 async def require_event_editor(

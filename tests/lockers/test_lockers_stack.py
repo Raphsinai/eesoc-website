@@ -86,7 +86,7 @@ def test_a_level_says_how_many_are_available(api):
 
 
 @pytest.fixture()
-def locker_member(member_client, admin_client, compose_exec):
+def locker_member(member_client, superuser_client, compose_exec):
     """member1, holding nothing, with one free locker granted for the year.
 
     A grant rather than a Union purchase: it is the committee's own route to a
@@ -102,14 +102,14 @@ def locker_member(member_client, admin_client, compose_exec):
             member_client.post(f"/lockers/bookings/{b['id']}/release").raise_for_status()
 
     release_all()
-    admin_client.put(
+    superuser_client.put(
         f"/admin/locker-grants/{shortcode}", json={"free_count": 1}
     ).raise_for_status()
     try:
         yield member_client
     finally:
         release_all()
-        admin_client.delete(f"/admin/locker-grants/{shortcode}").raise_for_status()
+        superuser_client.delete(f"/admin/locker-grants/{shortcode}").raise_for_status()
 
 
 def test_a_repeated_number_is_booked_by_where_it_is(locker_member):

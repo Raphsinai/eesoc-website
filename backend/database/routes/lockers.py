@@ -273,14 +273,29 @@ async def update_locker(
 async def list_grants(academic_year: str | None = None) -> list[dict]:
     pool = await get_pool()
     async with pool.acquire() as conn:
+        # Names come from the members feed when the person has never signed in,
+        # which is the usual case for an allowance made ahead of time. A
+        # shortcode in neither table is most likely a typo, and `is_member`
+        # false is what lets the admin page say so.
         rows = await conn.fetch(
             """
             SELECT g.shortcode, g.academic_year, g.free_count, g.note, g.granted_at,
-                   u.email, u.first_name, u.last_name
+                   u.email,
+                   COALESCE(u.first_name, m.first_name) AS first_name,
+                   COALESCE(u.last_name,  m.last_name)  AS last_name,
+                   (u.member_id IS NOT NULL OR m.login IS NOT NULL) AS is_member,
+                   (SELECT COUNT(*) FROM public.locker_bookings b
+                     WHERE b.user_id = u.id AND b.released_at IS NULL) AS held,
+                   gb.email AS granted_by_email
               FROM public.locker_grants g
               LEFT JOIN public.users u ON lower(u.shortcode) = lower(g.shortcode)
+              LEFT JOIN LATERAL (
+                    SELECT first_name, last_name, login FROM public.members
+                     WHERE lower(login) = lower(g.shortcode) LIMIT 1
+                   ) m ON true
+              LEFT JOIN public.users gb ON gb.id = g.granted_by
              WHERE ($1::varchar IS NULL OR g.academic_year = $1)
-             ORDER BY g.shortcode;
+             ORDER BY g.granted_at DESC;
             """,
             academic_year,
         )

@@ -34,6 +34,7 @@ const TABS = [
   ['files', 'Files', 'site'],
   ['committee', 'Committee', 'site'],
   ['links', 'Union products', 'site'],
+  ['lockers', 'Lockers', 'locker_allowances'],
   ['email', 'Email', 'site'],
   ['people', 'People', 'any'],
   ['sponsors', 'Sponsors', 'sponsors'],
@@ -94,6 +95,14 @@ const passkeyLinks = ref([])
 const passkeyLinkTtlHours = ref(null)
 const passkeyLinkEmail = ref('')
 const madeLinks = reactive({})
+
+// ------------------------------------------------------ locker allowances ---
+// Free lockers on top of any bought, per academic year. Superuser only — see
+// the `locker_allowances` capability in api/utils/roles.py for why.
+const allowances = ref([])
+const allowanceYear = ref('')
+const allowanceMax = ref(10)
+const allowanceForm = reactive({ who: '', free: 1, note: '' })
 
 // ------------------------------------------------------------------ email ---
 const audiences = ref([])
@@ -163,6 +172,7 @@ onMounted(async () => {
   await load()
   loadSponsorInbox()
   loadPasskeyLinks()
+  loadAllowances()
   // Arriving from an event's page with "Email everyone who hasn't bought".
   const id = Number(route.query.announce)
   if (id) {
@@ -1405,6 +1415,62 @@ async function revokePasskeyLink(l) {
   }
 }
 
+async function loadAllowances() {
+  if (!can('locker_allowances')) return
+  try {
+    const res = await api.get('/admin/locker-grants')
+    allowances.value = res.allowances
+    allowanceYear.value = res.year
+    allowanceMax.value = res.max
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+/** Give, or change, somebody's allowance. Setting it again replaces the
+ *  number rather than adding to it. */
+async function giveAllowance() {
+  const who = allowanceForm.who.trim()
+  if (!who) return
+  error.value = ''
+  busy.value = true
+  try {
+    const res = await api.put(`/admin/locker-grants/${encodeURIComponent(who)}`, {
+      free_count: Number(allowanceForm.free),
+      note: allowanceForm.note,
+    })
+    const n = res.free_count
+    flash(`${res.shortcode} has ${n} free locker${n === 1 ? '' : 's'} for ${res.academic_year}.`)
+    Object.assign(allowanceForm, { who: '', free: 1, note: '' })
+    await loadAllowances()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
+}
+
+function changeAllowance(a) {
+  Object.assign(allowanceForm, { who: a.shortcode, free: a.free, note: a.note || '' })
+}
+
+async function removeAllowance(a) {
+  if (!confirm(
+    `Take away ${a.name || a.shortcode}'s free locker allowance? `
+    + 'A locker they have already booked stays theirs.',
+  )) return
+  try {
+    await api.del(`/admin/locker-grants/${encodeURIComponent(a.shortcode)}`)
+    await loadAllowances()
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+function shortDate(v) {
+  return new Date(v).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+}
+
 /** The link made most recently from the People tab's form, if still on screen. */
 const lastMadeLink = computed(() => {
   const made = Object.values(madeLinks)
@@ -2407,6 +2473,64 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 <span style="color:var(--text-faint)">(#{{ l.union_product_id }}<template v-if="l.union_product_line_id">:{{ l.union_product_line_id }}</template>)</span>
               </span>
               <Button size="sm" variant="ghost" @click="deleteLink(l)">Remove</Button>
+            </div>
+          </Card>
+        </div>
+      </template>
+
+      <!-- ============================ LOCKERS ============================= -->
+      <template v-if="tab === 'lockers'">
+        <div class="admin-cols">
+          <Card variant="offset">
+            <h2 style="margin:0 0 var(--space-2); font:var(--type-h4)">Give free lockers</h2>
+            <p style="margin:0 0 var(--space-4); font:var(--type-small); color:var(--text-muted)">
+              For {{ allowanceYear }}, on top of any they buy on the Union shop.
+              They pick a locker on the Lockers page like anyone else, and the
+              allowance lapses when the academic year ends. Lockers are for
+              Union members, so it does nothing until they are one.
+            </p>
+            <div style="display:grid; gap:var(--space-3)">
+              <Field label="Shortcode" help="Or their Imperial email. Works before they have ever signed in.">
+                <Input v-model="allowanceForm.who" placeholder="ab1234" />
+              </Field>
+              <Field label="How many lockers" :help="`1 to ${allowanceMax}. If they already have an allowance, this replaces it.`">
+                <Input v-model="allowanceForm.free" type="number" min="1" :max="allowanceMax" />
+              </Field>
+              <Field label="Why" help="Optional, and only shown here.">
+                <Input v-model="allowanceForm.note" placeholder="Committee — Treasurer" />
+              </Field>
+            </div>
+            <Button
+              size="sm"
+              style="margin-top:var(--space-4)"
+              :disabled="busy || !allowanceForm.who.trim()"
+              @click="giveAllowance"
+            >Give allowance</Button>
+          </Card>
+
+          <Card variant="outline">
+            <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">Allowances for {{ allowanceYear }}</h2>
+            <p v-if="!allowances.length" style="margin:0; font:var(--type-small); color:var(--text-faint)">Nobody has free lockers yet.</p>
+            <div
+              v-for="a in allowances"
+              :key="a.shortcode"
+              style="display:flex; justify-content:space-between; align-items:center; gap:var(--space-3); padding:var(--space-3) 0; border-top:1px solid var(--border-hairline)"
+            >
+              <div style="display:grid; gap:2px; min-width:0">
+                <span style="font:var(--type-small); display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-2)">
+                  {{ a.name || a.shortcode }}
+                  <Badge tone="brand">{{ a.free }} free</Badge>
+                  <Badge v-if="!a.isMember" tone="danger">not a member</Badge>
+                </span>
+                <span style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint); overflow-wrap:anywhere">
+                  {{ a.shortcode }} · holds {{ a.held }} locker{{ a.held === 1 ? '' : 's' }}
+                  · given {{ shortDate(a.givenAt) }}<template v-if="a.givenBy"> by {{ a.givenBy }}</template><template v-if="a.note"> · {{ a.note }}</template>
+                </span>
+              </div>
+              <div style="display:flex; gap:var(--space-2); flex-shrink:0">
+                <Button size="sm" variant="ghost" @click="changeAllowance(a)">Change</Button>
+                <Button size="sm" variant="ghost" @click="removeAllowance(a)">Remove</Button>
+              </div>
             </div>
           </Card>
         </div>

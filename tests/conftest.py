@@ -188,6 +188,20 @@ def admin_client(api: httpx.Client) -> httpx.Client:
     return _client_with_session(api, response.cookies, response.json()["csrf_token"])
 
 
+@pytest.fixture()
+def superuser_client(api: httpx.Client) -> httpx.Client:
+    """Signed in as the standing superuser — SUPERUSER_EMAIL's default, which
+    dev-login makes a superuser on every request.
+
+    For what only a superuser may do: `admin_client` is an admin, one rung
+    lower. Added for tests/lockers (free locker allowances are superuser only).
+    """
+    response = api.post("/auth/dev-login", json={"email": "ras124@ic.ac.uk"})
+    response.raise_for_status()
+    assert response.json().get("role") == "superuser", response.json()
+    return _client_with_session(api, response.cookies, response.json()["csrf_token"])
+
+
 # ------------------------------------------------------------------- compose
 
 

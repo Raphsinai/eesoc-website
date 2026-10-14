@@ -26,19 +26,19 @@ resources:
 images:
 - name: ghcr.io/OWNER/eesoc-api
   newName: ghcr.io/raphsinai/eesoc-api
-  newTag: 64cc84bed6989d58c5a1ca03c4a243d14ab037cb
+  newTag: 89e4b154f3ee423214b7eb6cc0527d52dfe88227
 - name: ghcr.io/OWNER/eesoc-database
   newName: ghcr.io/raphsinai/eesoc-database
-  newTag: 64cc84bed6989d58c5a1ca03c4a243d14ab037cb
+  newTag: 89e4b154f3ee423214b7eb6cc0527d52dfe88227
 - name: ghcr.io/OWNER/eesoc-frontend
   newName: ghcr.io/raphsinai/eesoc-frontend
-  newTag: 64cc84bed6989d58c5a1ca03c4a243d14ab037cb
+  newTag: 89e4b154f3ee423214b7eb6cc0527d52dfe88227
 - name: ghcr.io/OWNER/eesoc-garage-init
   newName: ghcr.io/raphsinai/eesoc-garage-init
-  newTag: 64cc84bed6989d58c5a1ca03c4a243d14ab037cb
+  newTag: 89e4b154f3ee423214b7eb6cc0527d52dfe88227
 - name: ghcr.io/OWNER/eesoc-union
   newName: ghcr.io/raphsinai/eesoc-union
-  newTag: 64cc84bed6989d58c5a1ca03c4a243d14ab037cb
+  newTag: 89e4b154f3ee423214b7eb6cc0527d52dfe88227
 
 # Both environments share one node. Staging is the one that should give way, so
 # it runs one of everything.

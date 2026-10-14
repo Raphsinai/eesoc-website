@@ -284,9 +284,10 @@ export class Link {
     this._set('reconnecting', why)
     this.log.warn({ code, delay }, 'connection closed')
     this.timer = setTimeout(() => {
-      this._connect().catch((e) => {
-        this._set('reconnecting', `Could not reconnect: ${e.message}`)
-      })
+      // On the same queue as the updates, so a reconnect never races one.
+      this.updates = this.updates
+        .then(() => this._connect())
+        .catch((e) => this._set('reconnecting', `Could not reconnect: ${e.message}`))
     }, delay)
   }
 

@@ -6,16 +6,17 @@ may buy more than one, so entitlement is a count.
 
 from __future__ import annotations
 
-from collections import defaultdict
-
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from clients import database
 from models.auth import AuthSession
+from utils import lockers as lockers_util
 from utils.deps import current_session, require_feature, require_member, require_session, verify_csrf
 from utils.year import academic_year
 
 router = APIRouter(prefix="/lockers")
+
+WALLS = {"front": "Front wall", "side": "Side wall"}
 
 REASONS = {
     "taken": "Somebody just took that one. Pick another.",
@@ -30,32 +31,48 @@ REASONS = {
 
 @router.get("")
 async def list_lockers(session: AuthSession | None = Depends(current_session)) -> dict:
-    """Bank map, grouped the way the page renders it."""
+    """The locker map, grouped the way the lockers stand: level, then wall, then
+    blocks of nine from left to right. The adapter returns them in that order."""
     user_id = session.user.id if session else None
     lockers = await database.get("/lockers", {"user_id": user_id}) or []
 
-    banks: dict[str, list] = defaultdict(list)
+    floors: dict[int, dict[str, dict[int, list]]] = {}
     for locker in lockers:
-        banks[locker["bank"]].append(
+        row, col = lockers_util.row_col(locker["slot"])
+        floors.setdefault(locker["floor"], {}).setdefault(
+            locker["wall"], {}
+        ).setdefault(locker["block"], []).append(
             {
-                "id": f"{locker['bank']}-{locker['number']}",
-                "lockerId": locker["id"],
+                "id": locker["id"],
+                "number": locker["number"],
+                "row": row,
+                "col": col,
+                "place": lockers_util.place(locker),
                 "state": locker["state"],
                 "mine": locker["mine"],
             }
         )
 
     out = []
-    for letter in sorted(banks):
-        items = banks[letter]
+    for floor, walls in floors.items():
+        items = [i for blocks in walls.values() for b in blocks.values() for i in b]
         free = sum(1 for i in items if i["state"] == "free")
         out.append(
             {
-                "letter": letter,
+                "floor": floor,
                 # "available", not "free": lockers are paid for, and the
                 # same word for "vacant" reads as "no charge".
                 "note": f"{free} of {len(items)} available",
-                "lockers": items,
+                "walls": [
+                    {
+                        "wall": wall,
+                        "label": WALLS.get(wall, f"{wall.capitalize()} wall"),
+                        "blocks": [
+                            {"block": n, "lockers": doors} for n, doors in blocks.items()
+                        ],
+                    }
+                    for wall, blocks in walls.items()
+                ],
             }
         )
 
@@ -66,7 +83,7 @@ async def list_lockers(session: AuthSession | None = Depends(current_session)) -
             {"user_id": session.user.id, "academic_year": academic_year()},
         )
 
-    return {"banks": out, "entitlement": entitlement}
+    return {"floors": out, "entitlement": entitlement}
 
 
 @router.get("/me")
@@ -80,7 +97,10 @@ async def my_lockers(session: AuthSession = Depends(require_session)) -> dict:
         "bookings": [
             {
                 "id": b["id"],
-                "locker": f"{b.get('bank')}-{b.get('number')}",
+                "lockerId": b["locker_id"],
+                "number": b["number"],
+                "place": lockers_util.place(b),
+                "locker": lockers_util.name(b),
                 "since": b.get("created_at"),
             }
             for b in bookings

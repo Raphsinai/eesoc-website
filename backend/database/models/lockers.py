@@ -6,16 +6,23 @@ from pydantic import BaseModel
 
 
 class Locker(BaseModel):
+    """One locker, placed by where it stands: level, wall, which block of nine
+    counting from the left, and which door in that block (1–9, left to right,
+    top row first). `number` is what is printed on the door, and is not unique —
+    two blocks on the same wall can carry the same numbers."""
+
     id: int | None = None
-    bank: str
+    floor: int
+    wall: str                           # front | side
+    block: int
+    slot: int
     number: int
-    floor: int | None = None
     is_active: bool = True
     note: str | None = None
 
 
 class LockerState(Locker):
-    """A locker plus who holds it, for rendering the bank map. `mine` lets the UI
+    """A locker plus who holds it, for rendering the map. `mine` lets the UI
     distinguish the current user's locker from someone else's without leaking
     which user holds the others."""
 
@@ -37,7 +44,10 @@ class LockerBooking(BaseModel):
 
 
 class LockerBookingDetail(LockerBooking):
-    bank: str | None = None
+    floor: int | None = None
+    wall: str | None = None
+    block: int | None = None
+    slot: int | None = None
     number: int | None = None
 
 

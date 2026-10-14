@@ -25,21 +25,31 @@ BOOKING_COLUMNS = """
     created_at, released_at
 """
 
+LOCKER_COLUMNS = "l.id, l.floor, l.wall, l.block, l.slot, l.number, l.is_active, l.note"
+
+# Where a locker stands, which is also how it is told apart from another with
+# the same number on its door.
+LOCKER_PLACE = "l.floor, l.wall, l.block, l.slot, l.number"
+LOCKER_ORDER = "l.floor, l.wall, l.block, l.slot"
+
 
 @router.get("")
 async def list_lockers(user_id: int | None = None) -> list[LockerState]:
-    """The bank map. Other people's bookings show as `taken` without revealing
-    who holds them; the caller's own show as `mine`."""
+    """The locker map. Other people's bookings show as `taken` without
+    revealing who holds them; the caller's own show as `mine`.
+
+    In the order they stand: level, front wall before side wall, blocks from the
+    left, and each block's doors left to right, top row first."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """
-            SELECT l.id, l.bank, l.number, l.floor, l.is_active, l.note,
+            f"""
+            SELECT {LOCKER_COLUMNS},
                    b.id AS booking_id, b.user_id AS booked_by
               FROM public.lockers l
               LEFT JOIN public.locker_bookings b
                      ON b.locker_id = l.id AND b.released_at IS NULL
-             ORDER BY l.bank, l.number;
+             ORDER BY {LOCKER_ORDER};
             """
         )
 
@@ -179,10 +189,10 @@ async def list_bookings(
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """
+            f"""
             SELECT b.id, b.locker_id, b.user_id, b.academic_year, b.order_number,
                    b.matched_sale_id, b.created_at, b.released_at,
-                   l.bank, l.number
+                   {LOCKER_PLACE}
               FROM public.locker_bookings b
               JOIN public.lockers l ON l.id = b.locker_id
              WHERE ($1::bigint IS NULL OR b.user_id = $1)
@@ -219,14 +229,20 @@ async def create_locker(locker: Locker) -> Locker:
         try:
             row = await conn.fetchrow(
                 """
-                INSERT INTO public.lockers (bank, number, floor, is_active, note)
-                VALUES ($1,$2,$3,$4,$5)
-                RETURNING id, bank, number, floor, is_active, note;
+                INSERT INTO public.lockers
+                    (floor, wall, block, slot, number, is_active, note)
+                VALUES ($1,$2,$3,$4,$5,$6,$7)
+                RETURNING id, floor, wall, block, slot, number, is_active, note;
                 """,
-                locker.bank, locker.number, locker.floor, locker.is_active, locker.note,
+                locker.floor, locker.wall, locker.block, locker.slot, locker.number,
+                locker.is_active, locker.note,
             )
         except UniqueViolationError:
-            raise HTTPException(409, f"Locker {locker.bank}-{locker.number} already exists")
+            raise HTTPException(
+                409,
+                f"Level {locker.floor}'s {locker.wall} wall already has a locker at "
+                f"block {locker.block}, position {locker.slot}",
+            )
     return Locker(**dict(row))
 
 
@@ -241,7 +257,7 @@ async def update_locker(
             UPDATE public.lockers
                SET is_active = COALESCE($2, is_active), note = COALESCE($3, note)
              WHERE id = $1
-            RETURNING id, bank, number, floor, is_active, note;
+            RETURNING id, floor, wall, block, slot, number, is_active, note;
             """,
             locker_id, is_active, note,
         )
@@ -318,14 +334,14 @@ async def current_holders() -> list[dict]:
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """
-            SELECT b.id, b.academic_year, b.created_at, l.bank, l.number,
+            f"""
+            SELECT b.id, b.academic_year, b.created_at, {LOCKER_PLACE},
                    u.id AS user_id, u.email, u.first_name, u.last_name
               FROM public.locker_bookings b
               JOIN public.lockers l ON l.id = b.locker_id
               JOIN public.users u   ON u.id = b.user_id
              WHERE b.released_at IS NULL
-             ORDER BY l.bank, l.number;
+             ORDER BY {LOCKER_ORDER};
             """
         )
     return [dict(r) for r in rows]

@@ -17,7 +17,7 @@ const error = ref('')
 async function load() {
   try {
     const data = await api.get('/lockers')
-    raw.value = data.banks
+    raw.value = data.floors
     entitlement.value = data.entitlement
   } catch (e) {
     error.value = e.message
@@ -29,26 +29,33 @@ onMounted(load)
 // so it has to be refetched when the session changes.
 watch(() => session.authenticated, load)
 
-const banks = computed(() =>
-  raw.value.map((bank) => ({
-    letter: bank.letter,
-    note: bank.note,
-    lockers: bank.lockers.map((l) => ({
-      ...l,
-      selected: sel.value === l.id,
-      taken: l.state === 'taken' || l.state === 'inactive',
-      mine: l.state === 'mine',
-      free: l.state === 'free' && sel.value !== l.id,
-    })),
-  })),
+const all = computed(() =>
+  raw.value.flatMap((f) => f.walls.flatMap((w) => w.blocks.flatMap((b) => b.lockers))),
+)
+const selected = computed(() => all.value.find((l) => l.id === sel.value) || null)
+const mine = computed(() => all.value.filter((l) => l.state === 'mine'))
+const anyInactive = computed(() => all.value.some((l) => l.state === 'inactive'))
+
+// Every block is drawn at the width a block takes on the longest wall, so a
+// block is the same size wherever it stands — as it is in the building — and a
+// shorter wall simply ends sooner.
+const widest = computed(() =>
+  Math.max(1, ...raw.value.flatMap((f) => f.walls.map((w) => w.blocks.length))),
 )
 
-const mine = computed(() =>
-  raw.value.flatMap((b) => b.lockers).filter((l) => l.state === 'mine'),
-)
+function look(l) {
+  return sel.value === l.id ? 'selected' : l.state
+}
+
+const SAY = { free: 'available', taken: 'taken', mine: 'yours', inactive: 'out of service' }
+
+function describe(l) {
+  return `Locker ${l.number}, ${SAY[l.state] || l.state}. ${l.place}.`
+}
 
 function pick(l) {
-  if (l.taken) return
+  if (l.state === 'mine') return release(l)
+  if (l.state !== 'free') return
   sel.value = sel.value === l.id ? null : l.id
 }
 
@@ -61,7 +68,7 @@ const bookingEyebrow = computed(() => {
 const bookingTitle = computed(() => {
   if (!session.authenticated) return 'Log in to book a locker'
   if (!session.isMember) return 'Lockers are for Union members'
-  return sel.value ? `Locker ${sel.value}` : 'Pick a locker from the map'
+  return selected.value ? `Locker ${selected.value.number}` : 'Pick a locker from the map'
 })
 
 const bookingNote = computed(() => {
@@ -73,26 +80,27 @@ const bookingNote = computed(() => {
       ? `You are using all ${entitlement.value.purchased} locker(s) you have paid for.`
       : 'Buy a locker on the Union shop. Purchases reach us the following morning.'
   }
-  if (sel.value) return 'Free for the year. Key collection Tuesdays, EEE 403.'
+  // Where it is, not just its number: some numbers appear on two blocks.
+  if (selected.value) return `${selected.value.place}. Yours for the academic year.`
   return `Available lockers are outlined in blue. You have ${entitlement.value?.remaining ?? 0} left to claim.`
 })
 
 const canBook = computed(
-  () => Boolean(sel.value) && session.isMember && (entitlement.value?.remaining ?? 0) > 0,
+  () => Boolean(selected.value) && session.isMember && (entitlement.value?.remaining ?? 0) > 0,
 )
 
 const bookLabel = computed(() => {
   if (busy.value) return 'Booking…'
-  return sel.value ? `Book ${sel.value}` : 'Book locker'
+  return selected.value ? `Book ${selected.value.number}` : 'Book locker'
 })
 
 async function book() {
-  const target = raw.value.flatMap((b) => b.lockers).find((l) => l.id === sel.value)
+  const target = selected.value
   if (!target) return
   busy.value = true
   error.value = ''
   try {
-    await api.post(`/lockers/${target.lockerId}/book`)
+    await api.post(`/lockers/${target.id}/book`)
     sel.value = null
     await load()
   } catch (e) {
@@ -105,10 +113,16 @@ async function book() {
 }
 
 async function release(locker) {
+  // One tap on your own locker used to give it up outright. It is paid for,
+  // and the moment it is released anyone can take it.
+  if (!confirm(
+    `Give up locker ${locker.number}? Anyone can book it straight away. `
+    + 'Your purchase stays yours, so you can pick another.',
+  )) return
   busy.value = true
   try {
     const data = await api.get('/lockers/me')
-    const booking = data.bookings.find((b) => b.locker === locker.id)
+    const booking = data.bookings.find((b) => b.lockerId === locker.id)
     if (booking) await api.post(`/lockers/bookings/${booking.id}/release`)
     await load()
   } finally {
@@ -132,9 +146,9 @@ async function release(locker) {
       EESoc lockers are bought through the Union shop — please don’t buy one
       yet, we’ll announce here as soon as booking opens.
     </p>
-    <p v-if="mine.length" style="margin:0; font:var(--type-small); color:var(--text-body)">
-      You currently hold {{ mine.map((l) => l.id).join(', ') }}.
-      <Button size="sm" variant="ghost" :disabled="busy" @click="release(mine[0])">Release</Button>
+    <p v-for="l in mine" :key="l.id" style="margin:0; font:var(--type-small); color:var(--text-body)">
+      You hold locker {{ l.number }} — {{ l.place }}.
+      <Button size="sm" variant="ghost" :disabled="busy" @click="release(l)">Release</Button>
     </p>
   </main>
 
@@ -161,31 +175,53 @@ async function release(locker) {
         </div>
       </div>
       <TraceRule />
+      <p style="margin:0; font:var(--type-small); color:var(--text-body)">
+        The map is drawn the way the lockers stand: blocks of nine, left to right
+        along each wall, with the number on each door.
+      </p>
       <div class="legend">
         <span class="legend__item"><span class="legend__swatch legend__swatch--free"></span>Available</span>
         <span class="legend__item"><span class="legend__swatch legend__swatch--sel"></span>Selected</span>
-        <span class="legend__item"><span class="legend__swatch legend__swatch--sel"></span>Yours</span>
+        <span class="legend__item"><span class="legend__swatch legend__swatch--mine"></span>Yours</span>
         <span class="legend__item"><span class="legend__swatch legend__swatch--taken"></span>Taken</span>
+        <span v-if="anyInactive" class="legend__item"><span class="legend__swatch legend__swatch--inactive"></span>Out of service</span>
       </div>
     </div>
 
-    <div style="display:grid; gap:var(--space-8)">
-      <div v-for="b in banks" :key="b.letter" style="display:grid; gap:var(--space-4)">
+    <div class="locker-map" :style="{ '--blocks': widest }">
+      <section v-for="f in raw" :key="f.floor" class="locker-floor">
         <div style="display:flex; align-items:baseline; justify-content:space-between; gap:var(--space-6)">
-          <h2 style="margin:0; font-family:var(--font-display); font-weight:700; font-size:var(--text-lg); letter-spacing:var(--tracking-heading); color:var(--text-strong)">Bank {{ b.letter }}</h2>
-          <span class="eyebrow" style="letter-spacing:var(--tracking-label); color:var(--text-faint)">{{ b.note }}</span>
+          <h2 style="margin:0; font-family:var(--font-display); font-weight:700; font-size:var(--text-lg); letter-spacing:var(--tracking-heading); color:var(--text-strong)">Level {{ f.floor }}</h2>
+          <span class="eyebrow" style="letter-spacing:var(--tracking-label); color:var(--text-faint)">{{ f.note }}</span>
         </div>
-        <div class="locker-grid">
-          <template v-for="l in b.lockers" :key="l.id">
-            <Button v-if="l.selected" variant="primary" block @click="pick(l)">{{ l.id }}</Button>
-            <Button v-else-if="l.mine" variant="accent" block :title="'Yours — click to release'" @click="release(l)">{{ l.id }}</Button>
-            <Button v-else-if="l.free" variant="secondary" block @click="pick(l)">{{ l.id }}</Button>
-            <Button v-else variant="ghost" block disabled>{{ l.id }}</Button>
-          </template>
+        <div v-for="w in f.walls" :key="w.wall" class="locker-wall">
+          <span class="locker-wall__label">{{ w.label }}</span>
+          <div class="locker-wall__blocks">
+            <div
+              v-for="b in w.blocks"
+              :key="b.block"
+              class="locker-block"
+              role="group"
+              :aria-label="`Level ${f.floor}, ${w.label.toLowerCase()}, block ${b.block} from the left`"
+            >
+              <button
+                v-for="l in b.lockers"
+                :key="l.id"
+                type="button"
+                :class="['locker', `locker--${look(l)}`]"
+                :style="{ gridRow: l.row, gridColumn: l.col }"
+                :disabled="busy || l.state === 'taken' || l.state === 'inactive'"
+                :aria-pressed="sel === l.id"
+                :aria-label="describe(l)"
+                :title="l.state === 'mine' ? `Yours — ${l.place}. Click to give it up.` : l.place"
+                @click="pick(l)"
+              >{{ l.number }}</button>
+            </div>
+          </div>
         </div>
-      </div>
+      </section>
 
-      <Card variant="offset">
+      <Card variant="offset" :class="{ 'booking-card--held': selected }">
         <!-- The panel is replaced outright, not just the button disabled: the
              map above still shows which lockers are free, and a live-looking
              "Book this locker" that cannot work reads as a broken site rather
@@ -270,19 +306,131 @@ async function release(locker) {
 .legend__swatch--sel {
   background: var(--surface-brand);
 }
+.legend__swatch--mine {
+  background: var(--action-accent);
+  border: 1px solid var(--ink-900);
+}
 .legend__swatch--taken {
   background: var(--surface-sunken);
   border: 1px solid var(--border-default);
 }
-.locker-grid {
+.legend__swatch--inactive {
+  background: repeating-linear-gradient(135deg, var(--surface-sunken) 0 2px, var(--border-default) 2px 3px);
+  border: 1px solid var(--border-default);
+}
+
+/* --blocks (set from the data) is the most blocks on any one wall. A block
+   takes its share of the width of that wall, so every block is the same size.
+   Too narrow for the doors to stay legible, a wall scrolls sideways rather than
+   wrapping — wrapping would put a block under its left-hand neighbour, which is
+   not where it stands. */
+.locker-map {
+  --block-gap: var(--space-3);
+  --door-gap: var(--space-1);
+  --door-min: 28px;
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: var(--space-3);
+  gap: var(--space-10);
+}
+.locker-floor {
+  display: grid;
+  gap: var(--space-4);
+}
+.locker-wall {
+  display: grid;
+  gap: var(--space-2);
+}
+.locker-wall__label {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.locker-wall__blocks {
+  display: flex;
+  gap: var(--block-gap);
+  overflow-x: auto;
+  /* Room for the focus ring, which the scroll container would otherwise clip. */
+  padding: 3px;
+  margin: -3px;
+}
+.locker-block {
+  flex: none;
+  width: calc((100% - (var(--blocks) - 1) * var(--block-gap)) / var(--blocks));
+  min-width: calc(3 * var(--door-min) + 2 * var(--door-gap));
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--door-gap);
+}
+.locker {
+  min-width: 0;
+  height: 34px;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition-control);
+}
+.locker:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.locker--free {
+  background: transparent;
+  color: var(--text-brand);
+  border-color: var(--border-brand);
+}
+.locker--free:hover:not(:disabled) {
+  background: var(--surface-brand-subtle);
+}
+.locker--selected {
+  background: var(--action-primary);
+  color: var(--text-on-brand);
+  border-color: var(--action-primary);
+}
+.locker--mine {
+  background: var(--action-accent);
+  color: var(--ink-900);
+  border-color: var(--ink-900);
+}
+.locker--mine:hover:not(:disabled) {
+  background: var(--action-accent-hover);
+}
+.locker--taken,
+.locker--inactive {
+  background: var(--surface-sunken);
+  color: var(--text-faint);
+  border-color: transparent;
+  cursor: not-allowed;
+}
+.locker--inactive {
+  text-decoration: line-through;
+}
+.locker:disabled:not(.locker--taken):not(.locker--inactive) {
+  cursor: progress;
+}
+
+/* Once a locker is picked, the panel stays in view while you scroll, so one
+   chosen on level 3 can be booked without hunting for the button below level 5.
+   Before that it sits at the end of the map rather than covering it. */
+.booking-card--held {
+  position: sticky;
+  bottom: var(--space-4);
 }
 .booking {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--space-8);
   align-items: center;
+}
+@media (max-width: 720px) {
+  .booking {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-4);
+  }
 }
 </style>

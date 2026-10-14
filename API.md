@@ -205,9 +205,18 @@ contain letters. One sale can only ever confirm one reservation.
 ## Lockers
 
 ### `GET /lockers`
+Grouped the way the lockers stand: level, then wall (front before side), then
+blocks of nine from left to right. `row` and `col` (1–3) place a door in its
+block. `number` is what is printed on the door and is **not unique** — two
+blocks on the same wall can carry the same numbers — so `id` is the locker and
+`place` says where it is.
 ```json
-{ "banks": [ { "letter": "A", "note": "10 of 12 free",
-               "lockers": [ { "id": "A-1", "lockerId": 1, "state": "free", "mine": false } ] } ],
+{ "floors": [ { "floor": 4, "note": "100 of 108 available",
+                "walls": [ { "wall": "side", "label": "Side wall",
+                             "blocks": [ { "block": 3, "lockers": [
+                               { "id": 145, "number": 482, "row": 1, "col": 1,
+                                 "place": "Level 4, side wall, 3rd block from the left, top row",
+                                 "state": "free", "mine": false } ] } ] } ] } ],
   "entitlement": { "purchased": 2, "held": 1, "remaining": 1, "is_member": true } }
 ```
 `state`: `free` | `taken` | `mine` | `inactive`. Other people's bookings never
@@ -218,6 +227,9 @@ Requires a locker purchase in the synced sales feed. A member may buy several,
 so entitlement is a count. Losing a race returns **409**.
 
 ### `GET /lockers/me` 🔒 · `POST /lockers/bookings/{id}/release` 🔒
+`bookings`: `[ { "id", "lockerId", "number", "place", "locker", "since" } ]`,
+where `locker` names it in full — `"482 (level 4, side wall, 3rd block from the
+left, top row)"` — as emails and the committee's holder list do.
 
 ---
 

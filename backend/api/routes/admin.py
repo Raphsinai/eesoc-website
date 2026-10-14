@@ -29,6 +29,7 @@ from utils.auth import (
     set_session_cookies,
 )
 from utils import email as mailer
+from utils import lockers as lockers_util
 from utils.present import (
     format_date,
     format_doors_close,
@@ -1708,7 +1709,7 @@ async def locker_holders(_: AuthSession = Depends(require_site)) -> dict:
         "holders": [
             {
                 "bookingId": r["id"],
-                "locker": f"{r['bank']}-{r['number']}",
+                "locker": lockers_util.name(r),
                 "email": r["email"],
                 "name": " ".join(
                     p for p in [r.get("first_name"), r.get("last_name")] if p
@@ -1739,7 +1740,7 @@ async def notify_clearout(
     sent = 0
     for row in rows:
         if await mailer.send_locker_clearout(
-            str(row["email"]), f"{row['bank']}-{row['number']}", deadline.strip()
+            str(row["email"]), lockers_util.name(row), deadline.strip()
         ):
             sent += 1
     return {

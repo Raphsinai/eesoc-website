@@ -50,9 +50,10 @@ async def resolve_topic(sponsor_id: int, topic: str, committee: bool = False) ->
     the label to file the note under.
 
     A sponsor may only open a thread on their own request, share or listing,
-    and on an event they can see — published, or one already linked to them.
-    Otherwise an id in the request would let them confirm that a competitor's
-    request exists, or read a draft event's title back out of the thread.
+    and on an event they can see — published, offered to them for sponsorship
+    (often still a draft), or one already linked to them. Otherwise an id in
+    the request would let them confirm that a competitor's request exists, or
+    read any draft event's title back out of the thread.
     """
     topic = (topic or "general").strip()
     if topic == "general":
@@ -74,8 +75,13 @@ async def resolve_topic(sponsor_id: int, topic: str, committee: bool = False) ->
         if event is None:
             raise HTTPException(404, "No such event")
         if not committee and not event.get("published"):
+            offered = await database.get(
+                f"/sponsors/claims/is-claimable/{item_id}", {"sponsor_id": sponsor_id}
+            ) or {}
             claims = await database.get(f"/sponsors/{sponsor_id}/claims") or []
-            if not any(c["event_id"] == item_id for c in claims):
+            if not offered.get("claimable") and not any(
+                c["event_id"] == item_id for c in claims
+            ):
                 raise HTTPException(404, "No such event")
         return f"Event: {event['title']}"
 

@@ -7,8 +7,14 @@ those adjustments are rows in `sponsor_terms`. A sponsor with no row for a
 clause has the standard package, which is why nothing needs seeding when a
 sponsor is created.
 
-The wording below is the agreement's own, as submitted to the Union. Shown to
-the sponsor as well as the committee, so both read the same promise.
+An allowance is resolved in three steps: the sponsor's own figure if the
+committee set one, else the committee's standard-package figure
+(`sponsor_package_defaults`), else `default_allowance` below — which is only a
+starting point until the committee sets the standard.
+
+The wording below is the agreement's own, as submitted to the Union. It is for
+the committee: the portal shows a sponsor each clause's label and how much of it
+is used, never the text.
 
 Two kinds of clause:
 
@@ -49,8 +55,8 @@ CLAUSES: list[dict] = [
         "label": "Naming rights on an event",
         "text": (
             "The Student Group shall provide the Sponsor with naming rights on one "
-            "event, publicising the event, organising it and dealing with all "
-            "associated logistics."
+            "flagship event, publicising the event, organising it and dealing with "
+            "all associated logistics."
         ),
         "countable": True,
         "default_allowance": 1,
@@ -93,8 +99,9 @@ CLAUSES: list[dict] = [
             "members through its social media and its members' newsletter."
         ),
         "countable": True,
-        # The agreement sets no number. Three a year is a starting point for the
-        # committee to change per sponsor, not a term anyone signed.
+        # The agreement sets no number. Three a year is a starting point until
+        # the committee sets the standard package's figure, not a term anyone
+        # signed.
         "default_allowance": 3,
         "unit": "share",
         "links_events": False,
@@ -210,12 +217,42 @@ MARKETING_AUDIENCE_KEYS = {a["key"] for a in MARKETING_AUDIENCES}
 MARKETING_CHANNELS = {"email": "Email", "social": "Social media"}
 
 
-def _effective(clause: dict, row: dict | None) -> dict:
+COUNTABLE = [c for c in CLAUSES if c.get("countable")]
+
+
+async def standard_allowances() -> dict[str, int]:
+    """clause → the standard package's allowance: the committee's figure where
+    they have set one, the code's starting point otherwise."""
+    return {p["key"]: p["allowance"] for p in await standard_package()}
+
+
+async def standard_package() -> list[dict]:
+    """The countable clauses with the standard package's allowance for each,
+    for the committee's "Standard package" editor."""
+    rows = await database.get("/sponsors/terms/defaults") or []
+    set_by_committee = {r["clause"]: r for r in rows}
+    out = []
+    for c in COUNTABLE:
+        row = set_by_committee.get(c["key"])
+        out.append(
+            {
+                "key": c["key"],
+                "label": c["label"],
+                "unit": c["unit"],
+                "allowance": row["allowance"] if row else c["default_allowance"],
+                "setByCommittee": row is not None,
+            }
+        )
+    return out
+
+
+def _effective(clause: dict, row: dict | None, standard: dict[str, int]) -> dict:
     agreed = True if row is None else bool(row.get("agreed", True))
-    allowance = None
+    allowance = override = default = None
     if clause.get("countable"):
-        stored = row.get("allowance") if row else None
-        allowance = clause["default_allowance"] if stored is None else stored
+        default = standard[clause["key"]]
+        override = row.get("allowance") if row else None
+        allowance = default if override is None else override
     return {
         "key": clause["key"],
         "side": clause["side"],
@@ -226,6 +263,10 @@ def _effective(clause: dict, row: dict | None) -> dict:
         "linksEvents": bool(clause.get("links_events")),
         "agreed": agreed,
         "allowance": allowance,
+        # The two parts of `allowance`, for the admin page: the sponsor's own
+        # figure (None when they are on the standard) and the standard's.
+        "allowanceOverride": override,
+        "standardAllowance": default,
         "note": (row or {}).get("note") or "",
         "doneAt": (row or {}).get("done_at"),
         # Whether the committee has ever touched this clause for this sponsor,
@@ -242,9 +283,10 @@ async def terms(sponsor_id: int) -> list[dict]:
     used = await database.get(
         f"/sponsors/{sponsor_id}/usage", {"academic_year": academic_year()}
     ) or {}
+    standard = await standard_allowances()
     out = []
     for clause in CLAUSES:
-        term = _effective(clause, by_clause.get(clause["key"]))
+        term = _effective(clause, by_clause.get(clause["key"]), standard)
         if term["countable"]:
             term["used"] = int(used.get(clause["key"], 0))
             term["remaining"] = max(0, (term["allowance"] or 0) - term["used"])

@@ -111,6 +111,15 @@ class SponsorTerm(BaseModel):
     updated_by: int | None = None
 
 
+class SponsorPackageDefault(BaseModel):
+    """The committee's allowance for a clause of the standard package."""
+
+    clause: str | None = None
+    allowance: int
+    updated_at: datetime | None = None
+    updated_by: int | None = None
+
+
 class SponsorMarketing(BaseModel):
     id: int | None = None
     sponsor_id: int | None = None

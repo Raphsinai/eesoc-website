@@ -544,7 +544,7 @@ loadSponsorOptions()
 
       <!-- ============================ Dashboard ============================ -->
       <template v-if="isDash && dashboard">
-        <div class="grid-4">
+        <div class="grid-3">
           <StatBlock v-for="(s, i) in stats" :key="i" :value="s.value" :label="s.label" :sub="s.sub" />
         </div>
 
@@ -552,13 +552,15 @@ loadSponsorOptions()
           <div style="display:grid; gap:var(--space-4)">
             <span class="eyebrow">Events you can sponsor</span>
             <p v-if="!sponsorable.length" class="muted">
-              Nothing open right now. New events appear here as the committee plans them.
+              Nothing open right now. Events and ideas appear here as the committee plans
+              them — often before the details are fixed, so you can shape them.
             </p>
             <Card v-for="c in sponsorable" :key="c.eventId" variant="default">
               <div class="row-between">
                 <div class="stack-4">
-                  <span class="row-title">{{ c.title }}</span>
+                  <span class="row-title">{{ c.title }} <Badge v-if="c.provisional" tone="accent">Idea · details TBC</Badge></span>
                   <span class="row-meta">{{ c.meta }}</span>
+                  <p v-if="c.about" class="row-about">{{ c.about }}</p>
                 </div>
                 <div class="actions">
                   <Button size="sm" variant="ghost" @click="openNotes(`event:${c.eventId}`)">Ask</Button>
@@ -590,17 +592,15 @@ loadSponsorOptions()
           <div style="display:grid; gap:var(--space-8)">
             <div style="display:grid; gap:var(--space-3)">
               <span class="eyebrow">Your package</span>
+              <!-- Each clause by name and how much is left. The agreement's
+                   wording is the committee's, on the admin side only. -->
               <div v-for="t in pkg" :key="t.key" class="pkg-row" :class="{ 'is-struck': !t.agreed }">
                 <div class="row-between">
                   <span style="font-family:var(--font-mono); font-size:var(--text-sm); color:var(--text-strong)">{{ t.label }}</span>
                   <span class="row-meta">{{ t.status }}</span>
                 </div>
                 <span v-if="t.note" class="row-meta">{{ t.note }}</span>
-                <details class="pkg-text">
-                  <summary>What we agreed</summary>
-                  <p>{{ t.text }}</p>
-                  <a v-if="t.agreed" href="#" @click.prevent="openNotes(`clause:${t.key}`)">Ask about this</a>
-                </details>
+                <a v-if="t.agreed" href="#" class="pkg-ask" @click.prevent="openNotes(`clause:${t.key}`)">Ask about this</a>
               </div>
               <a href="#" style="font:var(--type-small)" @click.prevent="openNotes('general')">Ask the committee a question</a>
             </div>
@@ -692,8 +692,9 @@ loadSponsorOptions()
             <Card v-for="r in panel.sponsorable" :key="r.eventId" variant="default">
               <div class="row-between">
                 <div class="stack-4">
-                  <span class="row-title">{{ r.title }}</span>
+                  <span class="row-title">{{ r.title }} <Badge v-if="r.provisional" tone="accent">Idea · details TBC</Badge></span>
                   <span class="row-meta">{{ r.meta }}</span>
+                  <p v-if="r.about" class="row-about">{{ r.about }}</p>
                 </div>
                 <div class="actions">
                   <Button size="sm" variant="ghost" @click="openNotes(`event:${r.eventId}`)">Ask</Button>
@@ -1133,9 +1134,9 @@ loadSponsorOptions()
   gap: var(--space-8);
   flex-wrap: wrap;
 }
-.grid-4 {
+.grid-3 {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-8);
 }
 .portal-cols {
@@ -1164,6 +1165,11 @@ loadSponsorOptions()
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--text-muted);
+}
+.row-about {
+  margin: var(--space-1, 4px) 0 0;
+  font: var(--type-small);
+  color: var(--text-body);
 }
 .pkg-row {
   display: grid;
@@ -1304,15 +1310,9 @@ loadSponsorOptions()
   line-height: 18px;
   text-align: center;
 }
-.pkg-text {
+.pkg-ask {
   font: var(--type-2xs);
-  color: var(--text-muted);
-}
-.pkg-text summary {
-  cursor: pointer;
-}
-.pkg-text p {
-  margin: var(--space-2) 0;
+  justify-self: start;
 }
 .note {
   display: grid;

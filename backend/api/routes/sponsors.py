@@ -13,7 +13,7 @@ committee struck out is refused here, not merely hidden in the portal.
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 
@@ -27,7 +27,7 @@ from utils.deps import (
     sponsor_scope,
     verify_csrf,
 )
-from utils.present import format_date
+from utils.present import LONDON, format_date
 from utils.year import academic_year
 
 router = APIRouter()
@@ -235,11 +235,6 @@ async def dashboard(
                 "label": "Marketing shares left",
                 "sub": f"For {academic_year()}" if marketing["agreed"] else "Not in your agreement",
             },
-            {
-                "value": f"{stats.get('members_reached', 0):,}",
-                "label": "Members",
-                "sub": "On our membership list",
-            },
         ],
         "sponsorable": [_sponsorable_row(e) for e in sponsorable],
         "yourEvents": [_claim_row(c) for c in claims if c["status"] != "declined"],
@@ -257,7 +252,11 @@ async def dashboard(
 
 
 def _package_row(t: dict) -> dict:
-    """One clause as the sponsor sees it: what was promised and what is left."""
+    """One clause as the sponsor sees it: its name and what is left.
+
+    Not its wording. The agreement text is the committee's (the admin page
+    shows it); a sponsor reads their signed copy, not ours.
+    """
     if not t["agreed"]:
         status = "Not in your agreement"
     elif t["countable"]:
@@ -269,20 +268,53 @@ def _package_row(t: dict) -> dict:
     return {
         "key": t["key"],
         "label": t["label"],
-        "text": t["text"],
         "agreed": t["agreed"],
         "status": status,
         "note": t["note"],
     }
 
 
+ABOUT_LENGTH = 400
+
+
+def _provisional_meta(starts_at) -> str:
+    """When an unpublished event is, said no more precisely than it is known.
+
+    A draft offered to sponsors is usually an idea: its date is a placeholder
+    the event form insists on, so showing "Thu 12 Nov · EEE 403" would promise
+    what nobody has booked. The month is as far as it goes.
+    """
+    when = _dt(starts_at)
+    if when is not None and when.tzinfo is not None:
+        when = when.astimezone(LONDON)
+    month = when.strftime("%B %Y") if when else "Date to be confirmed"
+    return f"Provisionally {month} · details to be confirmed"
+
+
+def _about(text: str | None) -> str:
+    text = " ".join((text or "").split())
+    if len(text) <= ABOUT_LENGTH:
+        return text
+    return text[:ABOUT_LENGTH].rsplit(" ", 1)[0] + "…"
+
+
 def _sponsorable_row(e: dict) -> dict:
+    provisional = not e.get("published")
+    if provisional:
+        meta = _provisional_meta(e["starts_at"])
+    else:
+        meta = f"{format_date(_dt(e['starts_at']))} · {e.get('venue') or 'TBC'}" + (
+            f" · {e['capacity']} places" if e.get("capacity") else ""
+        )
     return {
         "id": e["slug"],
         "eventId": e["id"],
         "title": e["title"],
-        "meta": f"{format_date(_dt(e['starts_at']))} · {e.get('venue') or 'TBC'}"
-        + (f" · {e['capacity']} places" if e.get("capacity") else ""),
+        "meta": meta,
+        # Not published yet, so an idea: students cannot see it and the details
+        # above are the committee's plan, not a booking.
+        "provisional": provisional,
+        "about": _about(e.get("description")),
         "interested": bool(e.get("interested")),
     }
 
@@ -296,15 +328,21 @@ CLAIM_STATUS = {
 
 def _claim_row(c: dict) -> dict:
     clause = agreement.BY_KEY.get(c.get("clause") or "")
+    provisional = not c.get("published")
+    when = (
+        [_provisional_meta(c.get("starts_at"))]
+        if provisional
+        else [format_date(_dt(c.get("starts_at"))), c.get("venue") or "TBC"]
+    )
     return {
         "id": c["slug"],
         "eventId": c["event_id"],
         "title": c["title"],
+        "provisional": provisional,
         "meta": " · ".join(
             p
             for p in [
-                format_date(_dt(c.get("starts_at"))),
-                c.get("venue") or "TBC",
+                *when,
                 clause["label"] if clause else None,
             ]
             if p
@@ -315,16 +353,29 @@ def _claim_row(c: dict) -> dict:
     }
 
 
+def _expired(r: dict) -> bool:
+    """Live, but past its closing day — so off the public careers list, which
+    is the same rule (`/sponsors/listings/all`)."""
+    closes = _dt(r.get("closes_on"))
+    return (
+        r["status"] == "live"
+        and closes is not None
+        and closes.date() < datetime.now(LONDON).date()
+    )
+
+
 def _listing_row(r: dict) -> dict:
+    expired = _expired(r)
+    shown = "closed" if expired else r["status"]
     tone = {"live": "success", "closed": "neutral", "draft": "accent"}.get(
-        r["status"], "neutral"
+        shown, "neutral"
     )
     closes = format_date(_dt(r.get("closes_on")))
     meta = " · ".join(
         p
         for p in [
             r.get("location"),
-            f"closes {closes}" if closes else None,
+            (f"closed {closes}" if expired else f"closes {closes}") if closes else None,
         ]
         if p
     )
@@ -332,7 +383,7 @@ def _listing_row(r: dict) -> dict:
         "id": r["id"],
         "title": r["title"],
         "meta": meta,
-        "status": r["status"].title(),
+        "status": shown.title(),
         "tone": tone,
         # The full row, so the edit form opens filled in rather than with only
         # the title copied across.
@@ -418,14 +469,14 @@ async def panel(
 
     if panel == "jobs":
         listings = await database.get(f"/sponsors/{sid}/listings") or []
-        live = sum(1 for r in listings if r["status"] == "live")
+        live = sum(1 for r in listings if r["status"] == "live" and not _expired(r))
         return {
             "eyebrow": "Job listings",
             "heading": f"{live} role{'s' if live != 1 else ''} live.",
             "rows": [_listing_row(r) for r in listings],
             "aside": (
                 "Members are notified of posted listings, and each one stays on "
-                "the site until its closing date."
+                "the site until the end of its closing date."
             ),
         }
 
@@ -440,10 +491,11 @@ async def panel(
             "sponsorable": [_sponsorable_row(e) for e in sponsorable],
             "yourEvents": [_claim_row(c) for c in claims],
             "aside": (
-                "Register your interest in any event below. Several sponsors can "
-                "ask for the same one; the committee confirms who takes it and "
-                "agrees the details with you by email. Nothing is public until "
-                "it is confirmed."
+                "Register your interest in any event below. Many are still ideas: "
+                "the timing is provisional and the details are worked out with the "
+                "sponsor who takes it. Several sponsors can ask for the same one; "
+                "the committee confirms who takes it and agrees the details with "
+                "you by email. Students see an event only once it is published."
             ),
         }
 
@@ -677,7 +729,6 @@ async def _own_listing(listing_id: int, session: AuthSession) -> None:
 
 
 INTEREST_REFUSALS = {
-    "not_published": "That event isn't published yet.",
     "not_offered": "That event isn't open for sponsorship.",
     "past": "That event has already happened.",
     "already_arranged": "That event is already being arranged with a sponsor.",
@@ -1095,6 +1146,16 @@ SPONSOR_EDITABLE = {"name", "sector", "strand", "one_line", "blurb", "with_us",
                     "site", "logo_url", "roles"}
 
 
+def _card(sponsor: dict) -> dict:
+    """The sponsor's card as the sponsor may see it.
+
+    The adapter's row also carries `amount_pence` and `internal_note`, which
+    are the committee's; every portal response that holds a sponsor row goes
+    through here so neither reaches the sponsor's browser.
+    """
+    return {k: sponsor.get(k) for k in SPONSOR_EDITABLE | {"id", "slug"}}
+
+
 @router.get("/portal/profile")
 async def get_profile(
     sponsor_id: int | None = None, session: AuthSession = Depends(require_sponsor)
@@ -1104,7 +1165,7 @@ async def get_profile(
     if sponsor is None:
         raise HTTPException(404, "No such sponsor")
     return {
-        "sponsor": {k: sponsor.get(k) for k in SPONSOR_EDITABLE | {"id", "slug"}},
+        "sponsor": _card(sponsor),
         "editable": sorted(SPONSOR_EDITABLE),
     }
 
@@ -1155,4 +1216,4 @@ async def update_profile(
     merged = {**current, **{k: v for k, v in body.items() if k in SPONSOR_EDITABLE}}
     if not (merged.get("name") or "").strip():
         raise HTTPException(400, "A sponsor needs a name")
-    return await database.put(f"/sponsors/{sid}", merged)
+    return _card(await database.put(f"/sponsors/{sid}", merged))

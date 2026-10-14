@@ -262,11 +262,18 @@ sponsors linked to that event.
 to, so changing an id in the URL cannot reach a competitor's data. What a
 sponsor may do is bounded by their agreement (`services/agreement.py`): a clause
 the committee struck is refused with 403, and countable clauses are enforced
-against the allowance (marketing: 409 when used up).
+against the allowance (marketing: 409 when used up). An allowance is the
+sponsor's own figure if the committee set one, else the standard package's.
+The portal shows each clause's name and usage, never the agreement's wording,
+which is committee-side only.
+
+A sponsorable event need not be published: the committee offers ideas as drafts
+with a placeholder date, which the portal shows as `provisional` (the month and
+no more) and every public read still hides.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /portal/dashboard` | Stat tiles, sponsorable events, your events, listings, your package, unread replies |
+| `GET /portal/dashboard` | Stat tiles (live listings, sponsorable events, marketing shares left), sponsorable events, your events, listings, your package, unread replies |
 | `GET /portal/panels/{jobs\|calendar\|request\|marketing\|contacts\|merch\|messages}` | Panel content |
 | `POST /portal/jobs`, `PUT /portal/jobs/{id}` | Manage listings (`status` draft / live / closed) |
 | `POST/DELETE /portal/events/{id}/interest` | Register / withdraw interest in a sponsorable event (`/claim` is the old name for POST) |
@@ -322,7 +329,8 @@ reports who let them in and when.
 | `GET/POST/PUT /admin/sponsors`, `POST /admin/sponsors/{id}/users` | Sponsors and portal access |
 | `GET /admin/sponsors/inbox` | Everything waiting on the committee across sponsors: notes, marketing, requests, interest, new roles |
 | `GET /admin/sponsors/{id}/detail` | One sponsor's agreement, usage, events, requests, marketing, notes (opening it marks their notes read) |
-| `PUT /admin/sponsors/{id}/terms/{clause}` | Agreed / allowance / note / done for one clause |
+| `PUT /admin/sponsors/{id}/terms/{clause}` | Agreed / allowance / note / done for one clause; `allowance: null` follows the standard package |
+| `PUT /admin/sponsor-package/{clause}` | The standard package's allowance for one countable clause, `{allowance}` — every sponsor without their own figure moves with it. Listed as `package` on `GET /admin/sponsors` |
 | `PUT/DELETE /admin/sponsors/{id}/events/{event_id}` | Link an existing event (with the clause it delivers) / unlink; `POST …/decline` refuses interest |
 | `POST /admin/sponsors/{id}/notes` | Reply to a sponsor's thread; emails their portal users |
 | `PATCH /admin/sponsor-requests/{id}` | Request status and the reply the sponsor sees |

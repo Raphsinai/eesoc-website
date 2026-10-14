@@ -1088,6 +1088,38 @@ async def list_sponsors(_: AuthSession = Depends(require_sponsors)) -> dict:
             **totals,
             "total": format_price(totals.get("total_pence", 0)),
         },
+        "package": await agreement_service.standard_package(),
+    }
+
+
+@router.put("/sponsor-package/{clause}", dependencies=[Depends(verify_csrf)])
+async def set_package_allowance(
+    clause: str,
+    allowance: int = Body(embed=True),
+    session: AuthSession = Depends(require_sponsors),
+) -> dict:
+    """Set the standard package's allowance for one countable clause.
+
+    Every sponsor without their own figure for it moves to the new number at
+    once — in the portal and in what the API will accept. A sponsor given their
+    own allowance on their agreement page keeps it.
+    """
+    spec = agreement_service.BY_KEY.get(clause)
+    if spec is None or not spec.get("countable"):
+        raise HTTPException(404, "No such countable clause")
+    if allowance < 0:
+        raise HTTPException(400, "An allowance can't be negative.")
+    await database.put(
+        f"/sponsors/terms/defaults/{clause}",
+        {"allowance": allowance, "updated_by": session.user.id},
+    )
+    return {
+        "ok": True,
+        "package": await agreement_service.standard_package(),
+        "message": (
+            f"Standard package: {allowance} {spec['unit']}"
+            f"{'' if allowance == 1 else 's'} a year."
+        ),
     }
 
 

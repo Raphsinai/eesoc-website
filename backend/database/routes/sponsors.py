@@ -15,6 +15,7 @@ from models.sponsors import (
     SponsorMarketing,
     SponsorMarketingUpdate,
     SponsorNote,
+    SponsorPackageDefault,
     SponsorRequest,
     SponsorRequestUpdate,
     SponsorTerm,
@@ -45,6 +46,11 @@ MARKETING_COLUMNS = """
     preferred_date, status, response, campaign_id, emailed_at, posted_at,
     created_by, decided_by, created_at, updated_at
 """
+
+# A role is open through its closing day, London time: one closing on the 14th
+# is still up at 23:30 on the 14th and gone at midnight. CURRENT_DATE would be
+# the server's day, which is UTC and an hour behind for half the year.
+LONDON_TODAY = "(NOW() AT TIME ZONE 'Europe/London')::date"
 
 
 @router.get("")
@@ -261,13 +267,13 @@ async def unannounced_listings() -> list[dict]:
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """
+            f"""
             SELECT l.id, l.title, l.location, l.closes_on, l.apply_url,
                    l.created_at, s.name AS sponsor_name, s.slug AS sponsor_slug
               FROM public.job_listings l
               JOIN public.sponsors s ON s.id = l.sponsor_id
              WHERE l.status = 'live' AND l.announced_at IS NULL AND s.active
-               AND (l.closes_on IS NULL OR l.closes_on >= CURRENT_DATE)
+               AND (l.closes_on IS NULL OR l.closes_on >= {LONDON_TODAY})
              ORDER BY l.created_at;
             """
         )
@@ -286,16 +292,22 @@ async def mark_announced(ids: list[int]) -> None:
 
 @router.get("/listings/all")
 async def list_all_listings(status: str = "live") -> list[dict]:
-    """Live roles across every sponsor, for the public careers list."""
+    """Live roles across every sponsor, for the public careers list.
+
+    A role past its closing day is left out even though it is still 'live':
+    nothing closes a listing when its date passes, and a sponsor who never comes
+    back to close it should not leave members applying for a shut role.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """
+            f"""
             SELECT l.id, l.title, l.location, l.closes_on, l.apply_url, l.status,
                    s.name AS sponsor_name, s.slug AS sponsor_slug, s.logo_url
               FROM public.job_listings l
               JOIN public.sponsors s ON s.id = l.sponsor_id
              WHERE l.status = $1 AND s.active
+               AND (l.closes_on IS NULL OR l.closes_on >= {LONDON_TODAY})
              ORDER BY l.closes_on NULLS LAST, l.created_at DESC;
             """,
             status,
@@ -464,11 +476,14 @@ async def claimable_events(sponsor_id: int | None = None) -> list[dict]:
     """Future events the committee has opened to sponsorship and not yet given
     to anyone.
 
-    Published, explicitly marked sponsorable, in the future, and with no
-    confirmed sponsor. Several sponsors may register interest in the same event
-    — the committee chooses — so interest does not take an event off the list;
-    a confirmed link does. An event created from a sponsor's own request is
-    excluded too: that arrangement is already being negotiated.
+    Explicitly marked sponsorable, in the future, and with no confirmed
+    sponsor. Published or not: most are offered while still an idea — a draft
+    with a provisional date and the details unconfirmed — which sponsors may
+    see and students may not (every public read filters on `published`).
+    Several sponsors may register interest in the same event — the committee
+    chooses — so interest does not take an event off the list; a confirmed
+    link does. An event created from a sponsor's own request is excluded too:
+    that arrangement is already being negotiated.
 
     With `sponsor_id`, each row says whether that sponsor has already
     registered interest, so the button can say so instead of erroring.
@@ -478,14 +493,13 @@ async def claimable_events(sponsor_id: int | None = None) -> list[dict]:
         rows = await conn.fetch(
             """
             SELECT e.id, e.slug, e.title, e.starts_at, e.venue, e.capacity,
-                   e.category,
+                   e.category, e.published, e.description,
                    EXISTS (SELECT 1 FROM public.event_sponsorships mine
                             WHERE mine.event_id = e.id
                               AND mine.sponsor_id = $1
                               AND mine.status = 'interested') AS interested
               FROM public.events e
-             WHERE e.published
-               AND e.sponsorship_claimable
+             WHERE e.sponsorship_claimable
                AND e.starts_at >= NOW()
                AND e.requested_by_sponsor_id IS NULL
                AND NOT EXISTS (
@@ -510,7 +524,7 @@ async def is_claimable(event_id: int, sponsor_id: int | None = None) -> dict:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT e.published, e.sponsorship_claimable,
+            SELECT e.sponsorship_claimable,
                    e.starts_at < NOW() AS past,
                    e.requested_by_sponsor_id,
                    EXISTS (SELECT 1 FROM public.event_sponsorships es
@@ -524,8 +538,8 @@ async def is_claimable(event_id: int, sponsor_id: int | None = None) -> dict:
     if row is None:
         raise HTTPException(404, "No such event")
 
-    if not row["published"]:
-        return {"claimable": False, "reason": "not_published"}
+    # Not gated on `published`: a sponsorable draft is an idea sponsors are
+    # meant to see (see `claimable_events`).
     if not row["sponsorship_claimable"]:
         return {"claimable": False, "reason": "not_offered"}
     if row["past"]:
@@ -692,6 +706,41 @@ async def all_terms() -> list[dict]:
             "SELECT sponsor_id, clause, agreed, allowance FROM public.sponsor_terms;"
         )
     return [dict(r) for r in rows]
+
+
+@router.get("/terms/defaults")
+async def package_defaults() -> list[SponsorPackageDefault]:
+    """The committee's standard-package allowances. A clause with no row keeps
+    the figure in api/services/agreement.py."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT clause, allowance, updated_at, updated_by
+              FROM public.sponsor_package_defaults;
+            """
+        )
+    return [SponsorPackageDefault(**dict(r)) for r in rows]
+
+
+@router.put("/terms/defaults/{clause}")
+async def set_package_default(
+    clause: str, default: SponsorPackageDefault
+) -> SponsorPackageDefault:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO public.sponsor_package_defaults (clause, allowance, updated_by)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (clause) DO UPDATE SET
+                allowance = EXCLUDED.allowance, updated_by = EXCLUDED.updated_by,
+                updated_at = NOW()
+            RETURNING clause, allowance, updated_at, updated_by;
+            """,
+            clause, default.allowance, default.updated_by,
+        )
+    return SponsorPackageDefault(**dict(row))
 
 
 @router.put("/{sponsor_id}/terms/{clause}")
@@ -962,18 +1011,23 @@ async def delete_asset(asset_id: int) -> None:
 
 @router.get("/{sponsor_id}/stats")
 async def sponsor_stats(sponsor_id: int) -> dict:
-    """The four tiles at the top of the portal dashboard."""
+    """The tiles at the top of the portal dashboard.
+
+    "Live" means on the public careers list, so a role past its closing day is
+    not counted however its status reads (see `list_all_listings`).
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """
+            f"""
             SELECT
               (SELECT COUNT(*) FROM public.job_listings
-                WHERE sponsor_id = $1 AND status = 'live')                  AS live_listings,
+                WHERE sponsor_id = $1 AND status = 'live'
+                  AND (closes_on IS NULL OR closes_on >= {LONDON_TODAY}))   AS live_listings,
               (SELECT COUNT(*) FROM public.job_listings
                 WHERE sponsor_id = $1 AND status = 'live'
-                  AND closes_on IS NOT NULL
-                  AND closes_on <= (CURRENT_DATE + 7))                      AS closing_soon,
+                  AND closes_on BETWEEN {LONDON_TODAY}
+                                    AND {LONDON_TODAY} + 7)                 AS closing_soon,
               (SELECT COALESCE(SUM(applications), 0) FROM public.job_listings
                 WHERE sponsor_id = $1)                                      AS applications,
               (SELECT COUNT(*) FROM public.event_sponsorships
@@ -983,13 +1037,12 @@ async def sponsor_stats(sponsor_id: int) -> dict:
               -- The same conditions as the sponsorable list, so the tile and
               -- the list under it cannot disagree.
               (SELECT COUNT(*) FROM public.events e
-                WHERE e.published AND e.sponsorship_claimable
+                WHERE e.sponsorship_claimable
                   AND e.starts_at >= NOW()
                   AND e.requested_by_sponsor_id IS NULL
                   AND NOT EXISTS (SELECT 1 FROM public.event_sponsorships es
                                    WHERE es.event_id = e.id AND es.status = 'confirmed')
-              )                                                             AS events_open,
-              (SELECT COUNT(*) FROM public.members)                         AS members_reached;
+              )                                                             AS events_open;
             """,
             sponsor_id,
         )

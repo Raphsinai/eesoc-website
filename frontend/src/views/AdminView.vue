@@ -81,6 +81,10 @@ const roleOptions = ref([])
 const canManageUsers = ref(false)
 const sponsors = ref([])
 const sponsorTotals = ref(null)
+// The standard sponsor package: one allowance per countable clause, for every
+// sponsor not given their own on their agreement page.
+const sponsorPackage = ref([])
+const packageEdits = reactive({})
 const committee = ref([])
 // This person's own committee entry, for the "My card" tab.
 const myCard = ref(null)
@@ -161,6 +165,8 @@ async function load() {
     canManageUsers.value = Boolean(ad?.canManage)
     sponsors.value = sp?.sponsors ?? sp ?? []
     sponsorTotals.value = sp?.totals ?? null
+    sponsorPackage.value = sp?.package ?? []
+    for (const c of sponsorPackage.value) packageEdits[c.key] = c.allowance
     committee.value = cm?.committee ?? []
     myCard.value = mine?.card ?? null
   } catch (e) {
@@ -1296,6 +1302,26 @@ async function removeSponsor(sp) {
   await load()
 }
 
+async function savePackageAllowance(c) {
+  const allowance = Number(packageEdits[c.key])
+  if (!Number.isInteger(allowance) || allowance < 0) {
+    error.value = 'An allowance is a whole number, 0 or more.'
+    return
+  }
+  busy.value = true
+  error.value = ''
+  try {
+    const res = await api.put(`/admin/sponsor-package/${c.key}`, { allowance })
+    sponsorPackage.value = res.package
+    for (const x of res.package) packageEdits[x.key] = x.allowance
+    flash(res.message)
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
+}
+
 async function grantSponsorAccess(sp) {
   const email = (sponsorUserEmail[sp.id] || '').trim()
   if (!email) return
@@ -2163,9 +2189,11 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               </label>
               <p style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
                 Off by default. Only events ticked here appear in sponsors' event
-                calendars for them to register interest. Link the sponsor who takes
-                it from their page under Sponsors, which takes it off everyone
-                else's list.
+                calendars for them to register interest. It need not be published
+                or planned: tick it on a draft with a rough date and a description
+                of the idea, and sponsors see it as provisional while students see
+                nothing until you publish. Link the sponsor who takes it from their
+                page under Sponsors, which takes it off everyone else's list.
               </p>
               <div style="display:flex; gap:var(--space-3)">
                 <Button :disabled="busy" @click="saveEvent">{{ editingId ? 'Save changes' : 'Create event' }}</Button>
@@ -2926,6 +2954,39 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           </div>
         </Card>
 
+        <Card v-if="sponsorPackage.length" variant="outline" style="margin-bottom:var(--space-6)">
+          <div style="display:grid; gap:var(--space-4)">
+            <h2 style="margin:0; font:var(--type-h4)">Standard package</h2>
+            <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
+              What every sponsor gets a year unless their agreement page gives them
+              their own number. Changing one here moves every sponsor on the
+              standard at once — in their portal and in what it will let them ask for.
+            </p>
+            <div class="package-grid">
+              <label v-for="c in sponsorPackage" :key="c.key" class="package-row">
+                <span style="font:var(--type-small)">{{ c.label }}</span>
+                <span style="display:flex; gap:var(--space-2); align-items:center">
+                  <input
+                    v-model.number="packageEdits[c.key]"
+                    type="number"
+                    min="0"
+                    step="1"
+                    class="ees-input"
+                    style="width:5.5em"
+                    :aria-label="`${c.label}: allowance a year`"
+                  />
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    :disabled="busy || packageEdits[c.key] === c.allowance"
+                    @click.prevent="savePackageAllowance(c)"
+                  >Save</Button>
+                </span>
+              </label>
+            </div>
+          </div>
+        </Card>
+
         <div class="admin-cols admin-cols--wide">
           <div style="display:grid; gap:var(--space-3)">
             <Card v-for="(sp, i) in sponsors" :key="sp.id" variant="outline">
@@ -3393,6 +3454,19 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
 .inbox-row {
   font: var(--type-small);
   color: var(--text-body);
+}
+.package-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-3) var(--space-6);
+}
+.package-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border-hairline);
 }
 .pending-card {
   margin-bottom: var(--space-8);

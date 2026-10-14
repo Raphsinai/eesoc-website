@@ -45,7 +45,10 @@ async function load() {
     for (const t of data.value.terms) {
       termEdits[t.key] = {
         agreed: t.agreed,
-        allowance: t.allowance,
+        // Their own figure only. Empty means the standard package's, so a
+        // later change to the standard reaches them — prefilling the number
+        // would pin them to today's standard the first time a note is saved.
+        allowance: t.allowanceOverride ?? '',
         note: t.note,
         done: Boolean(t.doneAt),
       }
@@ -295,9 +298,12 @@ async function startThread() {
         <h2 class="section__title">Agreement — what EESoc provides</h2>
         <p class="section__help">
           Every sponsor starts on the standard 2026–27 package. Untick a clause they
-          did not sign and the portal stops offering it; change an allowance and the
-          portal counts against the new number. Used counts come from the events
-          linked below and the marketing shared this year.
+          did not sign and the portal stops offering it; give them their own
+          allowance and the portal counts against that instead of the standard
+          (leave it empty to follow the standard, which is set under Sponsors in
+          the dashboard). Used counts come from the events linked below and the
+          marketing shared this year. The sponsor sees each clause's name and
+          usage, never the wording.
         </p>
         <Card v-for="t in eesocTerms" :key="t.key" variant="outline" :class="{ struck: !termEdits[t.key]?.agreed }">
           <div class="term">
@@ -310,8 +316,16 @@ async function startThread() {
                 <span :class="{ over: t.used > t.allowance }">{{ t.used }} of {{ t.allowance }} used</span>
                 <label class="term__allow">
                   Allowance
-                  <input v-model.number="termEdits[t.key].allowance" type="number" min="0" class="ees-input term__num" />
+                  <input
+                    v-model.number="termEdits[t.key].allowance"
+                    type="number"
+                    min="0"
+                    class="ees-input term__num"
+                    :placeholder="String(t.standardAllowance)"
+                    :title="`Leave empty for the standard package (${t.standardAllowance})`"
+                  />
                 </label>
+                <span v-if="t.allowanceOverride === null" style="color:var(--text-faint)">standard</span>
               </template>
               <label v-else class="term__allow">
                 <input v-model="termEdits[t.key].done" type="checkbox" /> Delivered

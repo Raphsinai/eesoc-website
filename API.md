@@ -342,14 +342,14 @@ reports who let them in and when.
 | `POST /admin/email/preview` | Render the message and count the audience — **sends nothing** |
 | `POST /admin/email/send` | Send a newsletter |
 | `POST /admin/events/{id}/announce` | Email people **about one event**, same audiences |
-| `POST /admin/whatsapp/render` | The **WhatsApp version** of an announcement (`heading`, `body`, optional `event_id`, `kind`) and a `wa.me` link that opens WhatsApp with it filled in — **sends nothing**; see [WhatsApp](#whatsapp) |
+| `GET /admin/whatsapp`, `POST …/link`, `…/unlink`, `PUT …/groups`, `POST …/post`, `…/render` | WhatsApp: link the society's number, choose groups, post — see [WhatsApp](#whatsapp) |
 | `GET /admin/email/campaigns` | Send history, updated live while one runs |
 | `GET /admin/events/{id}/sale-alerts` | Who is waiting to hear this event is on sale |
 | `GET /admin/email/optouts` | Who has unsubscribed (read-only, deliberately) |
 | `POST /admin/email/announce-now` | Run the last-chance reminder pass now instead of on the hour |
 | `GET /admin/email/queue` | Bulk email the site wrote on its own: **waiting for approval**, or **scheduled** (approved for its `sendAt`) — nothing in it has been sent |
 | `GET /admin/email/queue/{id}` | One email: words, ticked audiences, hand-added/removed addresses, `sendAt`, the resolved recipient list and a preview of the whole message |
-| `PUT /admin/email/queue/{id}` | Edit `subject`, `heading`, `body`, `audiences`, `extra` (addresses added), `excluded` (addresses taken off) — only while waiting for approval; answers with it re-resolved and re-rendered |
+| `PUT /admin/email/queue/{id}` | Edit `subject`, `heading`, `body`, `audiences`, `extra` (addresses added), `excluded` (addresses taken off), `whatsapp` (also post it into the chosen WhatsApp groups when it goes) — only while waiting for approval; answers with it re-resolved and re-rendered |
 | `POST /admin/email/queue/{id}/test` | Send it as it stands to the Test list only, subject prefixed `[Test]` |
 | `POST /admin/email/queue/{id}/send` | Send now, waiting or scheduled: recipients resolved again, then the ordinary bulk send. A second press is a 409 |
 | `POST /admin/email/queue/{id}/schedule` | Approve it for its `sendAt`; it then goes by itself at that moment. Refused if the time has passed |
@@ -543,25 +543,58 @@ SQL rather than by the caller, so a new audience cannot forget them.
 
 ### WhatsApp
 
-The site writes WhatsApp posts; a committee member sends them. Every place an
-announcement is written — the newsletter composer, an event's **Announce**
-dialog, a draft in the email queue — has a **WhatsApp version**: the same
-words in WhatsApp's formatting (`*bold*`, `- ` lists, links as `label (url)`),
-with an event's date, venue, doors-close, prices and link added from the
-database by the same helpers the email uses. **Open in WhatsApp** is a
-`https://wa.me/?text=…` link: WhatsApp opens with the post filled in, they
-choose the community or group, and press send. For a channel, Copy and paste.
+Every place an announcement is written — the newsletter composer, an event's
+**Announce** dialog, a draft in the email queue — has a **WhatsApp version**:
+the same words in WhatsApp's formatting (`*bold*`, `- ` lists, links as
+`label (url)`), with an event's date, venue, doors-close, prices and link added
+from the database by the same helpers the email uses. It reaches the society's
+groups one of two ways:
 
-The site never posts by itself, on purpose. WhatsApp's Business API cannot post
-into a group or community — only to individual opted-in numbers, as
-pre-approved templates, paid per message — and automating WhatsApp Web breaks
-WhatsApp's terms, with the ban landing on the number that runs the society's
-community. A person pressing send is also the approval that
-"nothing addressed to a crowd goes without a person's approval" requires.
+- **By hand.** **Open in WhatsApp** is a `https://wa.me/?text=…` link: WhatsApp
+  opens with the post filled in, the committee member picks the chat and sends.
+  For a channel, Copy and paste.
+- **By the site.** The society's WhatsApp Business number is **linked to the site
+  as a device** (`backend/whatsapp`), the way WhatsApp Web is. Groups are chosen
+  on the Email tab's WhatsApp card; then **Post to …** posts there at once, and an
+  email in the queue can be ticked **Also post it on WhatsApp when it goes** — it
+  is posted at the same moment as the email, now or at its approved time.
 
-`POST /admin/whatsapp/render` reads only our own database. It warns, without
-refusing, when the event is unpublished (the link would not open for anybody
-else), has started, or — for an on-sale post — its sales have not opened yet.
+Either way a person said yes to every post.
+
+**The linked device is a risk the society carries.** WhatsApp's Business API
+cannot post into a group it did not create (its groups hold eight people), so
+the only way into the existing community is the WhatsApp Web protocol — which
+WhatsApp's terms do not allow for automation. If WhatsApp decides it is a bot,
+it bans the number that runs the community, with no appeal. So the link posts
+only into **groups** (never to a person), **one post at a time a few seconds
+apart**, at most **20 an hour**, never shows as online (the phone keeps its
+notifications), stores no messages, and runs as **one replica, Recreate** — two
+connections on one session is both broken and the pattern that gets flagged.
+
+Every post is recorded **before** it is made (`whatsapp_posts`, migration 077).
+For a post that goes with an email that record is the claim — one per email per
+group — so a second pod's scheduler, or a retry, never posts it twice; a press
+of **Post** with the same words in the same group within five minutes is taken
+for a double press. A failure is recorded and the next group still goes.
+
+**Staging posts nowhere** until a group id is on `WHATSAPP_GROUP_ALLOWLIST`:
+staging may be linked to the real number, whose groups are the real community.
+The snapshot scrub empties the chosen groups and every email's WhatsApp tick.
+Production runs the link only once its overlay includes the component — see
+deploy/README.md.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /admin/whatsapp` | Linked or not (with the QR code or pairing code while linking), the groups the number is in and which are chosen, this environment's allowlist, the latest posts |
+| `POST /admin/whatsapp/link` | Start linking: a QR code to scan, or with `phone` a code to type on the phone |
+| `POST /admin/whatsapp/unlink` | Sign the device out and forget the session |
+| `PUT /admin/whatsapp/groups` | `{jid, chosen}` — choose a group, or stop posting there. Only a group the number can post in |
+| `POST /admin/whatsapp/post` | Post the WhatsApp version (`heading`, `body`, optional `event_id`, `kind`) into the chosen groups now |
+| `POST /admin/whatsapp/render` | The WhatsApp version and its `wa.me` link — **sends nothing** |
+
+All `site` capability, like email. `/render` reads only our own database and
+warns, without refusing, when the event is unpublished, has started, or — for
+an on-sale post — its sales have not opened yet.
 
 ---
 

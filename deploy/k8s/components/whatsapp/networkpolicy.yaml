@@ -1,0 +1,11 @@
+# The link posts whatever it is handed into the society's groups, so only the
+# api may hand it anything — as for the adapter and the eActivities bridge.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: whatsapp-ingress }
+spec:
+  podSelector: { matchLabels: { app: whatsapp } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: api } } }]
+      ports: [{ port: 8080 }]

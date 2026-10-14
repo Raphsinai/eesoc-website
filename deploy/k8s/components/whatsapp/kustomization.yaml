@@ -1,0 +1,24 @@
+# The WhatsApp link, as a component: an environment has it only if its overlay
+# says `components: [../../components/whatsapp]`.
+#
+# Not in the base, on purpose. The base reaches production on the next sync,
+# and production should start posting into the real community only when
+# somebody decides it should — so turning it on there is that one line in the
+# production overlay, reviewed like a promote. Staging has it from the start.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+- whatsapp.yaml
+- networkpolicy.yaml
+
+patches:
+# Tells the api where the link is. Without it the Email tab says WhatsApp
+# posting isn't set up, which is the truth in an environment without this.
+- patch: |
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: eesoc-config
+    data:
+      WHATSAPP_API_URL: "http://whatsapp:8080"

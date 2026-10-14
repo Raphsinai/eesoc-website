@@ -108,7 +108,7 @@ at. Mention it rather than promoting it.
 
 ---
 
-## Two standing hazards
+## Three standing hazards
 
 **eActivities bans the whole society.** The Union's API rate-limits per source
 IP and a breach bans EESoc, not just the caller. The throttle and cache live
@@ -122,3 +122,12 @@ password Imperial force-resets annually. When it lapses, sign-in codes stop and
 members are locked out. The site handles this by taking sign-in and booking
 into maintenance mode rather than half-working. Anything that sends mail from
 staging sends it for real, from that same address.
+
+**WhatsApp bans the society's number.** The `whatsapp` service is the society's
+WhatsApp Business number linked as a device (the WhatsApp Web protocol, not the
+Business API), which WhatsApp's terms do not allow for automation; if it is
+flagged as a bot, the number that runs the community is banned. Keep it to
+groups, a few posts an hour, one replica — do not scale it, loosen its pacing or
+hourly cap, add direct messages, or turn it on in production without Raph. On
+staging it posts only into groups on `WHATSAPP_GROUP_ALLOWLIST`; keep the real
+community off that list.

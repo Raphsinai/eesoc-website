@@ -37,7 +37,7 @@ CAMPAIGN_COLUMNS = """
     id, subject, heading, body, audiences, status, recipients, sent, failed,
     error, created_by, created_at, started_at, finished_at, kind, event_id,
     extra_recipients, excluded_recipients, reviewed_by, reviewed_at,
-    send_at, edited_at
+    send_at, edited_at, whatsapp
 """
 
 # The JSONB columns, each a list of strings.
@@ -423,6 +423,7 @@ async def edit_draft(campaign_id: int, edit: CampaignDraftEdit) -> Campaign:
                 extra_recipients    = COALESCE($6::jsonb, extra_recipients),
                 excluded_recipients = COALESCE($7::jsonb, excluded_recipients),
                 send_at             = COALESCE($8, send_at),
+                whatsapp            = COALESCE($10, whatsapp),
                 edited_at           = CASE WHEN $9 THEN NOW() ELSE edited_at END
              WHERE id = $1
                AND (status = 'awaiting_approval' OR (NOT $9 AND status = 'scheduled'))
@@ -431,6 +432,7 @@ async def edit_draft(campaign_id: int, edit: CampaignDraftEdit) -> Campaign:
             campaign_id, edit.subject, edit.heading, edit.body,
             as_json(edit.audiences), as_json(edit.extra_recipients),
             as_json(edit.excluded_recipients), edit.send_at, edit.by_hand,
+            edit.whatsapp,
         )
         if row is None:
             raise await _missing_or_conflict(conn, campaign_id)

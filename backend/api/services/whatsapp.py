@@ -1,34 +1,39 @@
 """Announcements as WhatsApp posts.
 
-The site writes the post; a person sends it. What is written is the
-committee's words in WhatsApp's own formatting, with an event's date, venue,
-prices and link added from the database exactly as the email adds them — so a
-WhatsApp reminder cannot advertise last week's room either. "Open in WhatsApp"
-is a wa.me link that opens the app with the text filled in; the committee
-member picks the EESoc community or group and presses send. That press is the
-approval, so the rule that nothing addressed to a crowd goes without a
-person's say-so holds here without a queue.
+What is posted is the committee's words in WhatsApp's own formatting, with an
+event's date, venue, prices and link added from the database exactly as the
+email adds them — so a WhatsApp reminder cannot advertise last week's room
+either. It reaches the society's groups one of two ways:
 
-The site never posts by itself, deliberately. The two ways it could both fail
-the society:
+  * by hand — "Open in WhatsApp" is a wa.me link that opens the app with the
+    text filled in, and a committee member picks the group and presses send;
+  * by the site — the society's WhatsApp Business number is linked to the site
+    as one of its devices (backend/whatsapp), and posts into the groups chosen
+    on the Email tab: now, when somebody presses "Post", or along with an
+    email at the time it was approved for.
 
-  * WhatsApp's Business API cannot post into a group or a community at all —
-    only to individual numbers, each of which has opted in, as templates Meta
-    has approved in advance, paid per message. EESoc holds no member's number,
-    and starting to would be a new store of personal data to scrub and guard.
-  * Driving WhatsApp Web from the server (whatsapp-web.js, Baileys) breaks
-    WhatsApp's terms, and the ban lands on the number that runs the society's
-    community — the eActivities hazard again, with no appeal.
+Either way a person said yes to every post, as for every email to a crowd.
 
-Database-only, like the email preview: nothing here spends anything against
-the Union's rate limit.
+The linked device is NOT the WhatsApp Business API, which cannot post into a
+group it did not create; it is the WhatsApp Web protocol, which WhatsApp's
+terms do not allow for automation. If WhatsApp decides it is a bot, the number
+that runs the society's community is banned, with no appeal — the eActivities
+hazard over again. backend/whatsapp/src/link.js says how it keeps that risk
+small; this file keeps it to the chosen groups, records every post before it
+is made so none goes twice, and on staging posts nowhere until a test group is
+on WHATSAPP_GROUP_ALLOWLIST.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from urllib.parse import quote
 
+from fastapi import HTTPException
+
+from clients import database
+from clients import whatsapp as link
 from config import settings
 from services import campaigns, purchase
 
@@ -174,3 +179,131 @@ def share_url(text: str) -> str:
     which chat it is for — the app on a phone, WhatsApp Desktop or Web on a
     laptop."""
     return f"https://wa.me/?text={quote(text, safe='')}"
+
+
+# ------------------------------------------------------------ the linked device
+
+log = logging.getLogger("api.whatsapp")
+
+# A second press of "Post" inside this long, with the same words, into the
+# same group, is taken for a double press and refused.
+REPEAT_MINUTES = 5
+
+
+def allowlist() -> set[str] | None:
+    """The groups this environment may post into, or None for "any chosen".
+
+    Empty on staging means none — see config.whatsapp_group_allowlist.
+    """
+    listed = {j.strip() for j in settings.whatsapp_group_allowlist.split(",") if j.strip()}
+    if listed or settings.environment == "staging":
+        return listed
+    return None
+
+
+def allowed(jid: str) -> bool:
+    groups = allowlist()
+    return groups is None or jid in groups
+
+
+async def chosen() -> list[dict]:
+    """The groups announcements go to, as chosen on the Email tab."""
+    return await database.get("/whatsapp/groups") or []
+
+
+async def text_for(row: dict) -> str:
+    """A queued email's WhatsApp version: its heading (or subject), its words,
+    and its event's details — the same post "WhatsApp version" shows."""
+    event = None
+    if row.get("kind") in campaigns.EVENT_KINDS and row.get("event_id") is not None:
+        event = await database.get(f"/events/{row['event_id']}")
+    return await message(
+        row.get("heading") or row.get("subject") or "", row.get("body") or "",
+        event, row.get("kind"),
+    )
+
+
+async def _finish(post_id: int, outcome: dict) -> None:
+    """Record how a post went. Never raises: by now the post has gone (or
+    failed) whatever the record says, and the next group must still get its
+    turn. A record left at "sending" reads as "may have gone" — the safe way
+    round, since that is what stops it going again."""
+    try:
+        await database.patch(f"/whatsapp/posts/{post_id}", json=outcome)
+    except Exception:  # noqa: BLE001
+        log.exception("Could not record WhatsApp post %s as %s", post_id, outcome.get("status"))
+
+
+async def post(
+    text: str,
+    groups: list[dict],
+    *,
+    campaign_id: int | None = None,
+    by: int | None = None,
+) -> list[dict]:
+    """Post `text` into each group, recording each post before it is made.
+
+    With a `campaign_id`, the record is the claim: a group this email has
+    already gone to — from another pod's scheduler, or a retry — is skipped,
+    never posted twice. Without one (somebody pressed "Post"), the same words
+    in the same group within REPEAT_MINUTES are taken for a double press.
+
+    One group's failure does not stop the next. Returns what happened in each.
+    """
+    results = []
+    for group in groups:
+        jid, name = group["jid"], group.get("name") or ""
+        result = {"jid": jid, "name": name}
+        if not allowed(jid):
+            results.append({**result, "status": "skipped",
+                            "error": "Not on WHATSAPP_GROUP_ALLOWLIST for this environment."})
+            continue
+        if campaign_id is None:
+            recent = await database.get(
+                "/whatsapp/posts",
+                {"jid": jid, "within_minutes": REPEAT_MINUTES, "limit": 5},
+            ) or []
+            if any(p.get("body") == text and p.get("status") != "failed" for p in recent):
+                results.append({**result, "status": "skipped",
+                                "error": "Just posted there — not posting it twice."})
+                continue
+        try:
+            claim = await database.post("/whatsapp/posts", {
+                "campaign_id": campaign_id, "jid": jid, "group_name": name,
+                "body": text, "created_by": by,
+            })
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+            results.append({**result, "status": "skipped", "error": "Already posted with this email."})
+            continue
+        try:
+            sent = await link.send(jid, text, key=f"post:{claim['id']}")
+        except link.WhatsAppUnavailable as exc:
+            await _finish(claim["id"], {"status": "failed", "error": str(exc)})
+            log.warning("WhatsApp post %s to %s failed: %s", claim["id"], jid, exc)
+            results.append({**result, "status": "failed", "error": str(exc)})
+            continue
+        await _finish(claim["id"], {"status": "sent", "message_id": sent.get("id")})
+        results.append({**result, "status": "sent", "error": None})
+    log.info("WhatsApp: %s", ", ".join(f"{r['name'] or r['jid']}={r['status']}" for r in results))
+    return results
+
+
+async def post_campaign(row: dict) -> list[dict]:
+    """Post an email's WhatsApp version into the chosen groups, if it was
+    ticked to go there too. Called as the email starts sending. Never raises:
+    the email has gone whatever WhatsApp does, and what happened is on the
+    posts list for the committee to see."""
+    if not row.get("whatsapp"):
+        return []
+    try:
+        groups = await chosen()
+        if not groups:
+            log.warning("Email %s was to go on WhatsApp, but no groups are chosen", row["id"])
+            return []
+        return await post(await text_for(row), groups,
+                          campaign_id=row["id"], by=row.get("reviewed_by"))
+    except Exception:  # noqa: BLE001
+        log.exception("Could not post email %s on WhatsApp", row.get("id"))
+        return []

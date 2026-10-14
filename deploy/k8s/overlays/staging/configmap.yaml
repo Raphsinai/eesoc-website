@@ -43,6 +43,13 @@ data:
   # test send — keep personal and business addresses off it.
   MAIL_ALLOWLIST: "ras124@ic.ac.uk"
 
+  # The same fence for WhatsApp. Staging may be linked to the society's REAL
+  # number (a second linked device on it), and its groups are the real
+  # community — so on staging an empty list means post nowhere. To try posting,
+  # make a test group with the number in it, choose it on the Email tab (its id
+  # is shown there), and put that id here. Comma-separated.
+  WHATSAPP_GROUP_ALLOWLIST: ""
+
   # Nothing here is paid for, so the production pause is lifted — locker
   # booking is one of the things worth exercising before a release.
   MAINTENANCE_FEATURES: ""

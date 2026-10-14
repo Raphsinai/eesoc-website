@@ -85,6 +85,8 @@ class Campaign(BaseModel):
     # and when a person last edited it.
     send_at: datetime | None = None
     edited_at: datetime | None = None
+    # Also post it into the chosen WhatsApp groups when it is sent (077).
+    whatsapp: bool = False
 
 
 class CampaignCreate(BaseModel):
@@ -115,6 +117,7 @@ class CampaignDraftEdit(BaseModel):
     extra_recipients: list[str] | None = None
     excluded_recipients: list[str] | None = None
     send_at: datetime | None = None
+    whatsapp: bool | None = None
     # False for the system's own updates (the event changed), which neither
     # mark the draft as hand-edited nor are refused for a scheduled one.
     by_hand: bool = True

@@ -93,6 +93,8 @@ def _summary(row: dict, event: dict | None) -> dict:
         "note": row.get("error"),
         "event": _event_summary(event),
         "warning": campaigns.warning(row, event),
+        # Also posted into the chosen WhatsApp groups when it is sent.
+        "whatsapp": bool(row.get("whatsapp")),
     }
 
 
@@ -142,6 +144,11 @@ async def _detail(row: dict) -> dict:
         "skipped": skipped,
         "preview": preview and {"subject": preview["subject"], "html": preview["html"]},
         "previewError": preview_error,
+        # What went to WhatsApp with it, once it has been sent.
+        "whatsappPosts": [
+            {"group": p.get("group_name") or p["jid"], "status": p["status"], "error": p.get("error")}
+            for p in await database.get("/whatsapp/posts", {"campaign_id": row["id"]}) or []
+        ],
     }
 
 
@@ -189,9 +196,11 @@ async def edit(
     audiences: list[str] | None = Body(default=None, embed=True),
     extra: list[str] | None = Body(default=None, embed=True),
     excluded: list[str] | None = Body(default=None, embed=True),
+    whatsapp: bool | None = Body(default=None, embed=True),
     _: AuthSession = Depends(require_site),
 ) -> dict:
-    """Change the words, or who it goes to. Fields left out are kept.
+    """Change the words, or who it goes to — `whatsapp` is whether it also goes
+    into the chosen WhatsApp groups when it is sent. Fields left out are kept.
 
     Only while it waits for approval — a scheduled email is taken off the
     schedule first, so nothing approved changes without being approved again.
@@ -216,6 +225,7 @@ async def edit(
             "excluded_recipients": (
                 campaigns.clean_addresses(excluded) if excluded is not None else None
             ),
+            "whatsapp": whatsapp,
         },
     )
     if edited is None:

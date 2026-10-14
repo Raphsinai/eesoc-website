@@ -84,6 +84,25 @@ BEGIN
     END IF;
 END $$;
 
+-- WhatsApp (migration 077). Not personal data, but production's DECISIONS
+-- about the real community: which of its groups get posts, and which approved
+-- emails also post there when they go. Copied, a scheduled email would post
+-- from staging's scheduler into whatever staging is linked to — which may be
+-- the society's real number. So staging starts with no groups chosen and no
+-- email ticked for WhatsApp; WHATSAPP_GROUP_ALLOWLIST is the second fence.
+DO $$
+BEGIN
+    IF to_regclass('public.whatsapp_groups') IS NOT NULL THEN
+        TRUNCATE TABLE public.whatsapp_groups, public.whatsapp_posts;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name   = 'email_campaigns'
+                  AND column_name  = 'whatsapp') THEN
+        UPDATE public.email_campaigns SET whatsapp = false WHERE whatsapp;
+    END IF;
+END $$;
+
 -- ---------------------------------------------------------------------------
 -- 2. Identities.
 -- ---------------------------------------------------------------------------

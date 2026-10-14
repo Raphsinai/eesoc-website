@@ -67,6 +67,7 @@ services:
       # Wiring — compose network topology, not deployment config.
       DATABASE_ADAPTER_URL: http://database:8080
       UNION_API_URL: http://union:8080
+      WHATSAPP_API_URL: http://whatsapp:8080
       # Uploads live on a volume, not in the image: a container filesystem is
       # discarded on every deploy, and under k8s the pod is replaced outright.
       MEDIA_ROOT: /data/media
@@ -121,8 +122,21 @@ services:
     expose:
       - "8080"
 
+  # The WhatsApp link — idle until a number is linked from the Email tab.
+  # Locally, link a test number, never the society's: locally there is no
+  # allowlist, and it posts into whichever groups you tick.
+  whatsapp:
+    build: ./whatsapp
+    image: eesoc-website-whatsapp
+    volumes:
+      - whatsapp-session:/data/session
+    expose:
+      - "8080"
+
 volumes:
   pgdata:
+  # The linked session, so restarting the container is not a re-link.
+  whatsapp-session:
   # Shared read-write by api (writes uploads) and frontend (serves them).
   # Becomes a ReadWriteMany PVC in the cluster — see deploy/k8s.
   media:

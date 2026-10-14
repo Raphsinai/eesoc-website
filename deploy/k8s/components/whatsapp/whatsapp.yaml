@@ -1,0 +1,71 @@
+# The WhatsApp link: the society's WhatsApp Business number, linked to the site
+# as one of its devices, posting announcements into the groups chosen on the
+# Email tab. backend/whatsapp/src/link.js says what it is, and why everything
+# about it is careful: WhatsApp does not allow automating a linked device, and
+# the ban for it lands on the number that runs the society's community.
+#
+# ONE replica, and Recreate. Two pods holding the same session fight over it —
+# WhatsApp sees one device connecting from two places — which is both broken
+# and exactly the pattern that gets a number flagged. Same shape as the
+# eActivities bridge, for the same kind of reason.
+apiVersion: v1
+kind: Service
+metadata: { name: whatsapp }
+spec:
+  selector: { app: whatsapp }
+  ports: [{ port: 8080, targetPort: 8080 }]
+---
+# The linked session: the keys that make this server one of the number's
+# devices. On a volume so a deploy is not a re-link from the phone. Per
+# environment — staging's is its own, never a copy of production's (the
+# snapshot copies the database, not this).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: whatsapp-session
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: whatsapp }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: whatsapp } }
+  template:
+    metadata: { labels: { app: whatsapp } }
+    spec:
+      # Enough to finish a post already handed to WhatsApp.
+      terminationGracePeriodSeconds: 20
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        # The image runs as `node` (1000); the volume must be writable by it.
+        fsGroup: 1000
+      containers:
+        - name: whatsapp
+          image: ghcr.io/OWNER/eesoc-whatsapp
+          ports: [{ containerPort: 8080 }]
+          env:
+            - { name: WHATSAPP_SESSION_DIR, value: /data/session }
+          # Ready means the process answers. A dropped WhatsApp connection is
+          # reported on the Email tab and reconnected by the process itself;
+          # restarting the pod for it would only add a reconnect of our own.
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 3
+            periodSeconds: 15
+          volumeMounts:
+            - { name: session, mountPath: /data/session }
+          resources:
+            requests: { cpu: 25m, memory: 96Mi }
+            limits:   { memory: 384Mi }
+      volumes:
+        - name: session
+          persistentVolumeClaim: { claimName: whatsapp-session }

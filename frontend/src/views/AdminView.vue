@@ -16,6 +16,7 @@ import StatBlock from '@/components/ds/StatBlock.vue'
 import Dialog from '@/components/ds/Dialog.vue'
 import TraceRule from '@/components/ds/TraceRule.vue'
 import PasskeyLinkMade from '@/components/PasskeyLinkMade.vue'
+import WhatsAppLink from '@/components/WhatsAppLink.vue'
 import WhatsAppPost from '@/components/WhatsAppPost.vue'
 import session, { can, hasAdminArea } from '@/stores/session'
 
@@ -767,7 +768,7 @@ const queue = ref([])
 // The draft open in the review dialog, exactly as the server last described it
 // (recipients resolved, preview rendered). `mailDraft` is the editable copy.
 const reviewing = ref(null)
-const mailDraft = reactive({ subject: '', heading: '', body: '', audiences: [], extra: [], excluded: [] })
+const mailDraft = reactive({ subject: '', heading: '', body: '', audiences: [], extra: [], excluded: [], whatsapp: false })
 const addAddresses = ref('')
 const recipientFilter = ref('')
 const reviewError = ref('')
@@ -791,6 +792,7 @@ function fillDraft(d) {
   mailDraft.audiences = [...d.audiences]
   mailDraft.extra = [...d.extra]
   mailDraft.excluded = [...d.excluded]
+  mailDraft.whatsapp = Boolean(d.whatsapp)
 }
 
 async function openReview(id) {
@@ -835,6 +837,7 @@ async function saveDraft() {
       audiences: mailDraft.audiences,
       extra: mailDraft.extra,
       excluded: mailDraft.excluded,
+      whatsapp: mailDraft.whatsapp,
     }),
   )
 }
@@ -850,6 +853,12 @@ async function draftAction(fn) {
   } finally {
     busy.value = false
   }
+}
+
+/** Also post it into the chosen WhatsApp groups when the email goes. */
+function setDraftWhatsApp(value) {
+  mailDraft.whatsapp = value
+  draftAction(saveDraft)
 }
 
 function toggleDraftAudience(key) {
@@ -2627,7 +2636,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 <template v-else-if="q.sendAtText">due {{ q.sendAtText }}</template>
               </span>
               <span style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">
-                {{ q.kindLabel }} · {{ q.recipients }} recipient(s) · written {{ new Date(q.createdAt).toLocaleString() }}
+                {{ q.kindLabel }} · {{ q.recipients }} recipient(s)<template v-if="q.whatsapp"> · and WhatsApp</template> · written {{ new Date(q.createdAt).toLocaleString() }}
               </span>
               <span v-if="q.note" style="font:var(--type-2xs); color:var(--danger)">{{ q.note }}</span>
               <span v-if="q.warning" style="font:var(--type-2xs); color:var(--danger)">{{ q.warning }}</span>
@@ -2722,6 +2731,8 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
 
             <Card variant="outline">
               <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">WhatsApp</h2>
+              <WhatsAppLink />
+              <TraceRule style="margin:var(--space-5) 0" />
               <WhatsAppPost :heading="compose.heading || compose.subject" :body="compose.body" />
             </Card>
 
@@ -3225,6 +3236,10 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           :body="mailDraft.body"
           :event-id="reviewing.event?.id ?? null"
           :kind="reviewing.kind"
+          :also-when-sent="mailDraft.whatsapp"
+          :locked="isScheduled || busy"
+          :posted="reviewing.whatsappPosts || []"
+          @update:also-when-sent="setDraftWhatsApp"
         />
 
         <TraceRule />

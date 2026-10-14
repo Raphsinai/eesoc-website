@@ -422,6 +422,15 @@ async def start_send(row: dict, *, expect: str, reviewed_by: int | None) -> int:
             kind=row.get("kind") or "newsletter", event_id=row.get("event_id"),
         )
     )
+    if row.get("whatsapp"):
+        # Here rather than at the top: services/whatsapp builds on this module.
+        from services import whatsapp
+
+        # Alongside the email, not after it: a paced send of a few hundred
+        # takes minutes, and "tickets are on sale" is news at the moment of
+        # sale. Each group is claimed before it is posted, so a second pod's
+        # scheduler reaching this email never posts it twice.
+        dispatch(whatsapp.post_campaign({**row, "reviewed_by": reviewed_by}))
     return len(recipients)
 
 

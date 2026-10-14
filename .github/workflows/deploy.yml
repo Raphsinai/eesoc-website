@@ -370,6 +370,8 @@ jobs:
           - { name: union, context: backend/union }
           - { name: frontend, context: frontend }
           - { name: garage-init, context: deploy/garage-init }
+          # Runs its own tests in the build (backend/whatsapp/Dockerfile).
+          - { name: whatsapp, context: backend/whatsapp }
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -436,7 +438,7 @@ jobs:
       - name: Pin the new image tags in staging
         working-directory: deploy/k8s/overlays/staging
         run: |
-          for svc in api database union frontend garage-init; do
+          for svc in api database union frontend garage-init whatsapp; do
             kustomize edit set image \
               "ghcr.io/OWNER/eesoc-${svc}=${{ env.REGISTRY }}/${{ env.OWNER_LC }}/eesoc-${svc}:${{ github.sha }}"
           done

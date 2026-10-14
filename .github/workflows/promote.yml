@@ -44,23 +44,26 @@ jobs:
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import os, sys, yaml
 
-          SERVICES = ["api", "database", "union", "frontend", "garage-init"]
+          SERVICES = ["api", "database", "union", "frontend", "garage-init", "whatsapp"]
 
-          def tags(path):
+          def tags(path, new_ok=False):
               doc = yaml.safe_load(open(path)) or {}
               pinned = {i["name"]: i.get("newTag") for i in doc.get("images", [])}
               out = {}
               for svc in SERVICES:
                   tag = pinned.get(f"ghcr.io/OWNER/eesoc-{svc}")
-                  if not tag:
+                  if not tag and not new_ok:
                       sys.exit(f"::error::no pinned tag for eesoc-{svc} in {path}")
                   out[svc] = tag
               return out
 
           staging = tags("deploy/k8s/overlays/staging/kustomization.yaml")
-          production = tags("deploy/k8s/overlays/production/kustomization.yaml")
+          # A service added since the last promote has no pin in production
+          # yet; this promote is what gives it one. (Pinned is not running:
+          # whatsapp runs only where an overlay includes its component.)
+          production = tags("deploy/k8s/overlays/production/kustomization.yaml", new_ok=True)
 
-          # All five services are built from one commit and pinned together. A
+          # All six services are built from one commit and pinned together. A
           # mismatch means a half-finished deploy, and promoting it would put a
           # combination on eesoc.com that has never run anywhere.
           if len(set(staging.values())) != 1:
@@ -103,7 +106,7 @@ jobs:
       - name: Pin the promoted tags in production
         working-directory: deploy/k8s/overlays/production
         run: |
-          for svc in api database union frontend garage-init; do
+          for svc in api database union frontend garage-init whatsapp; do
             kustomize edit set image \
               "ghcr.io/OWNER/eesoc-${svc}=ghcr.io/${{ env.OWNER_LC }}/eesoc-${svc}:${{ steps.pick.outputs.sha }}"
           done

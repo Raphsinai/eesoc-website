@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     # --- service wiring (set by compose) ---
     database_adapter_url: str
     union_api_url: str = ""
+    # The WhatsApp link (backend/whatsapp). Blank turns posting off.
+    whatsapp_api_url: str = ""
 
     # --- access ---
     # The standing superuser. Whoever holds this address is a superuser on every
@@ -91,6 +93,12 @@ class Settings(BaseSettings):
     # allowed is logged instead of sent, so a sign-in code can still be read
     # from the api log.
     mail_allowlist: str = ""
+    # Which WhatsApp groups may actually be posted into: comma-separated group
+    # ids ("…@g.us", shown on the Email tab). Empty means any group chosen
+    # there — EXCEPT on staging, where empty means none: staging can be linked
+    # to the society's real number, and a test post must not reach the real
+    # community.
+    whatsapp_group_allowlist: str = ""
 
     # --- publicity mailbox (bulk) ---
     # Anything sent to a list rather than to one person goes from the publicity

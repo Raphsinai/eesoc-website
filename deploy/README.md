@@ -478,6 +478,48 @@ kubectl apply -f deploy/argocd/application-production.yaml
 kubectl apply -f deploy/argocd/application-staging.yaml
 ```
 
+### 5. WhatsApp (optional, per environment)
+
+The `whatsapp` service links the society's WhatsApp Business number to the site
+as a device — the way WhatsApp Web is — and posts announcements into the groups
+chosen on the Email tab. It is **not** the WhatsApp Business API, which cannot
+post into an existing group or community; it is the WhatsApp Web protocol,
+which WhatsApp's terms do not allow for automation. **If WhatsApp decides it is
+a bot, it bans the number that runs the community, with no appeal.**
+`backend/whatsapp/src/link.js` and API.md's WhatsApp section say how it keeps
+that risk small.
+
+It is a kustomize **component**, not part of the base, so an environment has it
+only if its overlay says so:
+
+```yaml
+components:
+- ../../components/whatsapp
+```
+
+Staging has it. **Production does not until somebody adds that line to
+`overlays/production/kustomization.yaml`** — a change to review and approve
+like a promote, because it is the moment the site can start posting into the
+real community. The component brings the deployment (one replica,
+`Recreate`), a 256Mi volume for the linked session, a NetworkPolicy letting only
+the api reach it, and `WHATSAPP_API_URL` for the api. Its image is built and
+pinned with the others; production gets its pin on the next promote whether or
+not it runs it.
+
+To link: Email tab → WhatsApp card → **Link a number**, then on the society's
+phone, WhatsApp Business → Settings → Linked devices → Link a device, and scan
+the QR code (or **Link with a code instead**, and type the code shown). Then
+tick the groups announcements go to. The session lives on the volume, so
+deploys do not need a re-link; unlinking from the phone, or **Unlink** on the
+card, ends it.
+
+**Staging posts nowhere until a group is on `WHATSAPP_GROUP_ALLOWLIST`**
+(`overlays/staging/configmap.yaml`): staging can be linked to the real number
+too — a second linked device — and its groups are the real community. Make a
+test group, choose it on staging's Email tab (its id is shown there), and put
+the id on the list. The snapshot scrub empties chosen groups and every email's
+WhatsApp tick, so nothing copied from production can post from staging.
+
 ## Maintenance mode
 
 Features whose dependencies are missing take themselves offline and say so,

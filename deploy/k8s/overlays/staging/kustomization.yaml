@@ -19,6 +19,11 @@ resources:
 - refresh-job.yaml
 - ../../../snapshot
 
+# The WhatsApp link (components/whatsapp says why it is opt-in per
+# environment). On here, fenced by WHATSAPP_GROUP_ALLOWLIST in configmap.yaml.
+components:
+- ../../components/whatsapp
+
 # The same scripts as production, from the same files — restore.sh has to be
 # the one that was tested, not a copy that drifted.
 

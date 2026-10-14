@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from clients import database, union
+from clients import whatsapp as whatsapp_client
 from config import settings
 from routes.admin import router as admin_router
 from routes.approvals import router as approvals_router
@@ -31,6 +32,7 @@ from routes.resources import router as resources_router
 from routes.search import router as search_router
 from routes.seo import router as seo_router
 from routes.sponsors import router as sponsors_router
+from routes.whatsapp import router as whatsapp_router
 from services import announce as announce_service
 from services import campaigns as campaigns_service
 from services import emailing as emailing_service
@@ -142,6 +144,7 @@ async def lifespan(app: FastAPI):
             pass
     await database.close()
     await union.close()
+    await whatsapp_client.close()
 
 
 app = FastAPI(
@@ -161,6 +164,7 @@ app.include_router(search_router)
 app.include_router(seo_router)
 app.include_router(admin_router)
 app.include_router(approvals_router)
+app.include_router(whatsapp_router)
 app.include_router(checkin_router)
 app.include_router(passkeys_router)
 app.include_router(passkey_links_router)

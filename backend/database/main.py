@@ -18,6 +18,7 @@ from routes.passkeys import router as passkeys_router
 from routes.resources import router as resources_router
 from routes.sponsors import router as sponsors_router
 from routes.union import router as union_router
+from routes.whatsapp import router as whatsapp_router
 
 
 @asynccontextmanager
@@ -59,6 +60,7 @@ app.include_router(email_router)
 app.include_router(jobs_router)
 app.include_router(checkin_router)
 app.include_router(passkeys_router)
+app.include_router(whatsapp_router)
 
 
 @app.get("/health")

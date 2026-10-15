@@ -289,3 +289,25 @@ def test_posting_now_needs_words_and_a_chosen_group(db, wa):
     with pytest.raises(HTTPException) as none_chosen:
         run(routes.post_now(heading="AGM", body="x", event_id=None, kind=None, session=session))
     assert none_chosen.value.status_code == 400
+
+
+# ------------------------------------------------- 7. what the browser gets
+
+
+def test_the_services_own_failures_never_reach_the_browser_as_502(monkeypatch):
+    """Cloudflare swaps a 502 from the site for its HTML error page, which the
+    Email tab once showed in full instead of the reason — so the service's
+    failures become 503, and its refusals keep their own status."""
+    import httpx
+
+    def reply(status, detail):
+        transport = httpx.MockTransport(lambda request: httpx.Response(status, json={"detail": detail}))
+        return httpx.AsyncClient(base_url="http://whatsapp:8080", transport=transport)
+
+    monkeypatch.setattr(settings, "whatsapp_api_url", "http://whatsapp:8080")
+    for service_status, expected in ((500, 503), (502, 503), (409, 409), (429, 429)):
+        monkeypatch.setattr(link, "client", lambda s=service_status: reply(s, "EBUSY: resource busy"))
+        with pytest.raises(link.WhatsAppUnavailable) as raised:
+            run(link.link("447700900123"))
+        assert raised.value.status == expected, service_status
+        assert "EBUSY" in str(raised.value)

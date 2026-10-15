@@ -8,6 +8,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
+# As `node`, the user the service runs as: root ignores file permissions, and
+# the test that stands in for a volume's mount point relies on them.
+RUN chown -R node:node /app
+USER node
 RUN npm test
 
 FROM node:22-alpine

@@ -245,6 +245,41 @@ describe('staying linked', () => {
     assert.deepEqual(await fs.readdir(dir), [])
   })
 
+  it('empties the session folder but never removes it — in the cluster it is a mount point', async () => {
+    // A folder whose parent cannot be written: what is in it can go, the
+    // folder itself cannot — as with a volume's mount point (EBUSY there).
+    const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'wa-mount-'))
+    const mount = path.join(parent, 'session')
+    await fs.mkdir(mount)
+    await fs.writeFile(path.join(mount, 'creds.json'), '{}')
+    await fs.chmod(parent, 0o555)
+    try {
+      const link = makeLink({ dir: mount })
+      await link.start()
+      assert.deepEqual(await fs.readdir(mount), [])
+      await link.link()
+      assert.equal(link.status().state, 'linking')
+      await fs.writeFile(path.join(mount, 'creds.json'), '{}')
+      await link.unlink()
+      assert.equal(link.status().state, 'unlinked')
+      assert.deepEqual(await fs.readdir(mount), [])
+    } finally {
+      await fs.chmod(parent, 0o755)
+      await fs.rm(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('says why when the saved session cannot be opened', async () => {
+    const link = makeLink({
+      auth: async () => {
+        throw new Error('EACCES: permission denied')
+      },
+    })
+    await assert.rejects(link.start())
+    assert.equal(link.status().state, 'unlinked')
+    assert.match(link.status().error, /can't be opened: EACCES/)
+  })
+
   it('signs out and forgets the session on unlink', async () => {
     const { link, sock } = await linked()
     await link.unlink()

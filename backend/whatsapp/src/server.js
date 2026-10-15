@@ -68,9 +68,10 @@ export function createServer(link, log = console) {
       const body = req.method === 'POST' ? await readJson(req) : {}
       reply(res, 200, await handler(body))
     } catch (e) {
-      const status = e instanceof LinkError ? e.status : 502
+      // 500 for anything unexpected — this service's own failure, said as one.
+      const status = e instanceof LinkError ? e.status : 500
       if (status >= 500) log.error({ err: String(e), path: pathname }, 'request failed')
-      reply(res, status, { detail: e.message || 'WhatsApp refused that.' })
+      reply(res, status, { detail: e.message || 'Something went wrong in the WhatsApp service.' })
     }
   })
 }

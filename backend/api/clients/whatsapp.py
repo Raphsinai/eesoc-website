@@ -55,7 +55,12 @@ async def _call(method: str, path: str, body: dict | None = None) -> Any:
             detail = res.json().get("detail", res.text)
         except Exception:  # noqa: BLE001
             detail = res.text
-        raise WhatsAppUnavailable(str(detail)[:300], res.status_code)
+        # The service's refusals (400, 409, 429) keep their status. Its own
+        # failures become 503, never 502: Cloudflare swaps a 502 from the site
+        # for its HTML error page, and the screen would show that instead of
+        # what went wrong.
+        status = 503 if res.status_code >= 500 else res.status_code
+        raise WhatsAppUnavailable(str(detail)[:300], status)
     return res.json()
 
 

@@ -61,8 +61,11 @@ spec:
             httpGet: { path: /health, port: 8080 }
             initialDelaySeconds: 3
             periodSeconds: 15
+          # The volume at /data, the session in a folder inside it — never the
+          # mount point itself, which cannot be removed or wiped as a whole,
+          # and on some storage carries a root-owned lost+found.
           volumeMounts:
-            - { name: session, mountPath: /data/session }
+            - { name: session, mountPath: /data }
           resources:
             requests: { cpu: 25m, memory: 96Mi }
             limits:   { memory: 384Mi }

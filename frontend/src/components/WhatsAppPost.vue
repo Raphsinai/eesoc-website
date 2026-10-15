@@ -15,7 +15,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import api from '@/api'
 import Badge from '@/components/ds/Badge.vue'
 import Button from '@/components/ds/Button.vue'
-import { loadWhatsApp, targets, whatsapp } from '@/stores/whatsapp'
+import { loadWhatsApp, problem, targets, whatsapp } from '@/stores/whatsapp'
 
 const props = defineProps({
   heading: { type: String, default: '' },
@@ -68,7 +68,7 @@ async function render() {
     post.value = res
     stale.value = false
   } catch (e) {
-    if (mine === asked) error.value = e.message
+    if (mine === asked) error.value = problem(e)
   } finally {
     if (mine === asked) loading.value = false
   }
@@ -98,7 +98,7 @@ async function postNow() {
     })
     notice.value = res.message
   } catch (e) {
-    error.value = e.message
+    error.value = problem(e)
   } finally {
     posting.value = false
     loadWhatsApp()

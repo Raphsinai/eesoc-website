@@ -202,5 +202,6 @@ async def post_now(
     if others:
         message += " " + " ".join(f"{r['name'] or r['jid']}: {r['error']}" for r in others)
     if not sent and any(r["status"] == "failed" for r in results):
-        raise HTTPException(502, message)
+        # 503, not 502 — see clients/whatsapp.py.
+        raise HTTPException(503, message)
     return {"ok": bool(sent), "results": results, "message": message}

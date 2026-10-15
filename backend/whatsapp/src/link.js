@@ -24,6 +24,7 @@
 // this with a fake one. main.js wires the real thing.
 
 import fs from 'node:fs/promises'
+import path from 'node:path'
 
 // Baileys' DisconnectReason values, by number: importing the enum would load
 // the whole library into every test.
@@ -107,16 +108,23 @@ export class Link {
 
   // ------------------------------------------------------------ lifecycle
 
-  /** Reconnect with the saved session, if there is one. */
+  /** Reconnect with the saved session, if there is one. A failure here is put
+   *  on the status as well as thrown, so the Email tab says what is wrong
+   *  rather than just "not linked". */
   async start() {
-    const { state } = await this.auth(this.dir)
-    if (state.creds?.registered) {
-      this._set('connecting')
-      await this._connect()
-    } else {
-      // A link that was started and never finished leaves keys that belong
-      // to nobody; the next link starts clean.
-      await this._wipe()
+    try {
+      const { state } = await this.auth(this.dir)
+      if (state.creds?.registered) {
+        this._set('connecting')
+        await this._connect()
+      } else {
+        // A link that was started and never finished leaves keys that belong
+        // to nobody; the next link starts clean.
+        await this._wipe()
+      }
+    } catch (e) {
+      this._set('unlinked', `The saved session can't be opened: ${e.message}`)
+      throw e
     }
   }
 
@@ -173,9 +181,14 @@ export class Link {
     return this.status()
   }
 
+  /** Forget the session: empty the directory, never remove it. In the cluster
+   *  it can be a volume's mount point, and removing a mount point fails
+   *  (EBUSY) — which once made every link attempt fail on staging. */
   async _wipe() {
-    await fs.rm(this.dir, { recursive: true, force: true })
     await fs.mkdir(this.dir, { recursive: true })
+    for (const name of await fs.readdir(this.dir)) {
+      await fs.rm(path.join(this.dir, name), { recursive: true, force: true })
+    }
   }
 
   _end() {

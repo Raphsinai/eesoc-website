@@ -12,7 +12,7 @@ import api from '@/api'
 import Badge from '@/components/ds/Badge.vue'
 import Button from '@/components/ds/Button.vue'
 import Input from '@/components/ds/Input.vue'
-import { loadWhatsApp, whatsapp } from '@/stores/whatsapp'
+import { loadWhatsApp, problem, whatsapp } from '@/stores/whatsapp'
 
 const busy = ref(false)
 const error = ref('')
@@ -66,7 +66,7 @@ async function act(fn) {
   try {
     await fn()
   } catch (e) {
-    error.value = e.message
+    error.value = problem(e)
   } finally {
     busy.value = false
     await loadWhatsApp()

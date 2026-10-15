@@ -17,6 +17,17 @@ export const whatsapp = reactive({
   error: '',
 })
 
+/** An error as one sentence. When the site itself does not answer, the edge
+ *  (Cloudflare) answers with a whole HTML page, which is not one — and pasted
+ *  into the card it buries everything else on it. */
+export function problem(e) {
+  const message = String(e?.message || '')
+  if (message.trimStart().startsWith('<')) {
+    return `The site didn't answer (${e?.status ?? 'no response'}). Try again in a minute.`
+  }
+  return message || 'Something went wrong.'
+}
+
 let pending = null
 
 /** Fetch it again. Calls made while one is in flight share it. */
@@ -28,7 +39,7 @@ export function loadWhatsApp() {
       whatsapp.error = ''
     })
     .catch((e) => {
-      whatsapp.error = e.message
+      whatsapp.error = problem(e)
     })
     .finally(() => {
       whatsapp.loaded = true

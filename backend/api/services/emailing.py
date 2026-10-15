@@ -162,8 +162,8 @@ DEPARTMENT_BY_KEY = {d["key"]: d for d in DEPARTMENT_LISTS}
 # -------------------------------------------------------------- audiences
 
 
-# A WhatsApp group enabled on the Email tab's WhatsApp card is an audience like
-# any other: ticked in the same list, sent by the same Send. Its key is
+# A WhatsApp group the linked number can post in is an audience like any
+# other: ticked in the same list, sent by the same Send. Its key is
 # "whatsapp:<group id>". It is not an email address, so `resolve` skips it;
 # the send paths post into it (services/whatsapp.py).
 WHATSAPP_PREFIX = "whatsapp:"
@@ -240,14 +240,18 @@ async def audiences() -> list[dict]:
         groups.append(item)
 
     # Last, as their own group: a different kind of place, like the
-    # department lists. Only the ones enabled on the WhatsApp card.
-    for group in await database.get("/whatsapp/groups") or []:
+    # department lists — every group the linked number can post in.
+    # Here rather than at the top: services/whatsapp builds on this module.
+    from services import whatsapp
+
+    for group in await whatsapp.available():
+        where = f" · in the {group['community']} community" if group["community"] and not group["announcements"] else ""
         groups.append({
             "key": f"{WHATSAPP_PREFIX}{group['jid']}",
-            "label": group.get("name") or group["jid"],
+            "label": group["name"],
             "group": "WhatsApp",
-            "description": "Posted into the group from the society's number.",
-            "count": None,
+            "description": f"{group['size'] or 0} people{where} · posted from the society's number.",
+            "count": group["size"],
             "whatsapp": True,
         })
 

@@ -44,10 +44,11 @@ data:
   MAIL_ALLOWLIST: "ras124@ic.ac.uk"
 
   # An optional hard fence for WhatsApp: group ids, comma-separated. Empty, as
-  # here, means the groups enabled on staging's Email tab — which asks first,
-  # because staging may be linked to the society's REAL number (a second
-  # linked device on it), and then its groups are the real community. The
-  # snapshot scrub empties the enabled groups after every deploy.
+  # here, means any group the linked number can post in. Staging may be linked
+  # to the society's REAL number (a second linked device on it), and then its
+  # groups are the real community — so staging's Send says so before posting,
+  # and the snapshot scrub strips WhatsApp groups from emails copied from
+  # production. Put a test group's id here to make staging post nowhere else.
   WHATSAPP_GROUP_ALLOWLIST: ""
 
   # Nothing here is paid for, so the production pause is lifted — locker

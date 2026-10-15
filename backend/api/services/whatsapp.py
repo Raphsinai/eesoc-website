@@ -8,9 +8,10 @@ either. It reaches the society's groups one of two ways:
   * by hand — "Open in WhatsApp" is a wa.me link that opens the app with the
     text filled in, and a committee member picks the group and presses send;
   * by the site — the society's WhatsApp Business number is linked to the site
-    as one of its devices (backend/whatsapp), and posts into the groups chosen
-    on the Email tab: now, when somebody presses "Post", or along with an
-    email at the time it was approved for.
+    as one of its devices (backend/whatsapp). Every group it can post in is
+    an audience like any other, ticked under "Who gets it" (or in the picker
+    on a send without that list) and posted into by the same Send — now, or
+    with an email at the time it was approved for.
 
 Either way a person said yes to every post, as for every email to a crowd.
 
@@ -19,9 +20,9 @@ group it did not create; it is the WhatsApp Web protocol, which WhatsApp's
 terms do not allow for automation. If WhatsApp decides it is a bot, the number
 that runs the society's community is banned, with no appeal — the eActivities
 hazard over again. backend/whatsapp/src/link.js says how it keeps that risk
-small; this file keeps it to the chosen groups, records every post before it
-is made so none goes twice, and on staging posts nowhere until a test group is
-on WHATSAPP_GROUP_ALLOWLIST.
+small; this file posts only where a person ticked, records every post before
+it is made so none goes twice, and honours WHATSAPP_GROUP_ALLOWLIST as a hard
+fence where it is set.
 """
 
 from __future__ import annotations
@@ -193,10 +194,8 @@ REPEAT_MINUTES = 5
 def allowlist() -> set[str] | None:
     """A hard fence on where this environment may post, or None for none.
 
-    Optional, in any environment: groups are enabled on the Email tab (with a
-    confirmation on staging, whose number may be the real one). Set
-    WHATSAPP_GROUP_ALLOWLIST and nothing outside it can be posted to,
-    whatever is ticked.
+    Optional, in any environment. Set WHATSAPP_GROUP_ALLOWLIST and nothing
+    outside it is offered or posted to, whatever is ticked.
     """
     listed = {j.strip() for j in settings.whatsapp_group_allowlist.split(",") if j.strip()}
     return listed or None
@@ -207,17 +206,50 @@ def allowed(jid: str) -> bool:
     return groups is None or jid in groups
 
 
+def label(group: dict) -> str:
+    """What a group is called where it is ticked. A community's announcements
+    channel takes the community's name, so it says what it is — one place a
+    post can go, beside the community's groups, never a stand-in for them."""
+    if group.get("communityAnnouncements"):
+        return f"Announcements — {(group.get('parent') or {}).get('name') or group.get('name')}"
+    return group.get("name") or group["jid"]
+
+
+async def available() -> list[dict]:
+    """Every group the linked number can post in, read live from the number,
+    each an audience like any other: {jid, name, size, community}.
+
+    Live rather than a list kept in the database, so it is the same on every
+    screen, and on staging survives the refresh that replaces the database
+    after each deploy. Empty when WhatsApp isn't set up, linked or answering.
+    """
+    if not link.configured():
+        return []
+    try:
+        groups = await link.groups()
+    except link.WhatsAppUnavailable:
+        return []
+    out = [
+        {
+            "jid": g["jid"],
+            "name": label(g),
+            "size": g.get("size"),
+            "community": (g.get("parent") or {}).get("name"),
+            "announcements": bool(g.get("communityAnnouncements")),
+        }
+        for g in groups
+        if g.get("canPost") and allowed(g["jid"])
+    ]
+    # A community's announcements channel first — it reaches everybody in it.
+    out.sort(key=lambda g: (not g["announcements"], g["name"].casefold()))
+    return out
+
+
 async def pick(jids: list[str] | None) -> list[dict]:
-    """The enabled groups among `jids`, in the order enabled. A group picked
-    for a post but disabled since — or never enabled — is left out: the
-    Email tab's list is the only way a group becomes postable."""
-    wanted = set(jids or [])
-    return [g for g in await chosen() if g["jid"] in wanted]
-
-
-async def chosen() -> list[dict]:
-    """The groups announcements go to, as chosen on the Email tab."""
-    return await database.get("/whatsapp/groups") or []
+    """The groups among `jids` the number can post in now, in the order
+    asked. One it has left, or cannot post in any more, is left out."""
+    live = {g["jid"]: g for g in await available()}
+    return [live[j] for j in dict.fromkeys(jids or []) if j in live]
 
 
 async def text_for(row: dict) -> str:
@@ -320,7 +352,7 @@ async def post_campaign(row: dict) -> list[dict]:
     try:
         groups = await pick(jids)
         if not groups:
-            log.warning("Email %s was to go on WhatsApp, but none of its groups is enabled", row["id"])
+            log.warning("Email %s was to go on WhatsApp, but none of its groups can be posted in now", row["id"])
             return []
         return await post(await text_for(row), groups,
                           campaign_id=row["id"], by=row.get("reviewed_by"))

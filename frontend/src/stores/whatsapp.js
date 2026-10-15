@@ -6,7 +6,7 @@
 //
 // Same shape as the session store — a plain reactive module, no store library.
 
-import { computed, reactive } from 'vue'
+import { reactive } from 'vue'
 
 import api from '@/api'
 
@@ -46,16 +46,6 @@ export function loadWhatsApp() {
       pending = null
     })
   return pending
-}
-
-export const connected = computed(() => whatsapp.data?.status?.state === 'connected')
-
-/** What a group is called on screen. A community's announcements channel is
- *  named after the community, so it says what it is — it is one place a post
- *  can go, beside the community's groups, never a stand-in for them. */
-export function groupLabel(g) {
-  if (g.communityAnnouncements) return `Announcements — ${g.parent?.name || g.name}`
-  return g.name || g.jid
 }
 
 export default whatsapp

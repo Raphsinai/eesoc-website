@@ -1,5 +1,8 @@
-"""WhatsApp groups and posts. CRUD, plus the claim that stops a post going
-twice. No authorisation, as everywhere in the adapter."""
+"""WhatsApp posts: the record of each, and the claim that stops a post going
+twice. No authorisation, as everywhere in the adapter.
+
+(The groups themselves are read live from the linked number by the api; the
+whatsapp_groups table from 077 is no longer used.)"""
 
 from __future__ import annotations
 
@@ -7,7 +10,6 @@ from fastapi import APIRouter
 from fastapi.exceptions import HTTPException
 
 from models.whatsapp import (
-    WhatsAppGroup,
     WhatsAppPost,
     WhatsAppPostClaim,
     WhatsAppPostResult,
@@ -20,44 +22,6 @@ POST_COLUMNS = """
     id, campaign_id, jid, group_name, body, status, message_id, error,
     created_by, created_at, sent_at
 """
-
-
-# ------------------------------------------------------------------ groups
-
-
-@router.get("/groups")
-async def list_groups() -> list[WhatsAppGroup]:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT jid, name, added_by, added_at FROM public.whatsapp_groups ORDER BY name, jid;"
-        )
-    return [WhatsAppGroup(**dict(r)) for r in rows]
-
-
-@router.put("/groups")
-async def choose_group(group: WhatsAppGroup) -> WhatsAppGroup:
-    """Choose a group, or refresh the name of one already chosen. A body, not
-    a path parameter: the id has an @ in it."""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            INSERT INTO public.whatsapp_groups (jid, name, added_by)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (jid) DO UPDATE SET name = EXCLUDED.name
-            RETURNING jid, name, added_by, added_at;
-            """,
-            group.jid, group.name, group.added_by,
-        )
-    return WhatsAppGroup(**dict(row))
-
-
-@router.delete("/groups", status_code=204)
-async def drop_group(jid: str) -> None:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM public.whatsapp_groups WHERE jid = $1;", jid)
 
 
 # ------------------------------------------------------------------- posts

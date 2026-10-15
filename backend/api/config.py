@@ -94,9 +94,8 @@ class Settings(BaseSettings):
     # from the api log.
     mail_allowlist: str = ""
     # An optional hard fence on where WhatsApp posts can go: comma-separated
-    # group ids ("…@g.us", shown on the Email tab). Empty means any group
-    # enabled on the Email tab — which, on staging, asks for a confirmation
-    # first, since staging may be linked to the society's real number.
+    # group ids ("…@g.us", shown on the Email tab). Empty means any group the
+    # linked number can post in; set, nothing outside it is offered or posted.
     whatsapp_group_allowlist: str = ""
 
     # --- publicity mailbox (bulk) ---

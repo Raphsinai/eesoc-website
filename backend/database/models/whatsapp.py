@@ -1,4 +1,4 @@
-"""The WhatsApp groups announcements go to, and the posts made into them.
+"""The posts made into WhatsApp groups.
 
 Field names match the SQL columns exactly, as everywhere else in the adapter.
 """
@@ -6,13 +6,6 @@ Field names match the SQL columns exactly, as everywhere else in the adapter.
 from datetime import datetime
 
 from pydantic import BaseModel
-
-
-class WhatsAppGroup(BaseModel):
-    jid: str
-    name: str = ""
-    added_by: int | None = None
-    added_at: datetime | None = None
 
 
 class WhatsAppPost(BaseModel):

@@ -78,6 +78,11 @@ export class Link {
     this.sent = new Map()
     // Group details for sending, so each post does not fetch them again.
     this.meta = new Map()
+    // The list of groups, for a minute: every audience list on the site asks
+    // for it, and asking WhatsApp again on every page load is both slow and
+    // the kind of chatter an ordinary linked device does not make.
+    this.listed = null
+    this.listedAt = 0
     // Posts already made, by the caller's key: a retried request gets the
     // first answer instead of a second post.
     this.done = new Map()
@@ -177,6 +182,7 @@ export class Link {
     this.mode = null
     this.me = null
     this.meta.clear()
+    this.listed = null
     this._set('unlinked')
     return this.status()
   }
@@ -219,8 +225,12 @@ export class Link {
     })
     sock.ev.on('groups.update', (updates) => {
       for (const u of updates || []) this.meta.delete(u.id)
+      this.listed = null
     })
-    sock.ev.on('group-participants.update', (u) => this.meta.delete(u?.id))
+    sock.ev.on('group-participants.update', (u) => {
+      this.meta.delete(u?.id)
+      this.listed = null
+    })
   }
 
   async _onUpdate(sock, { connection, lastDisconnect, qr }) {
@@ -315,14 +325,16 @@ export class Link {
     return this.sock
   }
 
-  /** Every group the number is in, and whether it can post there. */
+  /** Every group the number is in, and whether it can post there. Kept for a
+   *  minute, and dropped early when WhatsApp says a group changed. */
   async groups() {
     const sock = this._connected()
+    if (this.listed && this.now() - this.listedAt < 60_000) return this.listed
     const all = Object.values((await sock.groupFetchAllParticipating()) || {})
     const mine = new Set([bare(sock.user?.id), bare(sock.user?.lid)].filter(Boolean))
     const names = Object.fromEntries(all.map((g) => [g.id, g.subject]))
     for (const g of all) this.meta.set(g.id, g)
-    return all
+    const list = all
       .map((g) => {
         const me = (g.participants || []).find((p) =>
           [p.id, p.lid, p.phoneNumber].some((id) => mine.has(bare(id))),
@@ -345,6 +357,9 @@ export class Link {
         }
       })
       .sort((a, b) => a.name.localeCompare(b.name))
+    this.listed = list
+    this.listedAt = this.now()
+    return list
   }
 
   // ---------------------------------------------------------------- send

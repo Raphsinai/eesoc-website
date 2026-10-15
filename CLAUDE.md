@@ -129,5 +129,5 @@ Business API), which WhatsApp's terms do not allow for automation; if it is
 flagged as a bot, the number that runs the community is banned. Keep it to
 groups, a few posts an hour, one replica — do not scale it, loosen its pacing or
 hourly cap, add direct messages, or turn it on in production without Raph.
-Staging may be linked to the real number: its Email tab asks before a group is
-enabled there, and the snapshot scrub empties enabled groups after every deploy.
+Staging may be linked to the real number: its Send says so before posting, and
+the snapshot scrub strips WhatsApp groups from emails copied from production.

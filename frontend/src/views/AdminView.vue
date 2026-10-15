@@ -16,6 +16,7 @@ import StatBlock from '@/components/ds/StatBlock.vue'
 import Dialog from '@/components/ds/Dialog.vue'
 import TraceRule from '@/components/ds/TraceRule.vue'
 import PasskeyLinkMade from '@/components/PasskeyLinkMade.vue'
+import WhatsAppGroupPicker from '@/components/WhatsAppGroupPicker.vue'
 import WhatsAppLink from '@/components/WhatsAppLink.vue'
 import WhatsAppPost from '@/components/WhatsAppPost.vue'
 import session, { can, hasAdminArea } from '@/stores/session'
@@ -617,6 +618,7 @@ async function loadEmail() {
     api.get('/admin/email/queue'),
   ])
   audiences.value = a.audiences
+  emailEnvironment.value = a.environment
   mailStatus.value = a.mail
   campaigns.value = c
   setQueue(q.items)
@@ -693,7 +695,9 @@ async function preview() {
  *  enabled or disabled, so "Who gets it" shows it straight away. */
 async function refreshAudiences() {
   try {
-    audiences.value = (await api.get('/admin/email/audiences')).audiences
+    const a = await api.get('/admin/email/audiences')
+    audiences.value = a.audiences
+    emailEnvironment.value = a.environment
   } catch (e) {
     error.value = e.message
   }
@@ -712,6 +716,16 @@ function sendTargets(count, keys) {
   if (count) parts.push(`${count} recipient(s)`)
   if (groups.length) parts.push(`${groups.join(', ')} on WhatsApp`)
   return parts.join(' and ') || 'nobody'
+}
+
+// Which environment the audience list came from. Staging's WhatsApp is linked
+// to the real number, so its groups are the real ones: Send says so first.
+const emailEnvironment = ref(null)
+
+function stagingNote(keys) {
+  return emailEnvironment.value === 'staging' && whatsappTicked(keys).length
+    ? '\n\nThis is staging, but WhatsApp is real: those groups get it for real.'
+    : ''
 }
 
 /** The right-hand column of an audience row. */
@@ -751,7 +765,7 @@ async function sendEmail() {
     error.value = 'Press Preview first, so you can see who this goes to.'
     return
   }
-  if (!confirm(`Send this ${what} to ${sendTargets(count, compose.audiences)}? This cannot be undone.`)) return
+  if (!confirm(`Send this ${what} to ${sendTargets(count, compose.audiences)}? This cannot be undone.${stagingNote(compose.audiences)}`)) return
 
   busy.value = true
   error.value = ''
@@ -986,7 +1000,7 @@ function sendNowDraft() {
   draftAction(async () => {
     if (!isScheduled.value) await saveDraft()
     const d = reviewing.value
-    if (!confirm(`Send "${d.subject}" to ${sendTargets(d.count, mailDraft.audiences)} now? This cannot be undone.`)) return
+    if (!confirm(`Send "${d.subject}" to ${sendTargets(d.count, mailDraft.audiences)} now? This cannot be undone.${stagingNote(mailDraft.audiences)}`)) return
     const res = await api.post(`/admin/email/queue/${d.id}/send`)
     flash(res.message)
     closeReview()
@@ -1000,7 +1014,7 @@ function scheduleDraft() {
     const d = reviewing.value
     if (!confirm(
       `Approve "${d.subject}" to go out ${d.sendAtText}?\n\n` +
-      `It goes to whoever is on the list then (${sendTargets(d.count, mailDraft.audiences)} now), with nobody needing to press anything.`,
+      `It goes to whoever is on the list then (${sendTargets(d.count, mailDraft.audiences)} now), with nobody needing to press anything.${stagingNote(mailDraft.audiences)}`,
     )) return
     const res = await api.post(`/admin/email/queue/${d.id}/schedule`)
     flash(res.message)
@@ -1315,14 +1329,19 @@ watch(tab, (t) => {
   if (t === 'overview' || t === 'sponsors') loadSponsorInbox()
 })
 
+// The WhatsApp groups the roles digest is also posted into. None until ticked.
+const digestWhatsApp = ref([])
+
 async function sendRolesDigest() {
   const d = rolesDigest.value
   if (!d?.count) return
-  if (!confirm(`Email ${d.count} new role(s) to ${d.recipients} member(s) subscribed to jobs and internships?`)) return
+  const wa = digestWhatsApp.value.length ? ` and post it into ${digestWhatsApp.value.length} WhatsApp group(s)` : ''
+  if (!confirm(`Email ${d.count} new role(s) to ${d.recipients} member(s) subscribed to jobs and internships${wa}?`)) return
   busy.value = true
   try {
-    const res = await api.post('/admin/sponsors/roles-digest')
+    const res = await api.post('/admin/sponsors/roles-digest', { whatsapp: digestWhatsApp.value })
     flash(res.message)
+    digestWhatsApp.value = []
     await loadSponsorInbox()
   } catch (e) {
     error.value = e.message
@@ -3026,9 +3045,10 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               <span v-for="l in sponsorInbox.listings" :key="`l${l.id}`" class="inbox-row">
                 <strong>{{ l.sponsor }}</strong> · {{ l.title }}<template v-if="l.location"> · {{ l.location }}</template>
               </span>
+              <WhatsAppGroupPicker v-if="can('site')" v-model="digestWhatsApp" :disabled="busy" />
               <div style="display:flex; gap:var(--space-3); align-items:center; flex-wrap:wrap">
                 <Button size="sm" :disabled="busy || !can('site')" @click="sendRolesDigest">
-                  Email {{ rolesDigest.recipients }} jobs subscriber(s)
+                  Email {{ rolesDigest.recipients }} jobs subscriber(s)<template v-if="digestWhatsApp.length"> + WhatsApp</template>
                 </Button>
                 <span style="font:var(--type-2xs); color:var(--text-faint)">
                   <template v-if="can('site')">One email listing every new role, to members who opted in to jobs and internships.</template>

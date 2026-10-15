@@ -322,6 +322,24 @@ describe('groups', () => {
   it('refuses while nothing is linked', async () => {
     await assert.rejects(makeLink().groups(), (e) => e.status === 409)
   })
+
+  it('keeps the list for a minute, and drops it when a group changes', async () => {
+    const { link, sock } = await linked()
+    let asked = 0
+    sock.groupFetchAllParticipating = async () => {
+      asked += 1
+      return { 'o@g.us': { id: 'o@g.us', subject: 'Open chat', participants: [] } }
+    }
+    await link.groups()
+    await link.groups()
+    assert.equal(asked, 1)
+    sock.emit('groups.update', [{ id: 'o@g.us' }])
+    await link.groups()
+    assert.equal(asked, 2)
+    clock += 61_000
+    await link.groups()
+    assert.equal(asked, 3)
+  })
 })
 
 describe('posting', () => {

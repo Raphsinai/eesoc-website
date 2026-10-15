@@ -3,20 +3,20 @@
 //
 // Linking makes the site one of the number's linked devices, as WhatsApp Web
 // is (services/whatsapp.py and backend/whatsapp say why, and why carefully).
-// Once linked, the groups it may post into are enabled here, laid out as the
-// phone shows them: each community with its announcements channel and its
-// groups, each a place of its own. An enabled group is then an audience like
-// any other under "Who gets it", sent by the same Send.
+// Once linked, its groups are shown here as the phone shows them: each
+// community with its announcements channel and its groups, each a place of its
+// own. Every group it can post in is an audience like any other — under "Who
+// gets it" wherever email is sent, ticked and sent by the same Send.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import api from '@/api'
 import Badge from '@/components/ds/Badge.vue'
 import Button from '@/components/ds/Button.vue'
 import Input from '@/components/ds/Input.vue'
-import { groupLabel, loadWhatsApp, problem, whatsapp } from '@/stores/whatsapp'
+import { loadWhatsApp, problem, whatsapp } from '@/stores/whatsapp'
 
-// "changed": the enabled groups changed, so the audience lists holding them
-// should be fetched again.
+// "changed": linked, unlinked or reconnected — the audience lists, which hold
+// the number's groups, should be fetched again.
 const emit = defineEmits(['changed'])
 
 const busy = ref(false)
@@ -81,9 +81,10 @@ function rowLabel(g) {
 let timer = null
 watch(
   state,
-  (s) => {
+  (s, before) => {
     clearInterval(timer)
     if (['linking', 'connecting', 'reconnecting'].includes(s)) timer = setInterval(loadWhatsApp, 3000)
+    if (before !== undefined && (s === 'connected') !== (before === 'connected')) emit('changed')
   },
   { immediate: true },
 )
@@ -124,24 +125,6 @@ function unlink() {
   act(() => api.post('/admin/whatsapp/unlink'))
 }
 
-function toggle(g) {
-  // Staging can be linked to the society's real number, and then its groups
-  // are the real community: say so before one is made postable.
-  if (
-    !g.chosen &&
-    data.value?.environment === 'staging' &&
-    !confirm(
-      `This is staging, but the linked number is real: a test post here goes into ` +
-        `“${groupLabel(g)}”, to its ${g.size} members.\n\nEnable it only if it's a group for testing.`,
-    )
-  ) {
-    return
-  }
-  act(async () => {
-    await api.put('/admin/whatsapp/groups', { jid: g.jid, chosen: !g.chosen })
-    emit('changed')
-  })
-}
 </script>
 
 <template>
@@ -224,39 +207,34 @@ function toggle(g) {
 
     <!-- ------------------------------------------------------ connected -->
     <template v-else-if="state === 'connected' && data.groups">
-      <span class="wl__label">Groups the site may post into</span>
+      <span class="wl__label">Its groups</span>
       <p class="wl__help">
-        Enabled groups appear under “Who gets it” beside the email audiences —
-        tick one there and Send posts into it. None is ticked for you.
+        Every group marked ✓ is under “Who gets it” wherever email is sent —
+        tick it there and Send posts into it. None is ticked for you.
       </p>
       <p v-if="data.allowlist" class="wl__help">
-        This server also only posts into groups on WHATSAPP_GROUP_ALLOWLIST.
+        This server only posts into groups on WHATSAPP_GROUP_ALLOWLIST.
       </p>
       <div v-for="sec in sections" :key="sec.key" class="wl__section">
         <span class="wl__section-title">
           {{ sec.title }}<span v-if="sec.community" class="wl__meta wl__inline"> · community</span>
         </span>
-        <label
+        <div
           v-for="g in sec.groups"
           :key="g.jid"
           class="wl__group"
-          :class="{ 'wl__group--off': !g.canPost }"
+          :class="{ 'wl__group--off': !g.canPost || !g.allowed }"
         >
-          <input
-            type="checkbox"
-            :checked="g.chosen"
-            :disabled="busy || (!g.canPost && !g.chosen)"
-            @change="toggle(g)"
-          />
+          <span class="wl__mark" :aria-label="g.canPost && g.allowed ? 'can post' : 'can\'t post'">{{ g.canPost && g.allowed ? '✓' : '–' }}</span>
           <span>
             <strong>{{ rowLabel(g) }}</strong>
             <span class="wl__meta">
               <template v-if="g.communityAnnouncements">everyone in the community · </template>{{ g.size }} people<template v-if="g.adminsOnly"> · admins only</template>
               <template v-if="!g.canPost"> · can't post: only admins can, and this number isn't one</template>
-              <template v-if="g.chosen && !g.allowed"> · not on WHATSAPP_GROUP_ALLOWLIST: <span class="wl__mono">{{ g.jid }}</span></template>
+              <template v-else-if="!g.allowed"> · not on WHATSAPP_GROUP_ALLOWLIST: <span class="wl__mono">{{ g.jid }}</span></template>
             </span>
           </span>
-        </label>
+        </div>
         <p v-if="sec.community" class="wl__help">
           Only the community's groups this number is in are listed. To post
           into another of them, add the number to that group on the phone.
@@ -265,10 +243,6 @@ function toggle(g) {
       <p v-if="!sections.length" class="wl__help">The number isn't in any group.</p>
     </template>
 
-    <template v-if="data?.chosen?.length && state !== 'connected'">
-      <span class="wl__label">Chosen groups</span>
-      <p class="wl__help">{{ data.chosen.map((g) => g.name || g.jid).join(', ') }} — nothing is posted while it isn't linked.</p>
-    </template>
 
     <template v-if="data?.posts?.length">
       <span class="wl__label">Latest posts</span>
@@ -360,13 +334,15 @@ function toggle(g) {
   font: var(--type-small);
 }
 
-.wl__group {
-  cursor: pointer;
+.wl__group--off {
+  opacity: 0.6;
 }
 
-.wl__group--off {
-  cursor: default;
-  opacity: 0.6;
+.wl__mark {
+  width: 15px;
+  text-align: center;
+  font-weight: 700;
+  color: var(--text-strong);
 }
 
 .wl__section {

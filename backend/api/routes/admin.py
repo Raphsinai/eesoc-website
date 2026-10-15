@@ -1604,63 +1604,90 @@ async def preview_sponsor_marketing(
     }
 
 
+def _marketing_post(item: dict, sponsor_name: str) -> str:
+    """A sponsor's marketing as a WhatsApp post's words: whose message it is
+    first, as in the email — members should never have to guess whether EESoc
+    or a company is talking — then theirs, then the files as links."""
+    lines = [f"_Shared on behalf of {sponsor_name}, one of EESoc's sponsors._", item.get("body") or ""]
+    for url in item.get("media") or []:
+        absolute = url if url.startswith("http") else f"{settings.site_origin}{url}"
+        lines.append(f"{'PDF' if url.lower().endswith('.pdf') else 'Image'}: {absolute}")
+    return "\n\n".join(line for line in lines if line.strip())
+
+
 @router.post("/sponsor-marketing/{marketing_id}/send", dependencies=[Depends(verify_csrf)])
 async def send_sponsor_marketing(
-    marketing_id: int, session: AuthSession = Depends(require_site)
+    marketing_id: int,
+    whatsapp_groups: list[str] = Body(default=[], embed=True, alias="whatsapp"),
+    session: AuthSession = Depends(require_site),
 ) -> dict:
-    """Email a sponsor's marketing to the audience they chose.
+    """Send a sponsor's marketing: by email to the audience they chose, if they
+    asked for email and it has not gone yet — and into the WhatsApp groups
+    ticked, if any. Either alone is fine: a request for social media only can
+    still go on WhatsApp.
 
-    `site`, not `sponsors`: this is a bulk send from the publicity mailbox, and
-    who may email the whole membership is decided in one place for every kind
-    of message. Same guards as a newsletter — cap, empty audience, mailbox.
+    `site`, not `sponsors`: this is a send to a crowd, and who may reach the
+    whole membership is decided in one place for every kind of message. Same
+    guards as a newsletter — cap, empty audience, mailbox.
     """
     item = await _marketing_or_404(marketing_id)
     if item["status"] != "pending":
         raise HTTPException(409, "That request has already been dealt with.")
-    if "email" not in item["channels"]:
-        raise HTTPException(400, "This one was asked for on social media only.")
-    if item.get("emailed_at"):
+    groups = await _whatsapp_groups(whatsapp_groups)
+    by_email = "email" in item["channels"] and not item.get("emailed_at")
+    if not by_email and not groups:
+        if "email" not in item["channels"]:
+            raise HTTPException(
+                400, "This one was asked for on social media only — tick a WhatsApp group to post it there."
+            )
         raise HTTPException(409, "This has already been emailed.")
     sponsor = await _sponsor_or_404(item["sponsor_id"])
 
-    recipients = await emailing.resolve(item["audiences"])
-    _check_sendable(item["subject"], item["audiences"], recipients)
-    html, text = agreement_service.marketing_email(item, sponsor["name"])
+    recipients: list = []
+    campaign = None
+    if by_email:
+        recipients = await emailing.resolve(item["audiences"])
+        _check_sendable(item["subject"], item["audiences"], recipients)
+        html, text = agreement_service.marketing_email(item, sponsor["name"])
 
-    campaign = await database.post(
-        "/email/campaigns",
-        {
-            "subject": item["subject"],
-            "heading": item["subject"],
-            "body": item.get("body") or "",
-            # Recorded with the sponsor, so the email history says whose
-            # material it was.
-            "audiences": item["audiences"] + [f"sponsor:{sponsor['slug']}"],
-            "created_by": session.user.id,
-        },
-    )
-    # Marked before the send runs rather than after: a send takes minutes, and
-    # a second press in that window must not mail everybody twice.
-    item = await database.patch(
-        f"/sponsors/marketing/{marketing_id}",
-        {"campaign_id": campaign["id"], "mark_emailed": True},
-    )
-
-    async def build(batch: list[dict], unsubscribe: str) -> list[str]:
-        return await mailer.send_campaign(
-            [r["email"] for r in batch], item["subject"], item["subject"],
-            text, html, unsubscribe,
+        campaign = await database.post(
+            "/email/campaigns",
+            {
+                "subject": item["subject"],
+                "heading": item["subject"],
+                "body": item.get("body") or "",
+                # Recorded with the sponsor, so the email history says whose
+                # material it was.
+                "audiences": item["audiences"] + [f"sponsor:{sponsor['slug']}"],
+                "created_by": session.user.id,
+            },
+        )
+        # Marked before the send runs rather than after: a send takes minutes,
+        # and a second press in that window must not mail everybody twice.
+        item = await database.patch(
+            f"/sponsors/marketing/{marketing_id}",
+            {"campaign_id": campaign["id"], "mark_emailed": True},
         )
 
-    _dispatch(emailing.send_bulk(campaign["id"], recipients, build))
+        async def build(batch: list[dict], unsubscribe: str) -> list[str]:
+            return await mailer.send_campaign(
+                [r["email"] for r in batch], item["subject"], item["subject"],
+                text, html, unsubscribe,
+            )
+
+        _dispatch(emailing.send_bulk(campaign["id"], recipients, build))
+
+    if groups:
+        post = await whatsapp.message(item["subject"], _marketing_post(item, sponsor["name"]))
+        _dispatch(whatsapp.post(
+            post, groups, campaign_id=campaign and campaign["id"], by=session.user.id,
+        ))
+
     item = await _finish_marketing(item, session)
     return {
         "ok": True,
         "status": item["status"],
-        "message": (
-            f"Sending to {len(recipients)} recipient(s). This takes about "
-            f"{_estimate_minutes(len(recipients))}."
-        ),
+        "message": _sending_message(len(recipients), groups),
     }
 
 
@@ -1752,10 +1779,16 @@ async def roles_digest_preview(_: AuthSession = Depends(require_sponsors)) -> di
 
 
 @router.post("/sponsors/roles-digest", dependencies=[Depends(verify_csrf)])
-async def send_roles_digest(session: AuthSession = Depends(require_site)) -> dict:
+async def send_roles_digest(
+    whatsapp_groups: list[str] = Body(default=[], embed=True, alias="whatsapp"),
+    session: AuthSession = Depends(require_site),
+) -> dict:
+    """One email of every new role to the jobs subscribers — and, when ticked,
+    the same list posted into WhatsApp groups."""
     listings = await database.get("/sponsors/listings/unannounced") or []
     if not listings:
         raise HTTPException(400, "There are no new roles to tell members about.")
+    groups = await _whatsapp_groups(whatsapp_groups)
     audiences = ["topic:roles"]
     recipients = await emailing.resolve(audiences)
     subject = (
@@ -1782,9 +1815,15 @@ async def send_roles_digest(session: AuthSession = Depends(require_site)) -> dic
         )
 
     _dispatch(emailing.send_bulk(campaign["id"], recipients, build))
+    if groups:
+        post = await whatsapp.message(subject, body)
+        _dispatch(whatsapp.post(post, groups, campaign_id=campaign["id"], by=session.user.id))
     return {
         "ok": True,
-        "message": f"Sending {len(listings)} role(s) to {len(recipients)} subscriber(s).",
+        "message": (
+            f"Sending {len(listings)} role(s) to {len(recipients)} subscriber(s)."
+            + (f" {_sending_message(0, groups)}" if groups else "")
+        ),
     }
 
 
@@ -2013,6 +2052,8 @@ async def email_audiences(_: AuthSession = Depends(require_site)) -> dict:
         "audiences": await emailing.audiences(),
         "mail": mailer.describe(),
         "academicYear": academic_year(),
+        # So staging's Send can say its WhatsApp groups are the real ones.
+        "environment": settings.environment,
     }
 
 
@@ -2065,21 +2106,32 @@ def _check_sendable(subject: str, audiences: list[str], recipients: list) -> Non
         )
 
 
-async def _whatsapp_targets(audiences: list[str]) -> list[dict]:
-    """The WhatsApp groups ticked among `audiences`, each still enabled on the
-    WhatsApp card — or a 400 saying which is not, rather than a send that
-    quietly reaches fewer places than the screen showed."""
-    jids = emailing.whatsapp_groups_in(audiences)
+async def _whatsapp_groups(jids: list[str] | None) -> list[dict]:
+    """The WhatsApp groups ticked for a send, each one the linked number can
+    post in now — or an error saying why not, rather than a send that quietly
+    reaches fewer places than the screen showed."""
+    jids = list(dict.fromkeys(jids or []))
     if not jids:
         return []
+    if not await whatsapp.available():
+        raise HTTPException(
+            503,
+            "WhatsApp isn't linked or connected right now, so it can't post into "
+            "those groups. Untick them to send the rest, or relink on the Email tab.",
+        )
     groups = await whatsapp.pick(jids)
     if len(groups) != len(jids):
         raise HTTPException(
             400,
-            "A WhatsApp group ticked here isn't enabled any more. Untick it, or "
-            "enable it again on the WhatsApp card.",
+            "The society's number can't post into one of the WhatsApp groups "
+            "ticked here any more — it may have left it. Untick it and try again.",
         )
     return groups
+
+
+async def _whatsapp_targets(audiences: list[str]) -> list[dict]:
+    """The WhatsApp groups ticked among `audiences` (see _whatsapp_groups)."""
+    return await _whatsapp_groups(emailing.whatsapp_groups_in(audiences))
 
 
 def _sending_message(recipients: int, groups: list[dict], about: str = "") -> str:

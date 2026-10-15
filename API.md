@@ -337,15 +337,15 @@ reports who let them in and when.
 | `PUT/DELETE /admin/sponsors/{id}/events/{event_id}` | Link an existing event (with the clause it delivers) / unlink; `POST …/decline` refuses interest |
 | `POST /admin/sponsors/{id}/notes` | Reply to a sponsor's thread; emails their portal users |
 | `PATCH /admin/sponsor-requests/{id}` | Request status and the reply the sponsor sees |
-| `PATCH /admin/sponsor-marketing/{id}`, `POST …/preview`, `…/send` (**site**), `…/posted`, `…/complete`, `…/decline` | Work a marketing request |
-| `GET/POST /admin/sponsors/roles-digest` | Preview / send (**site**) one email of new roles to the "Jobs and internships" subscribers |
+| `PATCH /admin/sponsor-marketing/{id}`, `POST …/preview`, `…/send` (**site**; `whatsapp`: group ids to post it into too — even for a social-only request), `…/posted`, `…/complete`, `…/decline` | Work a marketing request |
+| `GET/POST /admin/sponsors/roles-digest` | Preview / send (**site**) one email of new roles to the "Jobs and internships" subscribers — `whatsapp`: group ids to post it into too |
 | `GET/PATCH /admin/lockers`, `GET /admin/locker-bookings` | Locker estate |
 | `GET /admin/locker-grants`, `PUT/DELETE /admin/locker-grants/{shortcode}` | **Free locker allowances** for the academic year, on top of any bought — **superuser only** (`locker_allowances`). `PUT {free_count, note}` sets the number (1–10, replacing any earlier one); the path takes a shortcode or an Imperial address, resolved through the members feed. Removing one leaves a locker already booked with it in place |
 | `GET /admin/email/audiences` | Who can be mailed, with live counts, plus both mailboxes' state |
 | `POST /admin/email/preview` | Render the message and count the audience — **sends nothing** |
 | `POST /admin/email/send` | Send a newsletter |
 | `POST /admin/events/{id}/announce` | Email people **about one event**, same audiences |
-| `GET /admin/whatsapp`, `POST …/link`, `…/unlink`, `PUT …/groups`, `POST …/render` | WhatsApp: link the society's number, choose groups, post — see [WhatsApp](#whatsapp) |
+| `GET /admin/whatsapp`, `…/targets`, `POST …/link`, `…/unlink`, `…/render` | WhatsApp: link the society's number, choose groups, post — see [WhatsApp](#whatsapp) |
 | `GET /admin/email/campaigns` | Send history, updated live while one runs |
 | `GET /admin/events/{id}/sale-alerts` | Who is waiting to hear this event is on sale |
 | `GET /admin/email/optouts` | Who has unsubscribed (read-only, deliberately) |
@@ -557,12 +557,14 @@ groups one of two ways:
   opens with the post filled in, the committee member picks the chat and sends.
   For a channel, Copy and paste.
 - **By the site.** The society's WhatsApp Business number is **linked to the site
-  as a device** (`backend/whatsapp`), the way WhatsApp Web is. A group enabled on
-  the Email tab's WhatsApp card is then **an audience like any other**: ticked
-  under **Who gets it** beside the email audiences — in a newsletter, an event's
-  Announce dialog, or a queued email — and posted into by the same **Send**, at
-  the same moment as the email (now, or at its approved time). WhatsApp groups
-  alone, with nobody to email, is fine too.
+  as a device** (`backend/whatsapp`), the way WhatsApp Web is. Every group it can
+  post in is then **an audience like any other**: ticked under **Who gets it**
+  beside the email audiences — in a newsletter, an event's Announce dialog, or a
+  queued email — and posted into by the same **Send**, at the same moment as the
+  email (now, or at its approved time). WhatsApp groups alone, with nobody to
+  email, is fine too. The sends with no audience list of their own — the
+  new-roles digest and a sponsor's marketing — have an **Also post on WhatsApp**
+  picker instead.
 
 Either way a person said yes to every post.
 
@@ -576,16 +578,20 @@ apart**, at most **20 an hour**, never shows as online (the phone keeps its
 notifications), stores no messages, and runs as **one replica, Recreate** — two
 connections on one session is both broken and the pattern that gets flagged.
 
-**Groups are audiences.** The WhatsApp card lays the number's groups out as the
-phone does — each community with its **Announcements** channel and its groups as
-separate places, then groups in no community — and a committee member
-**enables** the ones announcements may go to. Each enabled group is offered in the
-audience list as `whatsapp:<group id>`, stored among an email's `audiences` like
-any other key; email's resolver skips it, and the send paths post into it.
-**Nothing is ticked by default.** A community itself is a heading, not a place to
-post, and only groups the number is a member of are listed. (Migration 079's
-`whatsapp_groups` column held these for an hour on staging before that; nothing
-reads it.)
+**Groups are audiences, read live from the number.** Every group the linked
+number can post in is offered as `whatsapp:<group id>` — a community's
+announcements channel as "Announcements — <community>", first — and stored among
+an email's `audiences` like any other key; email's resolver skips it, and the send
+paths post into it. **Nothing is ticked by default.** Read live (the service keeps
+the list a minute) rather than kept in the database, so it is the same on every
+screen and survives staging's refresh after each deploy. The WhatsApp card shows
+the number's groups as the phone does — each community with its Announcements
+channel and its groups as separate places — and which it can post in. A community
+itself is a heading, not a place to post, and only groups the number is a member
+of are listed. A send that ticks a group the number can't post in is refused (400),
+and one made while WhatsApp is down says so (503) rather than posting nowhere.
+(077's `whatsapp_groups` table and 079's column held earlier versions of this;
+nothing reads them.)
 
 Every post is recorded **before** it is made (`whatsapp_posts`, migration 077).
 For a post that goes with an email that record is the claim — one per email per
@@ -593,19 +599,20 @@ group — so a second pod's scheduler, or a retry, never posts it twice; a press
 of **Post** with the same words in the same group within five minutes is taken
 for a double press. A failure is recorded and the next group still goes.
 
-**On staging, enabling a group asks first**: staging may be linked to the real
-number, whose groups are the real community. The snapshot scrub empties the
-enabled groups and every email's picked groups after each deploy.
-`WHATSAPP_GROUP_ALLOWLIST`, if set in any environment, is a hard fence on top.
+**On staging, Send says first that WhatsApp is real**: staging may be linked to
+the real number, whose groups are the real community. The snapshot scrub strips
+WhatsApp groups from every email copied from production, so none posts from
+staging by itself. `WHATSAPP_GROUP_ALLOWLIST`, if set in any environment, is a
+hard fence: nothing outside it is offered or posted.
 Production runs the link only once its overlay includes the component — see
 deploy/README.md.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /admin/whatsapp` | Linked or not (with the QR code or pairing code while linking), the groups the number is in and which are chosen, this environment's allowlist, the latest posts |
+| `GET /admin/whatsapp` | Linked or not (with the QR code or pairing code while linking), the groups the number is in and which it can post in, this environment's allowlist, the latest posts |
+| `GET /admin/whatsapp/targets` | The groups a send can post into, live, and the environment — for the pickers on the roles digest and sponsor marketing |
 | `POST /admin/whatsapp/link` | Start linking: a QR code to scan, or with `phone` a code to type on the phone |
 | `POST /admin/whatsapp/unlink` | Sign the device out and forget the session |
-| `PUT /admin/whatsapp/groups` | `{jid, chosen}` — enable a group for posts, or stop posting there. Only a group the number can post in |
 | `POST /admin/whatsapp/render` | The WhatsApp version and its `wa.me` link — **sends nothing** |
 
 All `site` capability, like email. `/render` reads only our own database and

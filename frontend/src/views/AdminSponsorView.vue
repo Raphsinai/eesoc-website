@@ -11,6 +11,7 @@ import Button from '@/components/ds/Button.vue'
 import Card from '@/components/ds/Card.vue'
 import Field from '@/components/ds/Field.vue'
 import Input from '@/components/ds/Input.vue'
+import WhatsAppGroupPicker from '@/components/WhatsAppGroupPicker.vue'
 
 const route = useRoute()
 const id = computed(() => Number(route.params.id))
@@ -29,6 +30,9 @@ const recordEdits = reactive({})
 const requestEdits = reactive({})
 const marketingEdits = reactive({})
 const previews = reactive({})
+// Per request: the WhatsApp groups it is also posted into. None until ticked.
+const marketingWhatsApp = reactive({})
+const waFor = (m) => marketingWhatsApp[m.id] ?? []
 const link = reactive({ eventId: '', clause: '' })
 const replies = reactive({})
 const newThread = reactive({ body: '' })
@@ -63,6 +67,7 @@ async function load() {
     }
     for (const m of data.value.marketing) {
       marketingEdits[m.id] = { subject: m.subject, body: m.body, response: '' }
+      marketingWhatsApp[m.id] ??= []
     }
   } catch (e) {
     error.value = e.message
@@ -200,11 +205,28 @@ async function previewMarketing(m) {
   }
 }
 
+/** Whether it still needs emailing — asked for by email, and not yet sent. */
+const emailPending = (m) => m.channels.includes('email') && !m.emailed_at
+
+/** Email (if still due) and the ticked WhatsApp groups, in one send. */
 function sendMarketing(m) {
   const p = previews[m.id]
-  const who = p ? `${p.recipients} recipient(s)` : m.audiences.map(audienceLabel).join(', ')
-  if (!confirm(`Email "${m.subject}" to ${who}? This cannot be undone.`)) return
-  return act(() => api.post(`/admin/sponsor-marketing/${m.id}/send`))
+  const groups = waFor(m)
+  const parts = []
+  if (emailPending(m)) parts.push(`email it to ${p ? `${p.recipients} recipient(s)` : m.audiences.map(audienceLabel).join(', ')}`)
+  if (groups.length) parts.push(`post it into ${groups.length} WhatsApp group(s)`)
+  if (!confirm(`${parts.join(' and ').replace(/^./, (c) => c.toUpperCase())}: "${m.subject}"? This cannot be undone.`)) return
+  return act(async () => {
+    const res = await api.post(`/admin/sponsor-marketing/${m.id}/send`, { whatsapp: groups })
+    marketingWhatsApp[m.id] = []
+    return res
+  })
+}
+
+function sendLabel(m) {
+  const wa = waFor(m).length
+  if (emailPending(m)) return wa ? 'Send email + WhatsApp' : 'Send email'
+  return 'Post on WhatsApp'
 }
 
 function markPosted(m) {
@@ -555,12 +577,12 @@ async function startThread() {
                 <Button size="sm" variant="ghost" :disabled="busy" @click="saveMarketing(m)">Save edits</Button>
                 <Button size="sm" variant="secondary" :disabled="busy" @click="previewMarketing(m)">Preview email</Button>
                 <Button
-                  v-if="m.channels.includes('email') && !m.emailed_at"
+                  v-if="emailPending(m) || waFor(m).length"
                   size="sm"
                   :disabled="busy || !data.canEmail"
                   :title="data.canEmail ? '' : 'Sending needs a committee member with email access'"
                   @click="sendMarketing(m)"
-                >Send email</Button>
+                >{{ sendLabel(m) }}</Button>
                 <Button
                   v-if="m.channels.includes('social') && !m.posted_at"
                   size="sm"
@@ -572,6 +594,14 @@ async function startThread() {
               <span v-if="!data.canEmail && m.channels.includes('email')" class="meta">
                 Sending the email needs a committee member with email access.
               </span>
+              <!-- Any request, email or social: the committee can post it into
+                   WhatsApp groups too. -->
+              <WhatsAppGroupPicker
+                v-if="data.canEmail"
+                :model-value="waFor(m)"
+                :disabled="busy"
+                @update:model-value="(v) => (marketingWhatsApp[m.id] = v)"
+              />
               <div v-if="previews[m.id]" style="display:grid; gap:var(--space-2)">
                 <span class="meta">
                   {{ previews[m.id].recipients }} recipient(s)<template v-if="previews[m.id].lists.length">, including the list(s) {{ previews[m.id].lists.join(', ') }}</template>.

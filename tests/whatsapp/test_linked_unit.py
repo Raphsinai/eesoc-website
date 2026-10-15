@@ -4,12 +4,14 @@ The adapter and the WhatsApp service are both faked in memory. These pin what
 services/whatsapp.py promises, because each failure here is one the society
 pays for in its own groups:
 
-  1. staging posts nowhere until a group is on its allowlist;
+  1. WHATSAPP_GROUP_ALLOWLIST, when set, fences any environment; unset,
+     staging posts where its Email tab enabled (after asking);
   2. a post that goes with an email is claimed per group before it is made,
      so a second scheduler — or a retry — never posts it twice;
   3. a second press of "Post" with the same words is not a second post;
   4. a failure is recorded and does not stop the next group;
-  5. an email posts to WhatsApp only when ticked to, with its event's details;
+  5. an email posts only into the groups picked for it — still enabled —
+     with its event's details; nothing is picked by default;
   6. only a group the number can post in may be chosen.
 """
 
@@ -145,19 +147,18 @@ def run(coro):
 # ------------------------------------------------------------ 1. staging
 
 
-def test_staging_posts_nowhere_until_a_group_is_allowed(monkeypatch, db, wa):
-    assert whatsapp.allowed(ANNOUNCE["jid"])  # production: any chosen group
-
+def test_the_allowlist_fences_any_environment_when_set(monkeypatch, db, wa):
+    # Unset: wherever the Email tab enabled — staging included, which asks
+    # in the browser before a group is enabled there.
     monkeypatch.setattr(settings, "environment", "staging")
-    assert not whatsapp.allowed(ANNOUNCE["jid"])
-    results = run(whatsapp.post("hello", [ANNOUNCE]))
-    assert results[0]["status"] == "skipped"
-    assert wa.sent == [] and db.posts == []
+    assert whatsapp.allowed(ANNOUNCE["jid"])
+    assert run(whatsapp.post("hello", [ANNOUNCE]))[0]["status"] == "sent"
 
+    # Set: nothing outside it, whatever is enabled.
     monkeypatch.setattr(settings, "whatsapp_group_allowlist", "222-2@g.us")
-    results = run(whatsapp.post("hello", [ANNOUNCE, YEAR2]))
+    results = run(whatsapp.post("hello again", [ANNOUNCE, YEAR2]))
     assert [r["status"] for r in results] == ["skipped", "sent"]
-    assert [s[0] for s in wa.sent] == ["222-2@g.us"]
+    assert [s[0] for s in wa.sent] == [ANNOUNCE["jid"], "222-2@g.us"]
 
 
 # ----------------------------------------------------- 2. one post per email
@@ -206,20 +207,29 @@ def test_a_refused_post_is_recorded_and_the_next_group_still_goes(db, wa):
 
 ROW = {
     "id": 9, "kind": "on_sale", "event_id": 7, "subject": "Tickets for Robot Wars are on sale",
-    "heading": "", "body": "", "whatsapp": True, "reviewed_by": 3,
+    "heading": "", "body": "", "whatsapp_groups": [YEAR2["jid"]], "reviewed_by": 3,
 }
 
 
-def test_an_email_goes_to_whatsapp_only_when_ticked(db, wa):
-    assert run(whatsapp.post_campaign({**ROW, "whatsapp": False})) == []
+def test_an_email_goes_only_into_the_groups_picked_for_it(db, wa):
+    # Nothing picked: nothing posted, however many groups are enabled.
+    assert run(whatsapp.post_campaign({**ROW, "whatsapp_groups": []})) == []
     assert wa.sent == []
 
     results = run(whatsapp.post_campaign(ROW))
-    assert [r["status"] for r in results] == ["sent", "sent"]
+    assert [(r["name"], r["status"]) for r in results] == [("EEE Year 2", "sent")]
     text = wa.sent[0][1]
     assert text.startswith("*Tickets for Robot Wars are on sale*\n\nTickets for *Robot Wars* are on sale now.")
     assert "*Where:* EEE 403" in text
     assert all(p["campaign_id"] == 9 and p["created_by"] == 3 for p in db.posts)
+
+
+def test_a_group_picked_for_an_email_but_disabled_since_is_left_out(db, wa):
+    db.groups = [dict(ANNOUNCE)]  # Year 2 disabled after the email picked it
+    row = {**ROW, "id": 10, "whatsapp_groups": [YEAR2["jid"], ANNOUNCE["jid"]]}
+    results = run(whatsapp.post_campaign(row))
+    assert [r["name"] for r in results] == ["EESoc Announcements"]
+    assert [s[0] for s in wa.sent] == [ANNOUNCE["jid"]]
 
 
 def test_an_email_with_no_groups_chosen_posts_nothing_and_does_not_raise(db, wa):
@@ -247,7 +257,7 @@ def test_starting_a_send_dispatches_the_whatsapp_post_only_when_ticked(monkeypat
     monkeypatch.setattr(whatsapp, "post_campaign", lambda row: ("whatsapp", row["id"], row["reviewed_by"]))
     monkeypatch.setattr(campaigns, "dispatch", started.append)
 
-    run(campaigns.start_send({**ROW, "whatsapp": False}, expect="scheduled", reviewed_by=3))
+    run(campaigns.start_send({**ROW, "whatsapp_groups": []}, expect="scheduled", reviewed_by=3))
     assert started == [("email", 9)]
     started.clear()
     run(campaigns.start_send(ROW, expect="scheduled", reviewed_by=4))
@@ -274,21 +284,25 @@ def test_only_a_group_the_number_can_post_in_may_be_chosen(db, wa):
     assert db.groups == []
 
 
-def test_posting_now_needs_words_and_a_chosen_group(db, wa):
+def test_posting_now_needs_words_and_groups_picked_from_the_enabled(db, wa):
     routes = importlib.import_module("routes.whatsapp")
     session = type("S", (), {"user": type("U", (), {"id": 3})()})()
-    with pytest.raises(HTTPException) as empty:
-        run(routes.post_now(heading="", body="", event_id=None, kind=None, session=session))
-    assert empty.value.status_code == 400
 
-    res = run(routes.post_now(heading="AGM", body="Tonight, 6pm.", event_id=None, kind=None, session=session))
-    assert res["ok"] and res["message"] == "Posted to EESoc Announcements, EEE Year 2."
-    assert wa.sent[0][1] == "*AGM*\n\nTonight, 6pm."
+    def post_now(**kw):
+        args = {"heading": "AGM", "body": "Tonight, 6pm.", "event_id": None, "kind": None,
+                "groups": [YEAR2["jid"]], "session": session}
+        return run(routes.post_now(**{**args, **kw}))
 
-    db.groups = []
-    with pytest.raises(HTTPException) as none_chosen:
-        run(routes.post_now(heading="AGM", body="x", event_id=None, kind=None, session=session))
-    assert none_chosen.value.status_code == 400
+    for bad in ({"heading": "", "body": ""}, {"groups": []}, {"groups": ["999-9@g.us"]}):
+        with pytest.raises(HTTPException) as refused:
+            post_now(**bad)
+        assert refused.value.status_code == 400, bad
+    assert wa.sent == []
+
+    res = post_now()
+    assert res["ok"] and res["message"] == "Posted to EEE Year 2."
+    # Only the group picked — not every enabled one.
+    assert wa.sent == [(YEAR2["jid"], "*AGM*\n\nTonight, 6pm.", "post:1")]
 
 
 # ------------------------------------------------- 7. what the browser gets

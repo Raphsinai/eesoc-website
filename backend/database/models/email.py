@@ -85,8 +85,10 @@ class Campaign(BaseModel):
     # and when a person last edited it.
     send_at: datetime | None = None
     edited_at: datetime | None = None
-    # Also post it into the chosen WhatsApp groups when it is sent (077).
+    # Superseded by whatsapp_groups (079); kept because columns are never dropped.
     whatsapp: bool = False
+    # The WhatsApp groups ("…@g.us") it is also posted into when sent (079).
+    whatsapp_groups: list[str] = []
 
 
 class CampaignCreate(BaseModel):
@@ -117,7 +119,7 @@ class CampaignDraftEdit(BaseModel):
     extra_recipients: list[str] | None = None
     excluded_recipients: list[str] | None = None
     send_at: datetime | None = None
-    whatsapp: bool | None = None
+    whatsapp_groups: list[str] | None = None
     # False for the system's own updates (the event changed), which neither
     # mark the draft as hand-edited nor are refused for a scheduled one.
     by_hand: bool = True

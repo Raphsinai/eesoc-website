@@ -352,7 +352,7 @@ reports who let them in and when.
 | `POST /admin/email/announce-now` | Run the last-chance reminder pass now instead of on the hour |
 | `GET /admin/email/queue` | Bulk email the site wrote on its own: **waiting for approval**, or **scheduled** (approved for its `sendAt`) — nothing in it has been sent |
 | `GET /admin/email/queue/{id}` | One email: words, ticked audiences, hand-added/removed addresses, `sendAt`, the resolved recipient list and a preview of the whole message |
-| `PUT /admin/email/queue/{id}` | Edit `subject`, `heading`, `body`, `audiences`, `extra` (addresses added), `excluded` (addresses taken off), `whatsapp` (also post it into the chosen WhatsApp groups when it goes) — only while waiting for approval; answers with it re-resolved and re-rendered |
+| `PUT /admin/email/queue/{id}` | Edit `subject`, `heading`, `body`, `audiences`, `extra` (addresses added), `excluded` (addresses taken off), `whatsapp_groups` (the enabled WhatsApp groups it also posts into when it goes) — only while waiting for approval; answers with it re-resolved and re-rendered |
 | `POST /admin/email/queue/{id}/test` | Send it as it stands to the Test list only, subject prefixed `[Test]` |
 | `POST /admin/email/queue/{id}/send` | Send now, waiting or scheduled: recipients resolved again, then the ordinary bulk send. A second press is a 409 |
 | `POST /admin/email/queue/{id}/schedule` | Approve it for its `sendAt`; it then goes by itself at that moment. Refused if the time has passed |
@@ -574,15 +574,24 @@ apart**, at most **20 an hour**, never shows as online (the phone keeps its
 notifications), stores no messages, and runs as **one replica, Recreate** — two
 connections on one session is both broken and the pattern that gets flagged.
 
+**Groups are picked per post.** The WhatsApp card lays the number's groups out as
+the phone does — each community with its **Announcements** channel and its
+groups as separate places, then groups in no community — and a committee member
+**enables** the ones announcements may go to. Each post, and each email in the
+queue (`whatsapp_groups`, migration 079), then picks among the enabled groups;
+**nothing is picked by default**. A community itself is a heading, not a place to
+post, and only groups the number is a member of are listed.
+
 Every post is recorded **before** it is made (`whatsapp_posts`, migration 077).
 For a post that goes with an email that record is the claim — one per email per
 group — so a second pod's scheduler, or a retry, never posts it twice; a press
 of **Post** with the same words in the same group within five minutes is taken
 for a double press. A failure is recorded and the next group still goes.
 
-**Staging posts nowhere** until a group id is on `WHATSAPP_GROUP_ALLOWLIST`:
-staging may be linked to the real number, whose groups are the real community.
-The snapshot scrub empties the chosen groups and every email's WhatsApp tick.
+**On staging, enabling a group asks first**: staging may be linked to the real
+number, whose groups are the real community. The snapshot scrub empties the
+enabled groups and every email's picked groups after each deploy.
+`WHATSAPP_GROUP_ALLOWLIST`, if set in any environment, is a hard fence on top.
 Production runs the link only once its overlay includes the component — see
 deploy/README.md.
 
@@ -591,8 +600,8 @@ deploy/README.md.
 | `GET /admin/whatsapp` | Linked or not (with the QR code or pairing code while linking), the groups the number is in and which are chosen, this environment's allowlist, the latest posts |
 | `POST /admin/whatsapp/link` | Start linking: a QR code to scan, or with `phone` a code to type on the phone |
 | `POST /admin/whatsapp/unlink` | Sign the device out and forget the session |
-| `PUT /admin/whatsapp/groups` | `{jid, chosen}` — choose a group, or stop posting there. Only a group the number can post in |
-| `POST /admin/whatsapp/post` | Post the WhatsApp version (`heading`, `body`, optional `event_id`, `kind`) into the chosen groups now |
+| `PUT /admin/whatsapp/groups` | `{jid, chosen}` — enable a group for posts, or stop posting there. Only a group the number can post in |
+| `POST /admin/whatsapp/post` | Post the WhatsApp version (`heading`, `body`, optional `event_id`, `kind`) now, into `groups` — picked from the enabled ones |
 | `POST /admin/whatsapp/render` | The WhatsApp version and its `wa.me` link — **sends nothing** |
 
 All `site` capability, like email. `/render` reads only our own database and

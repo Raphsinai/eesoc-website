@@ -50,9 +50,25 @@ export function loadWhatsApp() {
 
 export const connected = computed(() => whatsapp.data?.status?.state === 'connected')
 
-/** The chosen groups a post would actually go to here. */
-export const targets = computed(() =>
-  connected.value ? (whatsapp.data?.chosen ?? []).filter((g) => g.allowed) : [],
-)
+/** What a group is called on screen. A community's announcements channel is
+ *  named after the community, so it says what it is — it is one place a post
+ *  can go, beside the community's groups, never a stand-in for them. */
+export function groupLabel(g) {
+  if (g.communityAnnouncements) return `Announcements — ${g.parent?.name || g.name}`
+  return g.name || g.jid
+}
+
+/** The groups enabled on the card that a post may be put into here, each
+ *  with its label and size. A post picks among these; none is picked for it. */
+export const targets = computed(() => {
+  if (!connected.value) return []
+  const live = new Map((whatsapp.data?.groups ?? []).map((g) => [g.jid, g]))
+  return (whatsapp.data?.chosen ?? [])
+    .filter((g) => g.allowed)
+    .map((g) => {
+      const now = live.get(g.jid)
+      return { jid: g.jid, label: now ? groupLabel(now) : g.name || g.jid, size: now?.size ?? null }
+    })
+})
 
 export default whatsapp

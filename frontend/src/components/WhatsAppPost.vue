@@ -4,9 +4,9 @@
 // The post is the same words in WhatsApp's formatting, with an event's
 // details added from the database. "Open in WhatsApp" hands it to the app
 // with the text filled in, for somebody to send by hand. When the society's
-// number is linked (WhatsAppLink) and groups are chosen, "Post to …" sends it
-// into those groups from here — and in the email queue, a tick sends it along
-// with the email at its time.
+// number is linked (WhatsAppLink), the groups enabled there can be picked for
+// this post and posted into from here — and in the email queue, picked to go
+// along with the email at its time. Nothing is picked until somebody picks it.
 //
 // Closed until somebody asks for it, then it follows the words as they are
 // edited, so what is opened is never an older draft than what is on screen.
@@ -23,15 +23,15 @@ const props = defineProps({
   eventId: { type: Number, default: null },
   // A campaign kind. "on_sale" gives the standard opening and the shop link.
   kind: { type: String, default: null },
-  // In the email queue only: whether it also goes to the chosen groups when
-  // the email is sent. Null leaves the tick off the screen.
-  alsoWhenSent: { type: Boolean, default: null },
+  // In the email queue only: the groups it also goes into when the email is
+  // sent. Null leaves that choice off the screen.
+  alsoGroups: { type: Array, default: null },
   // The email is approved and read-only.
   locked: { type: Boolean, default: false },
   // What went to WhatsApp with the email: [{group, status, error}].
   posted: { type: Array, default: () => [] },
 })
-const emit = defineEmits(['update:alsoWhenSent'])
+const emit = defineEmits(['update:alsoGroups'])
 
 const shown = ref(false)
 const post = ref(null) // { text, url, warning }
@@ -41,13 +41,20 @@ const error = ref('')
 const copied = ref(false)
 const posting = ref(false)
 const notice = ref('')
+// The groups picked for posting this now. Empty until somebody ticks one.
+const picked = ref([])
 
-const targetNames = computed(() => targets.value.map((g) => g.name || g.jid).join(', '))
+const labels = computed(() => Object.fromEntries(targets.value.map((g) => [g.jid, g.label])))
+const names = (jids) => jids.map((j) => labels.value[j] || j).join(', ')
 
 const empty = computed(() => !props.eventId && !props.heading.trim() && !props.body.trim())
 // Not while the text on screen is behind the words: posting the older one to
 // a group of hundreds is not something that can be taken back quietly.
 const ready = computed(() => Boolean(post.value?.url) && !stale.value && !loading.value)
+
+// A group picked for a queued email but disabled on the card since: it will
+// not get the post, and the screen says so rather than quietly dropping it.
+const missing = computed(() => (props.alsoGroups ?? []).filter((j) => !labels.value[j]))
 
 let timer = null
 let asked = 0
@@ -80,12 +87,23 @@ function open() {
   if (!whatsapp.loaded) loadWhatsApp()
 }
 
-if (props.alsoWhenSent !== null && !whatsapp.loaded) loadWhatsApp()
+if (props.alsoGroups !== null && !whatsapp.loaded) loadWhatsApp()
 
-/** Post it into the chosen groups, now. The server renders it again from the
+function togglePicked(jid) {
+  picked.value = picked.value.includes(jid)
+    ? picked.value.filter((j) => j !== jid)
+    : [...picked.value, jid]
+}
+
+function toggleAlso(jid) {
+  const now = props.alsoGroups ?? []
+  emit('update:alsoGroups', now.includes(jid) ? now.filter((j) => j !== jid) : [...now, jid])
+}
+
+/** Post it into the picked groups, now. The server renders it again from the
  *  same words, so what is on screen is what goes. */
 async function postNow() {
-  if (!confirm(`Post this into ${targetNames.value} now, from the society's number? It can't be taken back quietly.`)) return
+  if (!confirm(`Post this into ${names(picked.value)} now, from the society's number? It can't be taken back quietly.`)) return
   posting.value = true
   error.value = ''
   notice.value = ''
@@ -95,8 +113,10 @@ async function postNow() {
       body: props.body,
       event_id: props.eventId,
       kind: props.kind,
+      groups: picked.value,
     })
     notice.value = res.message
+    picked.value = []
   } catch (e) {
     error.value = problem(e)
   } finally {
@@ -130,24 +150,27 @@ async function copy() {
 
 <template>
   <div class="wa">
-    <!-- Only where WhatsApp posting is switched on at all: elsewhere a tick
-         that can never be ticked is just noise. -->
-    <label v-if="alsoWhenSent !== null && whatsapp.data?.configured" class="wa__also">
-      <input
-        type="checkbox"
-        :checked="alsoWhenSent"
-        :disabled="locked || (!alsoWhenSent && !targets.length)"
-        @change="emit('update:alsoWhenSent', !alsoWhenSent)"
-      />
-      <span>
-        <strong>Also post it on WhatsApp when it goes</strong>
-        <span class="wa__help">
-          <template v-if="targets.length">Into {{ targetNames }}, at the same moment as the email.</template>
-          <template v-else-if="alsoWhenSent">No WhatsApp group would get it right now — link the number and choose groups on the Email tab, or it goes by email only.</template>
-          <template v-else>Link the society's number and choose groups on the Email tab first.</template>
-        </span>
-      </span>
-    </label>
+    <!-- In the queue: which groups also get it when the email goes. Only
+         where WhatsApp posting is switched on at all. -->
+    <div v-if="alsoGroups !== null && whatsapp.data?.configured" class="wa__also">
+      <span class="wa__label">Also post it on WhatsApp when it goes</span>
+      <label v-for="g in targets" :key="g.jid" class="wa__pick">
+        <input
+          type="checkbox"
+          :checked="alsoGroups.includes(g.jid)"
+          :disabled="locked"
+          @change="toggleAlso(g.jid)"
+        />
+        <span>{{ g.label }}<span v-if="g.size" class="wa__size"> · {{ g.size }}</span></span>
+      </label>
+      <p v-if="!targets.length" class="wa__help">
+        Link the society's number and enable groups on the Email tab's WhatsApp card first.
+      </p>
+      <p v-else class="wa__help">At the same moment as the email. None is picked unless you pick it.</p>
+      <p v-if="missing.length" class="wa__warning">
+        {{ missing.length }} group(s) picked for this aren't enabled any more, so won't get it.
+      </p>
+    </div>
     <div v-for="p in posted" :key="p.group" class="wa__posted">
       <Badge :tone="p.status === 'sent' ? 'success' : p.status === 'failed' ? 'danger' : 'accent'">{{ p.status }}</Badge>
       <span>{{ p.group }}<template v-if="p.error"> — {{ p.error }}</template></span>
@@ -168,6 +191,16 @@ async function copy() {
       <p v-if="post?.warning" class="wa__warning">{{ post.warning }}</p>
       <pre v-if="post?.text" class="wa__text" :class="{ 'wa__text--stale': stale }">{{ post.text }}</pre>
       <p v-else-if="!loading && post" class="wa__help">Nothing to post yet — write something above.</p>
+
+      <!-- Where to post it now: any of the enabled groups, none ticked. -->
+      <div v-if="targets.length" class="wa__groups">
+        <span class="wa__label">Post into</span>
+        <label v-for="g in targets" :key="g.jid" class="wa__pick">
+          <input type="checkbox" :checked="picked.includes(g.jid)" :disabled="posting" @change="togglePicked(g.jid)" />
+          <span>{{ g.label }}<span v-if="g.size" class="wa__size"> · {{ g.size }}</span></span>
+        </label>
+      </div>
+
       <div class="wa__actions">
         <!-- No link while the text is out of date: an anchor still navigates
              when it only looks disabled. -->
@@ -187,10 +220,10 @@ async function copy() {
           v-if="targets.length"
           size="sm"
           variant="secondary"
-          :disabled="!ready || posting"
+          :disabled="!ready || posting || !picked.length"
           @click="postNow"
         >
-          {{ posting ? 'Posting…' : `Post to ${targets.length === 1 ? targetNames : `${targets.length} groups`}` }}
+          {{ posting ? 'Posting…' : picked.length ? `Post to ${picked.length === 1 ? names(picked) : `${picked.length} groups`}` : 'Post to…' }}
         </Button>
         <span v-if="stale || loading" class="wa__help">Updating…</span>
       </div>
@@ -198,7 +231,7 @@ async function copy() {
       <p class="wa__help">
         Open in WhatsApp fills it in for you to choose a chat and send — nothing
         is posted until you do. For a channel, copy it and paste it there.<template v-if="targets.length">
-        Post to sends it from the society's number into {{ targetNames }} straight away.</template>
+        Or tick groups above and Post: it goes from the society's number straight away.</template>
       </p>
       <p v-if="error" class="wa__warning">{{ error }}</p>
     </template>
@@ -212,6 +245,12 @@ async function copy() {
 }
 
 .wa__also,
+.wa__groups {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.wa__pick,
 .wa__posted {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -220,15 +259,20 @@ async function copy() {
   font: var(--type-small);
 }
 
-.wa__also input {
+.wa__pick {
+  cursor: pointer;
+}
+
+.wa__pick input {
   margin-top: 3px;
   width: 15px;
   height: 15px;
   accent-color: var(--action-primary);
 }
 
-.wa__also .wa__help {
-  display: block;
+.wa__size {
+  font: var(--type-2xs);
+  color: var(--text-muted);
 }
 
 .wa__notice {

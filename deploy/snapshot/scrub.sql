@@ -84,12 +84,13 @@ BEGIN
     END IF;
 END $$;
 
--- WhatsApp (migration 077). Not personal data, but production's DECISIONS
--- about the real community: which of its groups get posts, and which approved
--- emails also post there when they go. Copied, a scheduled email would post
--- from staging's scheduler into whatever staging is linked to — which may be
--- the society's real number. So staging starts with no groups chosen and no
--- email ticked for WhatsApp; WHATSAPP_GROUP_ALLOWLIST is the second fence.
+-- WhatsApp (migrations 077, 079). Not personal data, but production's
+-- DECISIONS about the real community: which of its groups are enabled, and
+-- which groups each approved email also posts into when it goes. Copied, a
+-- scheduled email would post from staging's scheduler into whatever staging is
+-- linked to — which may be the society's real number. So staging starts with
+-- no group enabled and no email picking any; enabling one on staging's Email
+-- tab asks first.
 DO $$
 BEGIN
     IF to_regclass('public.whatsapp_groups') IS NOT NULL THEN
@@ -100,6 +101,13 @@ BEGIN
                   AND table_name   = 'email_campaigns'
                   AND column_name  = 'whatsapp') THEN
         UPDATE public.email_campaigns SET whatsapp = false WHERE whatsapp;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name   = 'email_campaigns'
+                  AND column_name  = 'whatsapp_groups') THEN
+        UPDATE public.email_campaigns SET whatsapp_groups = '[]'::jsonb
+         WHERE whatsapp_groups <> '[]'::jsonb;
     END IF;
 END $$;
 

@@ -191,19 +191,28 @@ REPEAT_MINUTES = 5
 
 
 def allowlist() -> set[str] | None:
-    """The groups this environment may post into, or None for "any chosen".
+    """A hard fence on where this environment may post, or None for none.
 
-    Empty on staging means none — see config.whatsapp_group_allowlist.
+    Optional, in any environment: groups are enabled on the Email tab (with a
+    confirmation on staging, whose number may be the real one). Set
+    WHATSAPP_GROUP_ALLOWLIST and nothing outside it can be posted to,
+    whatever is ticked.
     """
     listed = {j.strip() for j in settings.whatsapp_group_allowlist.split(",") if j.strip()}
-    if listed or settings.environment == "staging":
-        return listed
-    return None
+    return listed or None
 
 
 def allowed(jid: str) -> bool:
     groups = allowlist()
     return groups is None or jid in groups
+
+
+async def pick(jids: list[str] | None) -> list[dict]:
+    """The enabled groups among `jids`, in the order enabled. A group picked
+    for a post but disabled since — or never enabled — is left out: the
+    Email tab's list is the only way a group becomes postable."""
+    wanted = set(jids or [])
+    return [g for g in await chosen() if g["jid"] in wanted]
 
 
 async def chosen() -> list[dict]:
@@ -291,16 +300,16 @@ async def post(
 
 
 async def post_campaign(row: dict) -> list[dict]:
-    """Post an email's WhatsApp version into the chosen groups, if it was
-    ticked to go there too. Called as the email starts sending. Never raises:
-    the email has gone whatever WhatsApp does, and what happened is on the
-    posts list for the committee to see."""
-    if not row.get("whatsapp"):
+    """Post an email's WhatsApp version into the groups picked for it, if
+    any. Called as the email starts sending. Never raises: the email has gone
+    whatever WhatsApp does, and what happened is on the posts list for the
+    committee to see."""
+    if not row.get("whatsapp_groups"):
         return []
     try:
-        groups = await chosen()
+        groups = await pick(row["whatsapp_groups"])
         if not groups:
-            log.warning("Email %s was to go on WhatsApp, but no groups are chosen", row["id"])
+            log.warning("Email %s was to go on WhatsApp, but none of its groups is enabled", row["id"])
             return []
         return await post(await text_for(row), groups,
                           campaign_id=row["id"], by=row.get("reviewed_by"))

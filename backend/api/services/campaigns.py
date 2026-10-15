@@ -422,7 +422,7 @@ async def start_send(row: dict, *, expect: str, reviewed_by: int | None) -> int:
             kind=row.get("kind") or "newsletter", event_id=row.get("event_id"),
         )
     )
-    if row.get("whatsapp"):
+    if row.get("whatsapp_groups"):
         # Here rather than at the top: services/whatsapp builds on this module.
         from services import whatsapp
 

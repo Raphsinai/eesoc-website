@@ -19,6 +19,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 from clients import database
 from clients import whatsapp as link
+from config import settings
 from models.auth import AuthSession
 from services import whatsapp
 from utils.deps import require_admin, require_feature, require_site, verify_csrf
@@ -97,6 +98,9 @@ async def overview(_: AuthSession = Depends(require_site)) -> dict:
     posts = await database.get("/whatsapp/posts", {"limit": 15}) or []
     return {
         "configured": link.configured(),
+        # Staging's card asks before a group is enabled: its number may be the
+        # society's real one, and its groups the real community.
+        "environment": settings.environment,
         "status": status,
         "problem": problem,
         "groups": groups,
@@ -104,8 +108,8 @@ async def overview(_: AuthSession = Depends(require_site)) -> dict:
             {"jid": g["jid"], "name": g.get("name") or "", "allowed": whatsapp.allowed(g["jid"])}
             for g in chosen
         ],
-        # Say so when this environment is fenced off, so an empty result on
-        # staging is not mistaken for a fault.
+        # WHATSAPP_GROUP_ALLOWLIST, when set: shown, so a group it leaves out
+        # is not mistaken for a fault.
         "allowlist": sorted(allowlist) if allowlist is not None else None,
         "posts": [_post_summary(p) for p in posts],
     }
@@ -176,11 +180,13 @@ async def post_now(
     body: str = Body(default="", embed=True),
     event_id: int | None = Body(default=None, embed=True),
     kind: str | None = Body(default=None, embed=True),
+    groups: list[str] = Body(default=[], embed=True),
     session: AuthSession = Depends(require_site),
 ) -> dict:
-    """Post the WhatsApp version of an announcement into the chosen groups,
-    now. The same post "WhatsApp version" shows — rendered again here from the
-    same words, so what was read is what goes."""
+    """Post the WhatsApp version of an announcement, now, into the `groups`
+    picked for it — each one enabled on the Email tab. The same post
+    "WhatsApp version" shows, rendered again here from the same words, so
+    what was read is what goes."""
     event = None
     if event_id is not None:
         event = await database.get(f"/events/{event_id}")
@@ -189,11 +195,15 @@ async def post_now(
     text = await whatsapp.message(heading, body, event, kind)
     if not text.strip():
         raise HTTPException(400, "Write something to post.")
-    groups = await whatsapp.chosen()
     if not groups:
-        raise HTTPException(400, "No groups are chosen. Choose them on the Email tab's WhatsApp card.")
+        raise HTTPException(400, "Pick the groups to post it into.")
+    targets = await whatsapp.pick(groups)
+    if len(targets) != len(set(groups)):
+        raise HTTPException(
+            400, "Only groups enabled on the Email tab's WhatsApp card can be posted into."
+        )
 
-    results = await whatsapp.post(text, groups, by=session.user.id)
+    results = await whatsapp.post(text, targets, by=session.user.id)
     sent = [r for r in results if r["status"] == "sent"]
     others = [r for r in results if r["status"] != "sent"]
     message = (

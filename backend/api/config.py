@@ -93,11 +93,10 @@ class Settings(BaseSettings):
     # allowed is logged instead of sent, so a sign-in code can still be read
     # from the api log.
     mail_allowlist: str = ""
-    # Which WhatsApp groups may actually be posted into: comma-separated group
-    # ids ("…@g.us", shown on the Email tab). Empty means any group chosen
-    # there — EXCEPT on staging, where empty means none: staging can be linked
-    # to the society's real number, and a test post must not reach the real
-    # community.
+    # An optional hard fence on where WhatsApp posts can go: comma-separated
+    # group ids ("…@g.us", shown on the Email tab). Empty means any group
+    # enabled on the Email tab — which, on staging, asks for a confirmation
+    # first, since staging may be linked to the society's real number.
     whatsapp_group_allowlist: str = ""
 
     # --- publicity mailbox (bulk) ---

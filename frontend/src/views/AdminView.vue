@@ -788,7 +788,7 @@ const queue = ref([])
 // The draft open in the review dialog, exactly as the server last described it
 // (recipients resolved, preview rendered). `mailDraft` is the editable copy.
 const reviewing = ref(null)
-const mailDraft = reactive({ subject: '', heading: '', body: '', audiences: [], extra: [], excluded: [], whatsapp: false })
+const mailDraft = reactive({ subject: '', heading: '', body: '', audiences: [], extra: [], excluded: [], whatsappGroups: [] })
 const addAddresses = ref('')
 const recipientFilter = ref('')
 const reviewError = ref('')
@@ -812,7 +812,7 @@ function fillDraft(d) {
   mailDraft.audiences = [...d.audiences]
   mailDraft.extra = [...d.extra]
   mailDraft.excluded = [...d.excluded]
-  mailDraft.whatsapp = Boolean(d.whatsapp)
+  mailDraft.whatsappGroups = [...(d.whatsappGroups || [])]
 }
 
 async function openReview(id) {
@@ -857,7 +857,7 @@ async function saveDraft() {
       audiences: mailDraft.audiences,
       extra: mailDraft.extra,
       excluded: mailDraft.excluded,
-      whatsapp: mailDraft.whatsapp,
+      whatsapp_groups: mailDraft.whatsappGroups,
     }),
   )
 }
@@ -875,9 +875,9 @@ async function draftAction(fn) {
   }
 }
 
-/** Also post it into the chosen WhatsApp groups when the email goes. */
-function setDraftWhatsApp(value) {
-  mailDraft.whatsapp = value
+/** The WhatsApp groups it also goes into when the email goes. */
+function setDraftWhatsApp(groups) {
+  mailDraft.whatsappGroups = groups
   draftAction(saveDraft)
 }
 
@@ -3256,10 +3256,10 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           :body="mailDraft.body"
           :event-id="reviewing.event?.id ?? null"
           :kind="reviewing.kind"
-          :also-when-sent="mailDraft.whatsapp"
+          :also-groups="mailDraft.whatsappGroups"
           :locked="isScheduled || busy"
           :posted="reviewing.whatsappPosts || []"
-          @update:also-when-sent="setDraftWhatsApp"
+          @update:also-groups="setDraftWhatsApp"
         />
 
         <TraceRule />

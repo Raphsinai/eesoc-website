@@ -509,16 +509,17 @@ not it runs it.
 To link: Email tab → WhatsApp card → **Link a number**, then on the society's
 phone, WhatsApp Business → Settings → Linked devices → Link a device, and scan
 the QR code (or **Link with a code instead**, and type the code shown). Then
-tick the groups announcements go to. The session lives on the volume, so
+enable the groups announcements may go to; each post picks among them. The session lives on the volume, so
 deploys do not need a re-link; unlinking from the phone, or **Unlink** on the
 card, ends it.
 
-**Staging posts nowhere until a group is on `WHATSAPP_GROUP_ALLOWLIST`**
-(`overlays/staging/configmap.yaml`): staging can be linked to the real number
-too — a second linked device — and its groups are the real community. Make a
-test group, choose it on staging's Email tab (its id is shown there), and put
-the id on the list. The snapshot scrub empties chosen groups and every email's
-WhatsApp tick, so nothing copied from production can post from staging.
+**On staging, enabling a group asks first**: staging can be linked to the real
+number too — a second linked device — and then its groups are the real
+community. Enable only a group made for testing. The snapshot scrub empties
+enabled groups and every email's picked groups after each deploy, so nothing
+copied from production can post from staging. `WHATSAPP_GROUP_ALLOWLIST`
+(comma-separated group ids, shown on the card) is an optional hard fence in
+any environment.
 
 ## Maintenance mode
 

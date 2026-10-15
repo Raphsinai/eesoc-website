@@ -93,8 +93,9 @@ def _summary(row: dict, event: dict | None) -> dict:
         "note": row.get("error"),
         "event": _event_summary(event),
         "warning": campaigns.warning(row, event),
-        # Also posted into the chosen WhatsApp groups when it is sent.
-        "whatsapp": bool(row.get("whatsapp")),
+        # The WhatsApp groups it is also posted into when it is sent.
+        "whatsapp": bool(row.get("whatsapp_groups")),
+        "whatsappGroups": row.get("whatsapp_groups") or [],
     }
 
 
@@ -196,11 +197,12 @@ async def edit(
     audiences: list[str] | None = Body(default=None, embed=True),
     extra: list[str] | None = Body(default=None, embed=True),
     excluded: list[str] | None = Body(default=None, embed=True),
-    whatsapp: bool | None = Body(default=None, embed=True),
+    whatsapp_groups: list[str] | None = Body(default=None, embed=True),
     _: AuthSession = Depends(require_site),
 ) -> dict:
-    """Change the words, or who it goes to — `whatsapp` is whether it also goes
-    into the chosen WhatsApp groups when it is sent. Fields left out are kept.
+    """Change the words, or who it goes to — `whatsapp_groups` are the
+    WhatsApp groups it is also posted into when it is sent, picked from the
+    ones enabled on the Email tab. Fields left out are kept.
 
     Only while it waits for approval — a scheduled email is taken off the
     schedule first, so nothing approved changes without being approved again.
@@ -225,7 +227,10 @@ async def edit(
             "excluded_recipients": (
                 campaigns.clean_addresses(excluded) if excluded is not None else None
             ),
-            "whatsapp": whatsapp,
+            "whatsapp_groups": (
+                list(dict.fromkeys(g for g in whatsapp_groups if g))
+                if whatsapp_groups is not None else None
+            ),
         },
     )
     if edited is None:

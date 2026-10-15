@@ -2099,7 +2099,7 @@ def _sending_message(recipients: int, groups: list[dict], about: str = "") -> st
 
 @router.post("/email/send", dependencies=[Depends(verify_csrf)])
 async def send_newsletter(
-    subject: str = Body(embed=True),
+    subject: str = Body(default="", embed=True),
     body: str = Body(default="", embed=True),
     heading: str | None = Body(default=None, embed=True),
     audiences: list[str] = Body(default=[], embed=True),
@@ -2114,14 +2114,16 @@ async def send_newsletter(
     somebody ends up sending twice.
     """
     mail_audiences = emailing.email_keys(audiences)
-    if not subject.strip():
-        raise HTTPException(400, "Give it a subject.")
     if not mail_audiences and not emailing.whatsapp_groups_in(audiences):
         raise HTTPException(400, "Choose who it goes to.")
     groups = await _whatsapp_targets(audiences)
     recipients = await emailing.resolve(mail_audiences) if mail_audiences else []
     if mail_audiences:
+        # A subject is the email's; a WhatsApp post needs only something to say.
         _check_sendable(subject, mail_audiences, recipients)
+    post = await whatsapp.message((heading or subject or "").strip(), body) if groups else ""
+    if groups and not post.strip():
+        raise HTTPException(400, "Write something to post.")
 
     campaign = None
     if mail_audiences:
@@ -2150,7 +2152,6 @@ async def send_newsletter(
         _dispatch(emailing.send_bulk(campaign["id"], recipients, build))
 
     if groups:
-        post = await whatsapp.message((heading or subject).strip(), body)
         _dispatch(whatsapp.post(
             post, groups, campaign_id=campaign and campaign["id"], by=session.user.id,
         ))
@@ -2166,7 +2167,7 @@ async def send_newsletter(
 @router.post("/events/{event_id}/announce", dependencies=[Depends(verify_csrf)])
 async def announce_event(
     event_id: int,
-    subject: str = Body(embed=True),
+    subject: str = Body(default="", embed=True),
     body: str = Body(default="", embed=True),
     heading: str | None = Body(default=None, embed=True),
     audiences: list[str] = Body(default=[], embed=True),
@@ -2182,10 +2183,9 @@ async def announce_event(
     if event is None:
         raise HTTPException(404, "No such event")
 
-    # Email audiences and WhatsApp groups, ticked in the same list.
+    # Email audiences and WhatsApp groups, ticked in the same list. A subject
+    # is the email's; the event's details are a WhatsApp post by themselves.
     mail_audiences = emailing.email_keys(audiences)
-    if not subject.strip():
-        raise HTTPException(400, "Give it a subject.")
     if not mail_audiences and not emailing.whatsapp_groups_in(audiences):
         raise HTTPException(400, "Choose who it goes to.")
     groups = await _whatsapp_targets(audiences)
@@ -2194,7 +2194,7 @@ async def announce_event(
         _check_sendable(subject, mail_audiences, recipients)
 
     if groups:
-        post = await whatsapp.message((heading or subject).strip(), body, event)
+        post = await whatsapp.message((heading or subject or "").strip(), body, event)
     if not mail_audiences:
         _dispatch(whatsapp.post(post, groups, by=session.user.id))
         return {

@@ -720,6 +720,28 @@ function audCount(a) {
 }
 
 const composeWhatsApp = computed(() => whatsappTicked(compose.audiences))
+// The ticked audiences that are email rather than WhatsApp.
+const composeEmail = computed(() => compose.audiences.filter((k) => !k.startsWith('whatsapp:')))
+
+/** Why Send is not on offer yet, or '' when it is. Shown beside it, so a
+ *  greyed-out button never has to be guessed at. A subject belongs to the
+ *  email: WhatsApp alone needs only something to post — and an event's
+ *  details are that by themselves. */
+const sendBlocked = computed(() => {
+  if (previewCount.value === null) return 'Press Preview first.'
+  if (composeEmail.value.length && !compose.subject.trim()) return 'Give the email a subject.'
+  const words = compose.subject.trim() || compose.heading.trim() || compose.body.trim()
+  if (!composeEmail.value.length && !announcing.value && !words) return 'Write something to post.'
+  return ''
+})
+
+/** "42 recipient(s) …", "No email — posts into X on WhatsApp", or both. */
+const audienceSummary = computed(() => {
+  const wa = composeWhatsApp.value.length ? `${composeWhatsApp.value.join(', ')} on WhatsApp` : ''
+  if (!composeEmail.value.length) return wa ? `No email — posts into ${wa}` : ''
+  const mail = `${previewCount.value} email recipient(s) after removing duplicates and unsubscribes`
+  return wa ? `${mail}, and posts into ${wa}` : mail
+})
 const draftWhatsApp = computed(() => whatsappTicked(mailDraft.audiences))
 
 async function sendEmail() {
@@ -2752,12 +2774,14 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               <Button variant="secondary" :disabled="busy || !compose.audiences.length" @click="preview">
                 Preview
               </Button>
-              <Button :disabled="busy || previewCount === null || !compose.subject.trim()" @click="sendEmail">
+              <Button :disabled="busy || Boolean(sendBlocked)" @click="sendEmail">
                 {{ busy ? 'Working…' : 'Send' }}
               </Button>
               <span v-if="previewCount !== null" style="font:var(--type-small); color:var(--text-muted)">
-                {{ previewCount }} recipient(s) after removing duplicates and unsubscribes<template v-if="composeWhatsApp.length">,
-                and {{ composeWhatsApp.join(', ') }} on WhatsApp</template>
+                {{ audienceSummary }}
+              </span>
+              <span v-if="sendBlocked && compose.audiences.length && !busy" style="font:var(--type-2xs); color:var(--text-faint)">
+                {{ sendBlocked }}
               </span>
             </div>
             <p v-if="previewSample.length" style="margin:var(--space-3) 0 0; font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">
@@ -2766,7 +2790,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           </Card>
 
           <div style="display:grid; gap:var(--space-6); align-content:start">
-            <Card v-if="previewHtml" variant="outline">
+            <Card v-if="previewHtml && composeEmail.length" variant="outline">
               <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">Preview</h2>
               <!-- Rendered by the same code that builds the real message, so
                    what is approved here is what arrives. The HTML is produced
@@ -3207,7 +3231,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           </label>
         </div>
 
-        <div v-if="previewHtml" class="mail-preview" v-html="previewHtml" />
+        <div v-if="previewHtml && composeEmail.length" class="mail-preview" v-html="previewHtml" />
         <p v-if="error" style="margin:0; font:var(--type-small); color:var(--danger)">{{ error }}</p>
 
         <TraceRule />
@@ -3220,14 +3244,15 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
       </div>
 
       <template #footer>
-        <span v-if="previewCount !== null" style="font:var(--type-small); color:var(--text-muted); margin-right:auto">
-          {{ previewCount }} recipient(s)<template v-if="composeWhatsApp.length"> · {{ composeWhatsApp.length }} WhatsApp group(s)</template>
+        <span style="font:var(--type-small); color:var(--text-muted); margin-right:auto">
+          <template v-if="previewCount !== null">{{ audienceSummary }}</template>
+          <template v-else-if="sendBlocked && compose.audiences.length">{{ sendBlocked }}</template>
         </span>
         <Button variant="ghost" @click="closeCompose">Cancel</Button>
         <Button variant="secondary" :disabled="busy || !compose.audiences.length" @click="preview">
           Preview
         </Button>
-        <Button :disabled="busy || previewCount === null || !compose.subject.trim()" @click="sendEmail">
+        <Button :disabled="busy || Boolean(sendBlocked)" :title="sendBlocked || undefined" @click="sendEmail">
           {{ busy ? 'Sending…' : 'Send' }}
         </Button>
       </template>

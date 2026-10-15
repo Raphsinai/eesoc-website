@@ -385,6 +385,46 @@ def test_a_newsletter_send_mails_its_audiences_and_posts_into_its_groups(monkeyp
         run(admin.send_newsletter(subject="AGM", body="x", heading=None, audiences=[], session=session))
 
 
+def test_a_subject_is_the_emails_not_whatsapps(monkeypatch, db, wa):
+    """A WhatsApp post has no subject line, so WhatsApp alone needs only
+    words; the email still needs its subject."""
+    admin = importlib.import_module("routes.admin")
+    session = type("S", (), {"user": type("U", (), {"id": 3})()})()
+    dispatched = []
+    monkeypatch.setattr(admin, "_dispatch", dispatched.append)
+
+    res = run(admin.send_newsletter(
+        subject="", body="Pizza in **403** now.", heading=None,
+        audiences=[f"whatsapp:{YEAR2['jid']}"], session=session,
+    ))
+    assert res["ok"]
+    run(dispatched.pop())
+    assert wa.sent == [(YEAR2["jid"], "Pizza in *403* now.", "post:1")]
+
+    # Nothing to post at all: refused.
+    with pytest.raises(HTTPException) as nothing:
+        run(admin.send_newsletter(
+            subject="", body="  ", heading=None,
+            audiences=[f"whatsapp:{YEAR2['jid']}"], session=session,
+        ))
+    assert nothing.value.status_code == 400
+
+    # With an email audience ticked too, the subject is needed again.
+    monkeypatch.setattr(admin.mailer, "configured", lambda *a, **k: True)
+
+    async def someone(keys):
+        return [{"email": "a@example.com"}]
+
+    monkeypatch.setattr(admin.emailing, "resolve", someone)
+    with pytest.raises(HTTPException) as no_subject:
+        run(admin.send_newsletter(
+            subject="", body="Pizza.", heading=None,
+            audiences=["members", f"whatsapp:{YEAR2['jid']}"], session=session,
+        ))
+    assert no_subject.value.status_code == 400
+    assert "subject" in no_subject.value.detail
+
+
 # ------------------------------------------------- 7. what the browser gets
 
 

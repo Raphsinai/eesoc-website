@@ -31,22 +31,22 @@ components:
 images:
 - name: ghcr.io/OWNER/eesoc-api
   newName: ghcr.io/raphsinai/eesoc-api
-  newTag: ea12c4bc523a59669ffced0f50fde797b9cc09e0
+  newTag: 46c57f1ebbff349b8f14cd7f7f4024f0487a331d
 - name: ghcr.io/OWNER/eesoc-database
   newName: ghcr.io/raphsinai/eesoc-database
-  newTag: ea12c4bc523a59669ffced0f50fde797b9cc09e0
+  newTag: 46c57f1ebbff349b8f14cd7f7f4024f0487a331d
 - name: ghcr.io/OWNER/eesoc-frontend
   newName: ghcr.io/raphsinai/eesoc-frontend
-  newTag: ea12c4bc523a59669ffced0f50fde797b9cc09e0
+  newTag: 46c57f1ebbff349b8f14cd7f7f4024f0487a331d
 - name: ghcr.io/OWNER/eesoc-garage-init
   newName: ghcr.io/raphsinai/eesoc-garage-init
-  newTag: ea12c4bc523a59669ffced0f50fde797b9cc09e0
+  newTag: 46c57f1ebbff349b8f14cd7f7f4024f0487a331d
 - name: ghcr.io/OWNER/eesoc-union
   newName: ghcr.io/raphsinai/eesoc-union
-  newTag: ea12c4bc523a59669ffced0f50fde797b9cc09e0
+  newTag: 46c57f1ebbff349b8f14cd7f7f4024f0487a331d
 - name: ghcr.io/OWNER/eesoc-whatsapp
   newName: ghcr.io/raphsinai/eesoc-whatsapp
-  newTag: ea12c4bc523a59669ffced0f50fde797b9cc09e0
+  newTag: 46c57f1ebbff349b8f14cd7f7f4024f0487a331d
 
 # Both environments share one node. Staging is the one that should give way, so
 # it runs one of everything.

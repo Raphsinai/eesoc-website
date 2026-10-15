@@ -297,6 +297,24 @@ function toLocalInput(iso) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
+// Prices are typed in pounds — "17.50" — and stored in pence. A pence field
+// invited £17.50 typed as 17.5, which the API refuses as not a whole number.
+// The form keeps the typed text in price_pounds and converts it on save.
+function toPounds(pence) {
+  const p = Number(pence) || 0
+  return p % 100 === 0 ? String(p / 100) : (p / 100).toFixed(2)
+}
+
+function toPence(name, typed) {
+  const text = String(typed ?? '').trim().replace(/^£/, '')
+  if (text === '') return 0
+  const pounds = Number(text)
+  if (!Number.isFinite(pounds) || pounds < 0) {
+    throw new Error(`The price for "${name.trim()}" should be in pounds, like 17.50.`)
+  }
+  return Math.round(pounds * 100)
+}
+
 function editEvent(e) {
   editingId.value = e.id
   Object.assign(draft, {
@@ -316,7 +334,7 @@ function editEvent(e) {
     meeting_url: e.meeting_url ?? '',
     meeting_url_private: Boolean(e.meeting_url_private),
     target_years: e.target_years ?? [],
-    ticket_types: e.ticket_types ?? [],
+    ticket_types: (e.ticket_types ?? []).map((t) => ({ ...t, price_pounds: toPounds(t.price_pence) })),
   })
   // Prefill the product and per-ticket line selects from existing links.
   const ev = links.value.find((l) => l.event_id === e.id && l.ticket_type_id === null)
@@ -376,7 +394,9 @@ async function saveEvent() {
       // returns a list, so an untouched save round-trips unchanged.
       target_years: draft.target_years,
       ticket_types: draft.ticket_types.filter((t) => t.name.trim())
-        .map((t) => ({ ...t, capacity: t.capacity || null })),
+        .map(({ price_pounds, ...t }) => ({
+          ...t, price_pence: toPence(t.name, price_pounds), capacity: t.capacity || null,
+        })),
     }
     if (editingId.value) await api.put(`/admin/events/${editingId.value}`, payload)
     else await api.post('/admin/events', payload)
@@ -2040,7 +2060,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               <div v-for="(t, i) in draft.ticket_types" :key="i" style="display:grid; gap:var(--space-2); padding:var(--space-3) 0; border-top:1px solid var(--border-hairline)">
                 <div style="display:grid; grid-template-columns:2fr 1fr 1fr 1fr; gap:var(--space-2)">
                   <Field label="Name"><Input v-model="t.name" placeholder="With alcohol" /></Field>
-                  <Field label="Price (p)"><Input v-model.number="t.price_pence" type="number" min="0" /></Field>
+                  <Field label="Price (£)"><Input v-model="t.price_pounds" inputmode="decimal" placeholder="0" /></Field>
                   <Field label="Cap"><Input v-model.number="t.capacity" type="number" min="1" /></Field>
                   <Field label="Max/user"><Input v-model.number="t.max_per_user" type="number" min="1" /></Field>
                 </div>
@@ -2103,7 +2123,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 No ticket types — this is a drop-in event. The page will say
                 “No booking needed” and nobody has to reserve a place.
               </p>
-              <Button size="sm" variant="ghost" @click="draft.ticket_types.push({ name: '', price_pence: 0, capacity: null, max_per_user: 1, members_only: false, requires_purchase: true, purchase_url: '' })">
+              <Button size="sm" variant="ghost" @click="draft.ticket_types.push({ name: '', price_pounds: '', capacity: null, max_per_user: 1, members_only: false, requires_purchase: true, purchase_url: '' })">
                 Add ticket type
               </Button>
 

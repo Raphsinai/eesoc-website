@@ -3,7 +3,7 @@
 The interesting part is `reserve()`. Everything else is CRUD.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from asyncpg.exceptions import UniqueViolationError
 from fastapi import APIRouter
@@ -180,21 +180,28 @@ def _utc(value: datetime) -> datetime:
 
 
 def _check_doors_close(event: EventWrite) -> None:
-    """Doors close no later than the event ends.
+    """Doors close no later than the event ends, nor days before it starts.
 
     A doors-close before starts_at is legitimate (doors close at 18:00 for an
     18:30 talk); after ends_at is a typo nobody would notice on the form until
-    somebody is refused at a door that never shut.
+    somebody is refused at a door that never shut. So is one a day or more
+    early — usually a year typed short (0006 rather than 2026), which would
+    otherwise be saved and printed on the event page as it stands.
     """
-    if (
-        event.doors_close_at is not None
-        and event.ends_at is not None
-        and _utc(event.doors_close_at) > _utc(event.ends_at)
-    ):
+    if event.doors_close_at is None:
+        return
+    doors = _utc(event.doors_close_at)
+    if event.ends_at is not None and doors > _utc(event.ends_at):
         raise HTTPException(
             422,
             "Doors close cannot be after the event ends. "
             "It may be before the event starts.",
+        )
+    if doors <= _utc(event.starts_at) - timedelta(days=1):
+        raise HTTPException(
+            422,
+            "Doors close is a day or more before the event starts — "
+            "check its date, and the year in particular.",
         )
 
 

@@ -14,9 +14,32 @@ function cookie(name) {
   return match ? decodeURIComponent(match[2]) : null
 }
 
+/** A request body that fails validation comes back with `detail` as a list of
+ *  {loc, msg} objects, not a sentence. Used as an Error message as-is it reads
+ *  "[object Object]", so each one becomes "ticket types 1 › price pence: …". */
+function describe(detail) {
+  if (typeof detail === 'string') return detail
+  const inner = detail?.detail
+  if (typeof inner === 'string') return inner
+  if (Array.isArray(inner) && inner.length) {
+    return inner
+      .map((item) => {
+        if (typeof item === 'string') return item
+        const where = (item?.loc || [])
+          .filter((part) => part !== 'body')
+          .map((part) => (typeof part === 'number' ? part + 1 : String(part).replace(/_/g, ' ')))
+          .join(' › ')
+        const msg = item?.msg || 'is not valid'
+        return where ? `${where}: ${msg}` : msg
+      })
+      .join('; ')
+  }
+  return 'Something went wrong'
+}
+
 export class ApiError extends Error {
   constructor(status, detail) {
-    super(typeof detail === 'string' ? detail : detail?.detail || 'Something went wrong')
+    super(describe(detail))
     this.status = status
     this.detail = detail
   }

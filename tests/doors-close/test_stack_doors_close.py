@@ -221,6 +221,33 @@ def test_update_doors_close_before_starts_is_accepted(admin_client):
         admin_client.delete(f"/admin/events/{created_id}")
 
 
+def test_create_with_doors_close_years_early_is_rejected_422(admin_client):
+    """A year typed short — 0006 for 2026 — is refused, not saved as the year 6.
+
+    A doors-close before the start is allowed, so without this the typo went
+    through and the event page printed it.
+    """
+    slug = _unique_slug("dc-year")
+    starts = (datetime.now(timezone.utc) + timedelta(days=30)).replace(microsecond=0)
+    created = admin_client.post(
+        "/admin/events",
+        json={
+            "slug": slug,
+            "title": f"Doors year {slug[-6:]}",
+            "category": "Social",
+            "venue": MILLER_VENUE,
+            "starts_at": starts.isoformat(),
+            "ends_at": (starts + timedelta(hours=3)).isoformat(),
+            # What the screenshot showed: 31/10/0006, 20:30.
+            "doors_close_at": datetime(6, 10, 31, 20, 30, tzinfo=timezone.utc).isoformat(),
+        },
+    )
+    if created.status_code in (200, 201):
+        admin_client.delete(f"/admin/events/{created.json()['id']}")
+    assert created.status_code == 422, created.text
+    assert "Doors close" in created.json().get("detail", "")
+
+
 # ------------------------------------------------------------------- criterion 6
 
 

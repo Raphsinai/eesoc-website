@@ -1305,6 +1305,9 @@ async def sponsor_detail(
         },
         "year": year,
         "terms": await agreement_service.terms(sponsor_id),
+        # What used each clause this year, itemised: linked events, marketing,
+        # and anything recorded by hand.
+        "counted": await agreement_service.counted(sponsor_id, year),
         "claims": [
             {
                 "eventId": c["event_id"],
@@ -1404,6 +1407,77 @@ async def set_sponsor_term(
         },
     )
     return {"ok": True, "terms": await agreement_service.terms(sponsor_id)}
+
+
+@router.post("/sponsors/{sponsor_id}/usage", dependencies=[Depends(verify_csrf)])
+async def record_sponsor_usage(
+    sponsor_id: int,
+    clause: str = Body(embed=True),
+    title: str = Body(embed=True),
+    happened_on: str | None = Body(default=None, embed=True),
+    session: AuthSession = Depends(require_sponsors),
+) -> dict:
+    """Record a use of a countable clause that happened outside the portal — a
+    workshop arranged by email, a post shared straight to Instagram.
+
+    It counts against the clause for the academic year it happened in (this
+    year when no date is given) and shows in the sponsor's portal with the rest
+    of what used it. Over the allowance is allowed: the committee's record of
+    what happened is the record, and the agreement page shows it in red.
+    """
+    spec = agreement_service.BY_KEY.get(clause)
+    if spec is None or not spec.get("countable"):
+        raise HTTPException(404, "No such countable clause")
+    await _sponsor_or_404(sponsor_id)
+    title = title.strip()
+    if not title:
+        raise HTTPException(400, "Say what it was — the sponsor sees this.")
+    when = None
+    if happened_on:
+        try:
+            when = datetime.fromisoformat(str(happened_on)[:10])
+        except ValueError:
+            raise HTTPException(400, "That date doesn't look right.")
+    year = academic_year(when)
+    await database.post(
+        f"/sponsors/{sponsor_id}/usage-records",
+        {
+            "clause": clause,
+            "academic_year": year,
+            "title": title[:200],
+            "happened_on": when.date().isoformat() if when else None,
+            "created_by": session.user.id,
+        },
+    )
+    current = academic_year()
+    return {
+        "ok": True,
+        "terms": await agreement_service.terms(sponsor_id),
+        "counted": await agreement_service.counted(sponsor_id, current),
+        "message": (
+            f"Recorded against {spec['label']}."
+            if year == current
+            else f"Recorded against {spec['label']} for {year}, the year it happened — "
+            f"it does not count towards {current}."
+        ),
+    }
+
+
+@router.delete("/sponsors/{sponsor_id}/usage/{record_id}", dependencies=[Depends(verify_csrf)])
+async def remove_sponsor_usage(
+    sponsor_id: int, record_id: int, _: AuthSession = Depends(require_sponsors)
+) -> dict:
+    """Take back a use recorded by hand. Uses that came through the site are
+    undone where they came from: unlink the event, decline the request."""
+    removed = await database.delete(f"/sponsors/{sponsor_id}/usage-records/{record_id}")
+    if removed is None:
+        raise HTTPException(404, "No such record")
+    return {
+        "ok": True,
+        "terms": await agreement_service.terms(sponsor_id),
+        "counted": await agreement_service.counted(sponsor_id),
+        "message": "Removed. That use is back in their allowance.",
+    }
 
 
 @router.put("/sponsors/{sponsor_id}/events/{event_id}", dependencies=[Depends(verify_csrf)])

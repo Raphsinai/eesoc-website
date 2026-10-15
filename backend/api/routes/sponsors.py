@@ -206,6 +206,7 @@ async def dashboard(
     sponsorable = await database.get("/sponsors/claims/claimable", {"sponsor_id": sid}) or []
     claims = await database.get(f"/sponsors/{sid}/claims") or []
     terms = await agreement.terms(sid)
+    counted = await agreement.counted(sid)
     marketing = next(t for t in terms if t["key"] == "marketing")
     notes = await database.get(f"/sponsors/{sid}/notes") or []
 
@@ -239,7 +240,9 @@ async def dashboard(
         "sponsorable": [_sponsorable_row(e) for e in sponsorable],
         "yourEvents": [_claim_row(c) for c in claims if c["status"] != "declined"],
         "listings": [_listing_row(r) for r in listings],
-        "package": [_package_row(t) for t in terms if t["side"] == "eesoc"],
+        "package": [
+            _package_row(t, counted.get(t["key"], [])) for t in terms if t["side"] == "eesoc"
+        ],
         "sponsor": {
             "id": sid,
             "name": acting.get("name"),
@@ -251,8 +254,10 @@ async def dashboard(
     }
 
 
-def _package_row(t: dict) -> dict:
-    """One clause as the sponsor sees it: its name and what is left.
+def _package_row(t: dict, used_by: list[dict]) -> dict:
+    """One clause as the sponsor sees it: its name, what is left, and what used
+    the rest — including anything the committee recorded because it happened
+    outside the portal.
 
     Not its wording. The agreement text is the committee's (the admin page
     shows it); a sponsor reads their signed copy, not ours.
@@ -271,6 +276,16 @@ def _package_row(t: dict) -> dict:
         "agreed": t["agreed"],
         "status": status,
         "note": t["note"],
+        "counted": [_use_view(u) for u in used_by] if t["countable"] else [],
+    }
+
+
+def _use_view(u: dict) -> dict:
+    return {
+        "title": u["title"],
+        "date": u["date"],
+        "recorded": u["kind"] == "record",
+        "pending": u["pending"],
     }
 
 
@@ -528,6 +543,7 @@ async def panel(
     if panel == "marketing":
         term = await agreement.term(sid, "marketing")
         items = await database.get(f"/sponsors/{sid}/marketing") or []
+        counted = (await agreement.counted(sid)).get("marketing", [])
         return {
             "eyebrow": "Marketing",
             "heading": "Share something with our members.",
@@ -541,6 +557,9 @@ async def panel(
                 {"key": k, "label": v} for k, v in agreement.MARKETING_CHANNELS.items()
             ],
             "items": [_marketing_view(m) for m in items],
+            # Shares the committee made outside the portal and recorded, so the
+            # count above adds up to what is listed here.
+            "recorded": [_use_view(u) for u in counted if u["kind"] == "record"],
             "aside": (
                 "Write the subject and message, add images or a PDF, and choose who "
                 "it is for. The committee checks it, then shares it by email and on "

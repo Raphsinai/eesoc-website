@@ -600,6 +600,15 @@ loadSponsorOptions()
                   <span class="row-meta">{{ t.status }}</span>
                 </div>
                 <span v-if="t.note" class="row-meta">{{ t.note }}</span>
+                <!-- What used it: events, marketing, and anything the committee
+                     recorded because it was arranged outside the portal. -->
+                <ul v-if="t.counted?.length" class="pkg-used">
+                  <li v-for="(u, i) in t.counted" :key="i">
+                    {{ u.title }}<template v-if="u.date"> · {{ u.date }}</template>
+                    <span v-if="u.recorded" class="pkg-used__by"> · recorded by the committee</span>
+                    <span v-else-if="u.pending" class="pkg-used__by"> · waiting for the committee</span>
+                  </li>
+                </ul>
                 <a v-if="t.agreed" href="#" class="pkg-ask" @click.prevent="openNotes(`clause:${t.key}`)">Ask about this</a>
               </div>
               <a href="#" style="font:var(--type-small)" @click.prevent="openNotes('general')">Ask the committee a question</a>
@@ -783,7 +792,18 @@ loadSponsorOptions()
         <div v-else class="portal-cols">
           <div style="display:grid; gap:var(--space-4)">
             <span class="eyebrow">Your requests</span>
-            <p v-if="!panel.items.length" class="muted">Nothing sent yet.</p>
+            <p v-if="!panel.items.length && !panel.recorded?.length" class="muted">Nothing sent yet.</p>
+            <!-- Shares made outside the portal, recorded by the committee so the
+                 count beside this list adds up. -->
+            <Card v-for="(r, i) in panel.recorded ?? []" :key="`recorded-${i}`" variant="offset">
+              <div class="row-between">
+                <div class="stack-4">
+                  <span class="row-title">{{ r.title }}</span>
+                  <span class="row-meta">Shared outside the portal<template v-if="r.date"> · {{ r.date }}</template></span>
+                </div>
+                <Badge tone="success">Recorded by the committee</Badge>
+              </div>
+            </Card>
             <Card v-for="m in panel.items" :key="m.id" variant="default">
               <div style="display:grid; gap:var(--space-3)">
                 <div class="row-between">
@@ -1313,6 +1333,15 @@ loadSponsorOptions()
 .pkg-ask {
   font: var(--type-2xs);
   justify-self: start;
+}
+.pkg-used {
+  margin: 0;
+  padding-left: var(--space-4);
+  font: var(--type-2xs);
+  color: var(--text-body);
+}
+.pkg-used__by {
+  color: var(--text-faint);
 }
 .note {
   display: grid;

@@ -111,6 +111,20 @@ class SponsorTerm(BaseModel):
     updated_by: int | None = None
 
 
+class SponsorUsageRecord(BaseModel):
+    """One use of a countable clause, recorded by the committee because it
+    happened outside the portal."""
+
+    id: int | None = None
+    sponsor_id: int | None = None
+    clause: str
+    academic_year: str
+    title: str
+    happened_on: date | None = None
+    created_by: int | None = None
+    created_at: datetime | None = None
+
+
 class SponsorPackageDefault(BaseModel):
     """The committee's allowance for a clause of the standard package."""
 

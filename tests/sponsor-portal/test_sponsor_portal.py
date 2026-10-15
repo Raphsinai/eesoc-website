@@ -17,7 +17,10 @@ reach:
 6. a role past its closing day leaves the public careers list and shows as
    closed in the portal;
 7. an event offered for sponsorship may still be an unpublished idea: sponsors
-   see it, marked provisional, and students see nothing of it anywhere.
+   see it, marked provisional, and students see nothing of it anywhere;
+8. the committee can record a use that happened outside the portal; it counts
+   against the allowance and the sponsor sees it beside everything else that
+   used the clause, so "used" is always a list they can read.
 """
 
 import uuid
@@ -442,3 +445,131 @@ def test_a_published_sponsorable_event_shows_its_details(make_sponsor, make_even
     row = _offered(me)[event["id"]]
     assert row["provisional"] is False
     assert "EEE 403" in row["meta"]
+
+
+# ------------------------------------------- 8. uses recorded by the committee
+
+
+def _term(terms: list[dict], key: str) -> dict:
+    return next(t for t in terms if t["key"] == key)
+
+
+def _package(client: httpx.Client) -> dict:
+    return {t["key"]: t for t in client.get("/portal/dashboard").json()["package"]}
+
+
+def test_the_committee_records_a_use_done_outside_the_portal(make_sponsor, admin_client):
+    sponsor, me = make_sponsor()
+    url = f"/admin/sponsors/{sponsor['id']}/usage"
+
+    def workshop_coverage():
+        formats = {f["id"]: f for f in me.get("/portal/panels/request").json()["formats"]}
+        return formats["workshop_talk"]["coverage"]
+
+    # Workshop and seminar are one format: two left between them.
+    assert workshop_coverage() == "In your package · 2 left this year"
+
+    recorded = admin_client.post(
+        url,
+        json={
+            "clause": "workshop",
+            "title": "FPGA workshop at their office",
+            "happened_on": _london_today().isoformat(),
+        },
+    )
+    assert recorded.status_code == 200, recorded.text
+    body = recorded.json()
+    assert body["message"] == "Recorded against Sponsored workshop."
+    assert _term(body["terms"], "workshop")["used"] == 1
+    [use] = body["counted"]["workshop"]
+    assert (use["kind"], use["title"]) == ("record", "FPGA workshop at their office")
+
+    # The sponsor sees the use and where it came from, and the allowance spent.
+    workshop = _package(me)["workshop"]
+    assert workshop["status"] == "1 of 1 used"
+    assert [(u["title"], u["recorded"]) for u in workshop["counted"]] == [
+        ("FPGA workshop at their office", True)
+    ]
+    assert workshop_coverage() == "In your package · 1 left this year"
+
+    # Removing it gives the use back, once.
+    removed = admin_client.delete(f"{url}/{use['id']}")
+    assert removed.status_code == 200, removed.text
+    assert _term(removed.json()["terms"], "workshop")["used"] == 0
+    assert _package(me)["workshop"]["counted"] == []
+    assert admin_client.delete(f"{url}/{use['id']}").status_code == 404
+
+
+def test_recorded_marketing_counts_against_the_allowance(make_sponsor, admin_client):
+    sponsor, me = make_sponsor()
+    admin_client.put(
+        f"/admin/sponsors/{sponsor['id']}/terms/marketing",
+        json={"agreed": True, "allowance": 2, "note": ""},
+    )
+    assert _share(me, "Through the portal").status_code == 200
+    recorded = admin_client.post(
+        f"/admin/sponsors/{sponsor['id']}/usage",
+        json={"clause": "marketing", "title": "Instagram post about their internships"},
+    )
+    assert recorded.status_code == 200, recorded.text
+
+    panel = me.get("/portal/panels/marketing").json()
+    assert (panel["used"], panel["remaining"]) == (2, 0)
+    assert [r["title"] for r in panel["recorded"]] == ["Instagram post about their internships"]
+    # The recorded share spent the last one.
+    assert _share(me, "One too many").status_code == 409
+
+    # The count is the list: one through the portal, one by hand.
+    counted = admin_client.get(f"/admin/sponsors/{sponsor['id']}/detail").json()["counted"]
+    assert sorted(u["kind"] for u in counted["marketing"]) == ["marketing", "record"]
+    assert _package(me)["marketing"]["status"] == "2 of 2 used"
+    assert len(_package(me)["marketing"]["counted"]) == 2
+
+
+def test_a_linked_event_is_listed_with_what_it_used(make_sponsor, make_event, admin_client):
+    sponsor, me = make_sponsor()
+    event = make_event(published=True)
+    linked = admin_client.put(
+        f"/admin/sponsors/{sponsor['id']}/events/{event['id']}", json={"clause": "seminar"}
+    )
+    assert linked.status_code == 200, linked.text
+
+    seminar = _package(me)["seminar"]
+    assert seminar["status"] == "1 of 1 used"
+    assert [(u["title"], u["recorded"]) for u in seminar["counted"]] == [(event["title"], False)]
+
+
+def test_a_use_from_an_earlier_year_does_not_spend_this_years(make_sponsor, admin_client):
+    sponsor, me = make_sponsor()
+    long_ago = _london_today() - timedelta(days=400)
+    recorded = admin_client.post(
+        f"/admin/sponsors/{sponsor['id']}/usage",
+        json={"clause": "workshop", "title": "Last year's workshop", "happened_on": long_ago.isoformat()},
+    )
+    assert recorded.status_code == 200, recorded.text
+    assert "does not count towards" in recorded.json()["message"]
+    assert _term(recorded.json()["terms"], "workshop")["used"] == 0
+    assert _package(me)["workshop"]["counted"] == []
+
+
+def test_recording_uses_is_the_committees_and_is_checked(make_sponsor, admin_client, member_client):
+    sponsor, me = make_sponsor()
+    other, _ = make_sponsor()
+    url = f"/admin/sponsors/{sponsor['id']}/usage"
+
+    for client in (me, member_client):
+        assert client.post(url, json={"clause": "workshop", "title": "Mine"}).status_code == 403
+    # Only countable clauses are counted; a use needs saying what it was.
+    assert admin_client.post(url, json={"clause": "contact", "title": "x"}).status_code == 404
+    assert admin_client.post(url, json={"clause": "workshop", "title": "   "}).status_code == 400
+    assert admin_client.post(
+        url, json={"clause": "workshop", "title": "x", "happened_on": "soon"}
+    ).status_code == 400
+
+    made = admin_client.post(url, json={"clause": "workshop", "title": "Theirs"}).json()
+    rid = made["counted"]["workshop"][0]["id"]
+    # A record is removed only through the sponsor it belongs to, and only by
+    # the committee.
+    assert admin_client.delete(f"/admin/sponsors/{other['id']}/usage/{rid}").status_code == 404
+    assert me.delete(f"{url}/{rid}").status_code == 403
+    assert _term(admin_client.get(f"/admin/sponsors/{sponsor['id']}/detail").json()["terms"], "workshop")["used"] == 1

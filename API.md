@@ -264,6 +264,8 @@ sponsor may do is bounded by their agreement (`services/agreement.py`): a clause
 the committee struck is refused with 403, and countable clauses are enforced
 against the allowance (marketing: 409 when used up). An allowance is the
 sponsor's own figure if the committee set one, else the standard package's.
+Used is counted from linked events, marketing requests and uses the committee
+recorded by hand, and the portal lists each one under its clause.
 The portal shows each clause's name and usage, never the agreement's wording,
 which is committee-side only.
 
@@ -330,6 +332,7 @@ reports who let them in and when.
 | `GET /admin/sponsors/inbox` | Everything waiting on the committee across sponsors: notes, marketing, requests, interest, new roles |
 | `GET /admin/sponsors/{id}/detail` | One sponsor's agreement, usage, events, requests, marketing, notes (opening it marks their notes read) |
 | `PUT /admin/sponsors/{id}/terms/{clause}` | Agreed / allowance / note / done for one clause; `allowance: null` follows the standard package |
+| `POST /admin/sponsors/{id}/usage`, `DELETE …/usage/{record_id}` | Record a use of a countable clause that happened outside the portal (`{clause, title, happened_on?}`) / take it back. Counts for the academic year it happened in; `GET …/detail` lists every use per clause as `counted`, and the portal shows the sponsor the same list |
 | `PUT /admin/sponsor-package/{clause}` | The standard package's allowance for one countable clause, `{allowance}` — every sponsor without their own figure moves with it. Listed as `package` on `GET /admin/sponsors` |
 | `PUT/DELETE /admin/sponsors/{id}/events/{event_id}` | Link an existing event (with the clause it delivers) / unlink; `POST …/decline` refuses interest |
 | `POST /admin/sponsors/{id}/notes` | Reply to a sponsor's thread; emails their portal users |

@@ -24,6 +24,8 @@ const notice = ref('')
 // Editable copies, keyed by clause / request / marketing id, so typing in one
 // row does not wait on a save in another.
 const termEdits = reactive({})
+// The "record one done outside the portal" form on each countable clause.
+const recordEdits = reactive({})
 const requestEdits = reactive({})
 const marketingEdits = reactive({})
 const previews = reactive({})
@@ -52,6 +54,9 @@ async function load() {
         note: t.note,
         done: Boolean(t.doneAt),
       }
+      // Kept across reloads: every action here reloads the page's data, and a
+      // half-typed record on one clause should survive saving another.
+      if (t.countable && !recordEdits[t.key]) recordEdits[t.key] = { title: '', date: '' }
     }
     for (const r of data.value.requests) {
       requestEdits[r.id] = { status: r.status, response: r.response || '' }
@@ -99,6 +104,25 @@ const audienceLabel = (key) => data.value?.audiences.find((a) => a.key === key)?
 const linked = computed(() => (data.value?.claims ?? []).filter((c) => c.status === 'confirmed'))
 const interested = computed(() => (data.value?.claims ?? []).filter((c) => c.status === 'interested'))
 const declined = computed(() => (data.value?.claims ?? []).filter((c) => c.status === 'declined'))
+
+// A use that happened outside the portal: it counts against the clause and
+// shows in the sponsor's portal with everything else that used it.
+async function recordUse(t) {
+  const e = recordEdits[t.key]
+  const res = await act(() =>
+    api.post(`/admin/sponsors/${id.value}/usage`, {
+      clause: t.key,
+      title: e.title,
+      happened_on: e.date || null,
+    }),
+  )
+  if (res) Object.assign(e, { title: '', date: '' })
+}
+
+function removeUse(u) {
+  if (!confirm(`Remove "${u.title}"? It goes back into their allowance.`)) return
+  return act(() => api.del(`/admin/sponsors/${id.value}/usage/${u.id}`))
+}
 
 function saveTerm(t) {
   const e = termEdits[t.key]
@@ -301,9 +325,10 @@ async function startThread() {
           did not sign and the portal stops offering it; give them their own
           allowance and the portal counts against that instead of the standard
           (leave it empty to follow the standard, which is set under Sponsors in
-          the dashboard). Used counts come from the events linked below and the
-          marketing shared this year. The sponsor sees each clause's name and
-          usage, never the wording.
+          the dashboard). Used counts come from the events linked below, the
+          marketing shared this year, and anything you record by hand because it
+          happened outside the portal. The sponsor sees each clause's name and
+          what used it, never the wording.
         </p>
         <Card v-for="t in eesocTerms" :key="t.key" variant="outline" :class="{ struck: !termEdits[t.key]?.agreed }">
           <div class="term">
@@ -336,6 +361,29 @@ async function startThread() {
             <div class="term__save">
               <Button size="sm" :disabled="busy" @click="saveTerm(t)">Save</Button>
               <span v-if="!t.customised" style="font:var(--type-2xs); color:var(--text-faint)">Standard</span>
+            </div>
+            <div v-if="t.countable" class="term__used">
+              <span class="term__used-label">Counted this year</span>
+              <p v-if="!(data.counted?.[t.key] ?? []).length" class="term__used-none">Nothing yet.</p>
+              <div v-for="u in data.counted?.[t.key] ?? []" :key="`${u.kind}-${u.id}`" class="term__use">
+                <span>{{ u.title }}<template v-if="u.date"> · {{ u.date }}</template></span>
+                <span class="term__use-kind">{{ u.kindLabel }}<template v-if="u.pending"> · waiting</template></span>
+                <Button v-if="u.kind === 'record'" size="sm" variant="ghost" :disabled="busy" @click="removeUse(u)">Remove</Button>
+              </div>
+              <form class="term__record" @submit.prevent="recordUse(t)">
+                <Input
+                  v-model="recordEdits[t.key].title"
+                  placeholder="Done outside the portal? Say what — the sponsor sees this"
+                  :aria-label="`${t.label}: record one done outside the portal`"
+                />
+                <input
+                  v-model="recordEdits[t.key].date"
+                  type="date"
+                  class="ees-input"
+                  :aria-label="`${t.label}: when it happened`"
+                />
+                <Button size="sm" variant="secondary" type="submit" :disabled="busy || !recordEdits[t.key].title.trim()">Record</Button>
+              </form>
             </div>
             <details class="term__text"><summary>Agreement wording</summary>{{ t.text }}</details>
           </div>
@@ -664,6 +712,47 @@ async function startThread() {
 }
 .term__num {
   width: 80px;
+}
+.term__used {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-hairline);
+}
+.term__used-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  color: var(--text-muted);
+}
+.term__used-none {
+  margin: 0;
+  font: var(--type-2xs);
+  color: var(--text-faint);
+}
+.term__use {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  flex-wrap: wrap;
+  font: var(--type-small);
+}
+.term__use-kind {
+  font: var(--type-2xs);
+  color: var(--text-faint);
+}
+.term__record {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: var(--space-2);
+  align-items: center;
+}
+@media (max-width: 640px) {
+  .term__record {
+    grid-template-columns: 1fr;
+  }
 }
 .term__text {
   font: var(--type-2xs);

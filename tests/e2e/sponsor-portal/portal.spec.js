@@ -155,3 +155,31 @@ test('the committee sets the standard package and the sponsor sees it', async ({
     })
   }
 })
+
+test('the committee records a workshop done outside the portal and the sponsor sees it', async ({ page, browser }) => {
+  test.skip(test.info().project.name !== 'admin', 'needs the admin storage state')
+  const title = `Workshop at their office ${STAMP}`
+
+  await page.goto(`/admin/sponsors/${SPONSOR_ID}`)
+  const what = page.getByLabel('Sponsored workshop: record one done outside the portal')
+  await what.fill(title)
+  await page.locator('form.term__record').filter({ has: what }).getByRole('button', { name: 'Record' }).click()
+  await expect(page.getByText('Recorded against Sponsored workshop.')).toBeVisible()
+  const use = page.locator('.term__use').filter({ hasText: title })
+  await expect(use).toContainText('Recorded by the committee')
+  await expect(use.getByRole('button', { name: 'Remove' })).toBeVisible()
+
+  const sponsor = await browser.newContext({ storageState: { cookies: [], origins: [] } })
+  try {
+    const sponsorPage = await sponsor.newPage()
+    const login = await sponsorPage.request.post('/api/auth/dev-login', { data: { email: SPONSOR_EMAIL } })
+    expect(login.ok()).toBeTruthy()
+    await sponsorPage.goto('/portal')
+    const workshop = sponsorPage.locator('.pkg-row').filter({ hasText: 'Sponsored workshop' })
+    await expect(workshop).toContainText('1 of 1 used')
+    await expect(workshop).toContainText(title)
+    await expect(workshop).toContainText('recorded by the committee')
+  } finally {
+    await sponsor.close()
+  }
+})

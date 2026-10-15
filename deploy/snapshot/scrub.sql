@@ -233,7 +233,8 @@ BEGIN
         'job_listings.body', 'sponsor_requests.body', 'sponsor_requests.response',
         'event_sponsorships.note', 'sponsor_terms.note',
         'sponsor_marketing.subject', 'sponsor_marketing.body',
-        'sponsor_marketing.response', 'sponsor_notes.body'
+        'sponsor_marketing.response', 'sponsor_notes.body',
+        'sponsor_usage_records.title'
     ]
     LOOP
         tbl := split_part(target, '.', 1);

@@ -19,6 +19,7 @@ from models.sponsors import (
     SponsorRequest,
     SponsorRequestUpdate,
     SponsorTerm,
+    SponsorUsageRecord,
 )
 from postgres import get_pool
 
@@ -764,39 +765,95 @@ async def set_term(sponsor_id: int, clause: str, term: SponsorTerm) -> SponsorTe
     return SponsorTerm(**dict(row))
 
 
+# Everything that counts against a sponsor's clauses in one academic year, one
+# row per use. Both the counts and the itemised list come from this, so the
+# number a sponsor is shown is always the length of the list beside it.
+#
+# Events count by the year of the event, not of the link: a workshop agreed in
+# July for October belongs to October's year. Marketing counts anything not
+# declined or withdrawn — a pending request has already spent the allowance,
+# or a sponsor could queue ten and have them all approved. A record is a use
+# the committee entered by hand because it happened outside the portal.
+USAGE_ITEMS = """
+    SELECT es.clause, 'event' AS kind, e.id AS ref_id, e.title,
+           (e.starts_at AT TIME ZONE 'Europe/London')::date AS happened_on,
+           es.status
+      FROM public.event_sponsorships es
+      JOIN public.events e ON e.id = es.event_id
+     WHERE es.sponsor_id = $1 AND es.status = 'confirmed'
+       AND es.clause IS NOT NULL AND e.academic_year = $2
+    UNION ALL
+    SELECT 'marketing', 'marketing', m.id, m.subject,
+           (m.created_at AT TIME ZONE 'Europe/London')::date, m.status
+      FROM public.sponsor_marketing m
+     WHERE m.sponsor_id = $1 AND m.academic_year = $2
+       AND m.status IN ('pending', 'shared')
+    UNION ALL
+    SELECT r.clause, 'record', r.id, r.title, r.happened_on, 'recorded'
+      FROM public.sponsor_usage_records r
+     WHERE r.sponsor_id = $1 AND r.academic_year = $2
+"""
+
+
 @router.get("/{sponsor_id}/usage")
 async def usage(sponsor_id: int, academic_year: str) -> dict:
-    """How much of each countable clause has been used this year.
-
-    Events count by the year of the event, not of the link: a workshop agreed in
-    July for October belongs to October's year. Marketing counts anything not
-    declined or withdrawn — a pending request has already spent the allowance,
-    or a sponsor could queue ten and have them all approved.
-    """
+    """How much of each clause has been used in a year, as counts."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        events = await conn.fetch(
-            """
-            SELECT es.clause, COUNT(*) AS n
-              FROM public.event_sponsorships es
-              JOIN public.events e ON e.id = es.event_id
-             WHERE es.sponsor_id = $1 AND es.status = 'confirmed'
-               AND es.clause IS NOT NULL AND e.academic_year = $2
-             GROUP BY es.clause;
+        rows = await conn.fetch(
+            f"SELECT clause, COUNT(*) AS n FROM ({USAGE_ITEMS}) u GROUP BY clause;",
+            sponsor_id, academic_year,
+        )
+    return {r["clause"]: r["n"] for r in rows}
+
+
+@router.get("/{sponsor_id}/usage/items")
+async def usage_items(sponsor_id: int, academic_year: str) -> list[dict]:
+    """The same uses, itemised, oldest first (undated records last)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT * FROM ({USAGE_ITEMS}) u
+             ORDER BY happened_on NULLS LAST, kind, ref_id;
             """,
             sponsor_id, academic_year,
         )
-        marketing = await conn.fetchval(
+    return [dict(r) for r in rows]
+
+
+@router.post("/{sponsor_id}/usage-records", status_code=201)
+async def add_usage_record(sponsor_id: int, record: SponsorUsageRecord) -> SponsorUsageRecord:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
             """
-            SELECT COUNT(*) FROM public.sponsor_marketing
-             WHERE sponsor_id = $1 AND academic_year = $2
-               AND status IN ('pending', 'shared');
+            INSERT INTO public.sponsor_usage_records
+                (sponsor_id, clause, academic_year, title, happened_on, created_by)
+            VALUES ($1,$2,$3,$4,$5,$6)
+            RETURNING id, sponsor_id, clause, academic_year, title, happened_on,
+                      created_by, created_at;
             """,
-            sponsor_id, academic_year,
+            sponsor_id, record.clause, record.academic_year, record.title,
+            record.happened_on, record.created_by,
         )
-    out = {r["clause"]: r["n"] for r in events}
-    out["marketing"] = marketing
-    return out
+    return SponsorUsageRecord(**dict(row))
+
+
+@router.delete("/{sponsor_id}/usage-records/{record_id}")
+async def remove_usage_record(sponsor_id: int, record_id: int) -> dict:
+    """Scoped by sponsor as well as id, so a mistyped id cannot remove another
+    sponsor's record. Answers with a body rather than a 204, because the api's
+    client reads 204 and 404 alike as "nothing"."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM public.sponsor_usage_records WHERE id = $1 AND sponsor_id = $2;",
+            record_id, sponsor_id,
+        )
+    if result == "DELETE 0":
+        raise HTTPException(404, "No such record")
+    return {"deleted": record_id}
 
 
 # ------------------------------------------------------------------- notes

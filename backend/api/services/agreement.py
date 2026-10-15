@@ -27,10 +27,13 @@ Two kinds of clause:
 
 from __future__ import annotations
 
+from datetime import date, datetime
+
 from clients import database
 from config import settings
 from services import emailing
 from utils import email as mailer
+from utils.present import format_date
 from utils.year import academic_year
 
 CLAUSES: list[dict] = [
@@ -292,6 +295,49 @@ async def terms(sponsor_id: int) -> list[dict]:
             term["remaining"] = max(0, (term["allowance"] or 0) - term["used"])
         out.append(term)
     return out
+
+
+USE_LABELS = {
+    "event": "Linked event",
+    "marketing": "Marketing request",
+    "record": "Recorded by the committee",
+}
+
+
+async def counted(sponsor_id: int, year: str | None = None) -> dict[str, list[dict]]:
+    """clause → what used it this year, one entry per use.
+
+    The same rows `terms` counts (`/sponsors/{id}/usage` and this both come
+    from one query in the adapter), so a "2 of 3 used" always has two entries
+    under it — whether they came through the portal or were recorded by hand.
+    """
+    rows = await database.get(
+        f"/sponsors/{sponsor_id}/usage/items",
+        {"academic_year": year or academic_year()},
+    ) or []
+    out: dict[str, list[dict]] = {}
+    for r in rows:
+        when = r.get("happened_on")
+        out.setdefault(r["clause"], []).append(
+            {
+                "kind": r["kind"],
+                "kindLabel": USE_LABELS.get(r["kind"], r["kind"]),
+                "id": r["ref_id"],
+                "title": r["title"],
+                "date": format_date(_as_datetime(when)) if when else "",
+                # A marketing request still waiting has spent its share.
+                "pending": r["kind"] == "marketing" and r.get("status") == "pending",
+            }
+        )
+    return out
+
+
+def _as_datetime(value) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    return datetime.fromisoformat(str(value)[:10])
 
 
 async def term(sponsor_id: int, key: str) -> dict:

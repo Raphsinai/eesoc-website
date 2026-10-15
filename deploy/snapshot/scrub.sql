@@ -109,6 +109,14 @@ BEGIN
         UPDATE public.email_campaigns SET whatsapp_groups = '[]'::jsonb
          WHERE whatsapp_groups <> '[]'::jsonb;
     END IF;
+    -- WhatsApp groups are ticked as audiences ("whatsapp:<group id>") among
+    -- the email ones. Taken out; the email audiences stay.
+    UPDATE public.email_campaigns
+       SET audiences = COALESCE(
+               (SELECT jsonb_agg(a) FROM jsonb_array_elements(audiences) AS a
+                 WHERE a #>> '{}' NOT LIKE 'whatsapp:%'),
+               '[]'::jsonb)
+     WHERE audiences::text LIKE '%"whatsapp:%';
 END $$;
 
 -- ---------------------------------------------------------------------------

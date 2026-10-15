@@ -1,9 +1,9 @@
 """The WhatsApp link, from the Email tab.
 
 Linking the society's number (a QR code to scan, or a code to type on the
-phone), choosing the groups announcements go to, and posting into them now.
-An email in the queue can also be ticked to go to those groups when it is
-sent — that is in routes/approvals.py and services/campaigns.py.
+phone) and enabling the groups the site may post into. An enabled group is
+then an audience like any other — ticked under "Who gets it" and sent by the
+same Send (routes/admin.py, services/campaigns.py).
 
 The same people as email — the `site` capability — because every post here is
 an announcement to a crowd. services/whatsapp.py says what the link is, and
@@ -167,51 +167,14 @@ async def choose_group(
             "The linked number can't post there — only admins can, or it's a "
             "community rather than its announcements group.",
         )
+    # Stored under the name it is ticked by in the audience list — so a
+    # community's announcements channel says so, rather than taking the
+    # community's own name.
+    name = group["name"]
+    if group.get("communityAnnouncements"):
+        name = f"Announcements — {(group.get('parent') or {}).get('name') or name}"
     await database.put(
         "/whatsapp/groups",
-        {"jid": jid, "name": group["name"], "added_by": session.user.id},
+        {"jid": jid, "name": name, "added_by": session.user.id},
     )
     return {"ok": True}
-
-
-@router.post("/post", dependencies=[Depends(verify_csrf)])
-async def post_now(
-    heading: str = Body(default="", embed=True),
-    body: str = Body(default="", embed=True),
-    event_id: int | None = Body(default=None, embed=True),
-    kind: str | None = Body(default=None, embed=True),
-    groups: list[str] = Body(default=[], embed=True),
-    session: AuthSession = Depends(require_site),
-) -> dict:
-    """Post the WhatsApp version of an announcement, now, into the `groups`
-    picked for it — each one enabled on the Email tab. The same post
-    "WhatsApp version" shows, rendered again here from the same words, so
-    what was read is what goes."""
-    event = None
-    if event_id is not None:
-        event = await database.get(f"/events/{event_id}")
-        if event is None:
-            raise HTTPException(404, "No such event")
-    text = await whatsapp.message(heading, body, event, kind)
-    if not text.strip():
-        raise HTTPException(400, "Write something to post.")
-    if not groups:
-        raise HTTPException(400, "Pick the groups to post it into.")
-    targets = await whatsapp.pick(groups)
-    if len(targets) != len(set(groups)):
-        raise HTTPException(
-            400, "Only groups enabled on the Email tab's WhatsApp card can be posted into."
-        )
-
-    results = await whatsapp.post(text, targets, by=session.user.id)
-    sent = [r for r in results if r["status"] == "sent"]
-    others = [r for r in results if r["status"] != "sent"]
-    message = (
-        f"Posted to {', '.join(r['name'] for r in sent)}." if sent else "Nothing was posted."
-    )
-    if others:
-        message += " " + " ".join(f"{r['name'] or r['jid']}: {r['error']}" for r in others)
-    if not sent and any(r["status"] == "failed" for r in results):
-        # 503, not 502 — see clients/whatsapp.py.
-        raise HTTPException(503, message)
-    return {"ok": bool(sent), "results": results, "message": message}

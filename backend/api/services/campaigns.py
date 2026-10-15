@@ -366,11 +366,17 @@ def warning(row: dict, event: dict | None) -> str | None:
 # ------------------------------------------------------------- sending
 
 
-def check_sendable(subject: str, recipients: list) -> None:
-    """The newsletter's guards (routes/admin.py), for a queued email."""
+def check_sendable(subject: str, recipients: list, whatsapp: bool = False) -> None:
+    """The newsletter's guards (routes/admin.py), for a queued email.
+
+    `whatsapp`: it also goes into WhatsApp groups — enough on its own, with
+    nobody to email.
+    """
     if not (subject or "").strip():
         raise NotSendable("Give the email a subject.")
     if not recipients:
+        if whatsapp:
+            return
         raise NotSendable("Nobody would receive this — tick an audience or add an address.")
     if len(recipients) > settings.bulk_max_recipients:
         raise NotSendable(
@@ -395,10 +401,14 @@ async def start_send(row: dict, *, expect: str, reviewed_by: int | None) -> int:
     double press — or two pods' schedulers reaching the same email — starts
     one send; the loser gets the adapter's 409.
     """
+    # Here rather than at the top: services/whatsapp builds on this module.
+    from services import whatsapp
+
+    groups = whatsapp.groups_of(row)
     recipients, _skipped = await recipients_for(row)
-    check_sendable(row.get("subject") or "", recipients)
+    check_sendable(row.get("subject") or "", recipients, whatsapp=bool(groups))
     try:
-        build = await builder_for(row)
+        build = await builder_for(row) if recipients else None
     except Unbuildable as exc:
         raise NotSendable(f"This email can't be sent: {exc}. Dismiss it.", 409) from exc
 
@@ -409,23 +419,25 @@ async def start_send(row: dict, *, expect: str, reviewed_by: int | None) -> int:
     )
     if decided is None:
         raise NotSendable("No such email.", 404)
-    # Seeded before returning rather than inside the background send, so a
-    # pod lost in the next second leaves a campaign the startup resume can
-    # finish, not one marked "sending" with nobody to send to.
-    await database.post(
-        "/campaign-recipients",
-        {"campaign_id": row["id"], "emails": [r["email"] for r in recipients]},
-    )
-    dispatch(
-        emailing.send_bulk(
-            row["id"], recipients, build,
-            kind=row.get("kind") or "newsletter", event_id=row.get("event_id"),
+    if recipients:
+        # Seeded before returning rather than inside the background send, so a
+        # pod lost in the next second leaves a campaign the startup resume can
+        # finish, not one marked "sending" with nobody to send to.
+        await database.post(
+            "/campaign-recipients",
+            {"campaign_id": row["id"], "emails": [r["email"] for r in recipients]},
         )
-    )
-    if row.get("whatsapp_groups"):
-        # Here rather than at the top: services/whatsapp builds on this module.
-        from services import whatsapp
-
+        dispatch(
+            emailing.send_bulk(
+                row["id"], recipients, build,
+                kind=row.get("kind") or "newsletter", event_id=row.get("event_id"),
+            )
+        )
+    else:
+        # WhatsApp only: nobody to mail, so the record is finished now rather
+        # than left "sending" for a resume to wonder about.
+        await database.patch(f"/email/campaigns/{row['id']}", params={"status": "sent"})
+    if groups:
         # Alongside the email, not after it: a paced send of a few hundred
         # takes minutes, and "tickets are on sale" is news at the moment of
         # sale. Each group is claimed before it is posted, so a second pod's

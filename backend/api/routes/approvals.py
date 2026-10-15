@@ -27,7 +27,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 from clients import database
 from models.auth import AuthSession
-from services import campaigns, emailing
+from services import campaigns, emailing, whatsapp
 from utils import email as mailer
 from utils.deps import require_admin, require_feature, require_site, verify_csrf
 
@@ -93,9 +93,9 @@ def _summary(row: dict, event: dict | None) -> dict:
         "note": row.get("error"),
         "event": _event_summary(event),
         "warning": campaigns.warning(row, event),
-        # The WhatsApp groups it is also posted into when it is sent.
-        "whatsapp": bool(row.get("whatsapp_groups")),
-        "whatsappGroups": row.get("whatsapp_groups") or [],
+        # The WhatsApp groups ticked among its audiences.
+        "whatsapp": bool(whatsapp.groups_of(row)),
+        "whatsappGroups": whatsapp.groups_of(row),
     }
 
 
@@ -197,12 +197,10 @@ async def edit(
     audiences: list[str] | None = Body(default=None, embed=True),
     extra: list[str] | None = Body(default=None, embed=True),
     excluded: list[str] | None = Body(default=None, embed=True),
-    whatsapp_groups: list[str] | None = Body(default=None, embed=True),
     _: AuthSession = Depends(require_site),
 ) -> dict:
-    """Change the words, or who it goes to — `whatsapp_groups` are the
-    WhatsApp groups it is also posted into when it is sent, picked from the
-    ones enabled on the Email tab. Fields left out are kept.
+    """Change the words, or who it goes to — WhatsApp groups included, as
+    `whatsapp:` audience keys ticked like any other. Fields left out are kept.
 
     Only while it waits for approval — a scheduled email is taken off the
     schedule first, so nothing approved changes without being approved again.
@@ -226,10 +224,6 @@ async def edit(
             ),
             "excluded_recipients": (
                 campaigns.clean_addresses(excluded) if excluded is not None else None
-            ),
-            "whatsapp_groups": (
-                list(dict.fromkeys(g for g in whatsapp_groups if g))
-                if whatsapp_groups is not None else None
             ),
         },
     )
@@ -315,7 +309,9 @@ async def schedule(campaign_id: int, session: AuthSession = Depends(require_site
 
     recipients, _skipped = await campaigns.recipients_for(row)
     try:
-        campaigns.check_sendable(row["subject"], recipients)
+        campaigns.check_sendable(
+            row["subject"], recipients, whatsapp=bool(whatsapp.groups_of(row))
+        )
         await campaigns.builder_for(row, mark_alerts=False)
     except campaigns.NotSendable as exc:
         raise HTTPException(exc.status, str(exc)) from exc

@@ -689,6 +689,39 @@ async function preview() {
   }
 }
 
+/** The audience list again, with its counts — after a WhatsApp group is
+ *  enabled or disabled, so "Who gets it" shows it straight away. */
+async function refreshAudiences() {
+  try {
+    audiences.value = (await api.get('/admin/email/audiences')).audiences
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+/** WhatsApp groups are audiences like any other — ticked in the same list,
+ *  sent by the same Send. These name the ones ticked among some keys. */
+function whatsappTicked(keys) {
+  return audiences.value.filter((a) => a.whatsapp && keys.includes(a.key)).map((a) => a.label)
+}
+
+/** "42 recipient(s) and EESoc 26/27 on WhatsApp", for a send confirmation. */
+function sendTargets(count, keys) {
+  const groups = whatsappTicked(keys)
+  const parts = []
+  if (count) parts.push(`${count} recipient(s)`)
+  if (groups.length) parts.push(`${groups.join(', ')} on WhatsApp`)
+  return parts.join(' and ') || 'nobody'
+}
+
+/** The right-hand column of an audience row. */
+function audCount(a) {
+  return a.whatsapp ? 'WhatsApp' : a.list ? 'list' : (a.count ?? '—')
+}
+
+const composeWhatsApp = computed(() => whatsappTicked(compose.audiences))
+const draftWhatsApp = computed(() => whatsappTicked(mailDraft.audiences))
+
 async function sendEmail() {
   const count = previewCount.value
   const what = announcing.value ? `about ${announcing.value.title}` : 'newsletter'
@@ -696,7 +729,7 @@ async function sendEmail() {
     error.value = 'Press Preview first, so you can see who this goes to.'
     return
   }
-  if (!confirm(`Send this ${what} to ${count} recipient(s)? This cannot be undone.`)) return
+  if (!confirm(`Send this ${what} to ${sendTargets(count, compose.audiences)}? This cannot be undone.`)) return
 
   busy.value = true
   error.value = ''
@@ -788,7 +821,7 @@ const queue = ref([])
 // The draft open in the review dialog, exactly as the server last described it
 // (recipients resolved, preview rendered). `mailDraft` is the editable copy.
 const reviewing = ref(null)
-const mailDraft = reactive({ subject: '', heading: '', body: '', audiences: [], extra: [], excluded: [], whatsappGroups: [] })
+const mailDraft = reactive({ subject: '', heading: '', body: '', audiences: [], extra: [], excluded: [] })
 const addAddresses = ref('')
 const recipientFilter = ref('')
 const reviewError = ref('')
@@ -812,7 +845,6 @@ function fillDraft(d) {
   mailDraft.audiences = [...d.audiences]
   mailDraft.extra = [...d.extra]
   mailDraft.excluded = [...d.excluded]
-  mailDraft.whatsappGroups = [...(d.whatsappGroups || [])]
 }
 
 async function openReview(id) {
@@ -857,7 +889,6 @@ async function saveDraft() {
       audiences: mailDraft.audiences,
       extra: mailDraft.extra,
       excluded: mailDraft.excluded,
-      whatsapp_groups: mailDraft.whatsappGroups,
     }),
   )
 }
@@ -873,12 +904,6 @@ async function draftAction(fn) {
   } finally {
     busy.value = false
   }
-}
-
-/** The WhatsApp groups it also goes into when the email goes. */
-function setDraftWhatsApp(groups) {
-  mailDraft.whatsappGroups = groups
-  draftAction(saveDraft)
 }
 
 function toggleDraftAudience(key) {
@@ -939,7 +964,7 @@ function sendNowDraft() {
   draftAction(async () => {
     if (!isScheduled.value) await saveDraft()
     const d = reviewing.value
-    if (!confirm(`Send "${d.subject}" to ${d.count} recipient(s) now? This cannot be undone.`)) return
+    if (!confirm(`Send "${d.subject}" to ${sendTargets(d.count, mailDraft.audiences)} now? This cannot be undone.`)) return
     const res = await api.post(`/admin/email/queue/${d.id}/send`)
     flash(res.message)
     closeReview()
@@ -953,7 +978,7 @@ function scheduleDraft() {
     const d = reviewing.value
     if (!confirm(
       `Approve "${d.subject}" to go out ${d.sendAtText}?\n\n` +
-      `It goes to whoever is on the list then (${d.count} now), with nobody needing to press anything.`,
+      `It goes to whoever is on the list then (${sendTargets(d.count, mailDraft.audiences)} now), with nobody needing to press anything.`,
     )) return
     const res = await api.post(`/admin/email/queue/${d.id}/schedule`)
     flash(res.message)
@@ -2704,7 +2729,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                   <span class="aud__desc">{{ a.description }}</span>
                 </span>
                 <span class="aud__count">
-                  {{ a.list ? 'list' : (a.count ?? '—') }}
+                  {{ audCount(a) }}
                 </span>
               </label>
             </div>
@@ -2731,7 +2756,8 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 {{ busy ? 'Working…' : 'Send' }}
               </Button>
               <span v-if="previewCount !== null" style="font:var(--type-small); color:var(--text-muted)">
-                {{ previewCount }} recipient(s) after removing duplicates and unsubscribes
+                {{ previewCount }} recipient(s) after removing duplicates and unsubscribes<template v-if="composeWhatsApp.length">,
+                and {{ composeWhatsApp.join(', ') }} on WhatsApp</template>
               </span>
             </div>
             <p v-if="previewSample.length" style="margin:var(--space-3) 0 0; font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">
@@ -2751,9 +2777,13 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
 
             <Card variant="outline">
               <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">WhatsApp</h2>
-              <WhatsAppLink />
+              <WhatsAppLink @changed="refreshAudiences" />
               <TraceRule style="margin:var(--space-5) 0" />
-              <WhatsAppPost :heading="compose.heading || compose.subject" :body="compose.body" />
+              <WhatsAppPost
+                :heading="compose.heading || compose.subject"
+                :body="compose.body"
+                :open="composeWhatsApp.length > 0"
+              />
             </Card>
 
             <Card variant="outline">
@@ -3173,7 +3203,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               <strong class="aud__label">{{ a.label }}</strong>
               <span class="aud__desc">{{ a.description }}</span>
             </span>
-            <span class="aud__count">{{ a.list ? 'list' : (a.count ?? '—') }}</span>
+            <span class="aud__count">{{ audCount(a) }}</span>
           </label>
         </div>
 
@@ -3185,12 +3215,13 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           :heading="compose.heading || compose.subject"
           :body="compose.body"
           :event-id="announcing.id"
+          :open="composeWhatsApp.length > 0"
         />
       </div>
 
       <template #footer>
         <span v-if="previewCount !== null" style="font:var(--type-small); color:var(--text-muted); margin-right:auto">
-          {{ previewCount }} recipient(s)
+          {{ previewCount }} recipient(s)<template v-if="composeWhatsApp.length"> · {{ composeWhatsApp.length }} WhatsApp group(s)</template>
         </span>
         <Button variant="ghost" @click="closeCompose">Cancel</Button>
         <Button variant="secondary" :disabled="busy || !compose.audiences.length" @click="preview">
@@ -3256,15 +3287,14 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           :body="mailDraft.body"
           :event-id="reviewing.event?.id ?? null"
           :kind="reviewing.kind"
-          :also-groups="mailDraft.whatsappGroups"
-          :locked="isScheduled || busy"
+          :open="draftWhatsApp.length > 0"
           :posted="reviewing.whatsappPosts || []"
-          @update:also-groups="setDraftWhatsApp"
         />
 
         <TraceRule />
         <span style="font:var(--type-label); color:var(--text-muted)">
-          Who gets it — {{ reviewing.count }} recipient(s), each BCC'd
+          Who gets it — {{ reviewing.count }} recipient(s), each BCC'd<template v-if="draftWhatsApp.length">,
+          and {{ draftWhatsApp.join(', ') }} on WhatsApp</template>
         </span>
         <div v-for="[group, items] in draftGroups" :key="group">
           <span style="font:var(--type-2xs); color:var(--text-faint)">{{ group }}</span>
@@ -3279,7 +3309,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               <strong class="aud__label">{{ a.label }}</strong>
               <span class="aud__desc">{{ a.description }}</span>
             </span>
-            <span class="aud__count">{{ a.list ? 'list' : (a.count ?? '—') }}</span>
+            <span class="aud__count">{{ audCount(a) }}</span>
           </label>
         </div>
 
@@ -3333,17 +3363,17 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           </Button>
           <template v-if="isScheduled">
             <Button variant="secondary" :disabled="busy" @click="unscheduleDraft">Take off schedule</Button>
-            <Button variant="secondary" :disabled="busy || !reviewing?.count" @click="sendNowDraft">Send now</Button>
+            <Button variant="secondary" :disabled="busy || !(reviewing?.count || draftWhatsApp.length)" @click="sendNowDraft">Send now</Button>
           </template>
           <template v-else-if="canSchedule">
-            <Button variant="secondary" :disabled="busy || !reviewing?.count || !mailDraft.subject.trim()" @click="sendNowDraft">
+            <Button variant="secondary" :disabled="busy || !(reviewing?.count || draftWhatsApp.length) || !mailDraft.subject.trim()" @click="sendNowDraft">
               Send now
             </Button>
-            <Button :disabled="busy || !reviewing?.count || !mailDraft.subject.trim()" @click="scheduleDraft">
+            <Button :disabled="busy || !(reviewing?.count || draftWhatsApp.length) || !mailDraft.subject.trim()" @click="scheduleDraft">
               {{ busy ? 'Working…' : `Approve for ${reviewing.sendAtText}` }}
             </Button>
           </template>
-          <Button v-else :disabled="busy || !reviewing?.count || !mailDraft.subject.trim()" @click="sendNowDraft">
+          <Button v-else :disabled="busy || !(reviewing?.count || draftWhatsApp.length) || !mailDraft.subject.trim()" @click="sendNowDraft">
             {{ busy ? 'Working…' : `Send to ${reviewing?.count ?? 0}` }}
           </Button>
         </div>

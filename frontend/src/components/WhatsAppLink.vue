@@ -5,7 +5,8 @@
 // is (services/whatsapp.py and backend/whatsapp say why, and why carefully).
 // Once linked, the groups it may post into are enabled here, laid out as the
 // phone shows them: each community with its announcements channel and its
-// groups, each a place of its own. A post then picks among the enabled groups.
+// groups, each a place of its own. An enabled group is then an audience like
+// any other under "Who gets it", sent by the same Send.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import api from '@/api'
@@ -13,6 +14,10 @@ import Badge from '@/components/ds/Badge.vue'
 import Button from '@/components/ds/Button.vue'
 import Input from '@/components/ds/Input.vue'
 import { groupLabel, loadWhatsApp, problem, whatsapp } from '@/stores/whatsapp'
+
+// "changed": the enabled groups changed, so the audience lists holding them
+// should be fetched again.
+const emit = defineEmits(['changed'])
 
 const busy = ref(false)
 const error = ref('')
@@ -132,7 +137,10 @@ function toggle(g) {
   ) {
     return
   }
-  act(() => api.put('/admin/whatsapp/groups', { jid: g.jid, chosen: !g.chosen }))
+  act(async () => {
+    await api.put('/admin/whatsapp/groups', { jid: g.jid, chosen: !g.chosen })
+    emit('changed')
+  })
 }
 </script>
 
@@ -218,8 +226,8 @@ function toggle(g) {
     <template v-else-if="state === 'connected' && data.groups">
       <span class="wl__label">Groups the site may post into</span>
       <p class="wl__help">
-        Enable the ones announcements can go to. Each post then picks which of
-        them it goes into — nothing is picked for it.
+        Enabled groups appear under “Who gets it” beside the email audiences —
+        tick one there and Send posts into it. None is ticked for you.
       </p>
       <p v-if="data.allowlist" class="wl__help">
         This server also only posts into groups on WHATSAPP_GROUP_ALLOWLIST.

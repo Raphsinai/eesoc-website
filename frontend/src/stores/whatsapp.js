@@ -1,8 +1,8 @@
 // The WhatsApp link, as the admin screens see it.
 //
-// Shared because two kinds of component need it: the card that links the
-// number and chooses groups (WhatsAppLink), and every "WhatsApp version" block
-// (WhatsAppPost), which offers "Post to …" only when there is somewhere to post.
+// The card that links the number and enables groups (WhatsAppLink) reads and
+// refreshes it; the enabled groups themselves reach the audience lists through
+// GET /admin/email/audiences, like every other audience.
 //
 // Same shape as the session store — a plain reactive module, no store library.
 
@@ -57,18 +57,5 @@ export function groupLabel(g) {
   if (g.communityAnnouncements) return `Announcements — ${g.parent?.name || g.name}`
   return g.name || g.jid
 }
-
-/** The groups enabled on the card that a post may be put into here, each
- *  with its label and size. A post picks among these; none is picked for it. */
-export const targets = computed(() => {
-  if (!connected.value) return []
-  const live = new Map((whatsapp.data?.groups ?? []).map((g) => [g.jid, g]))
-  return (whatsapp.data?.chosen ?? [])
-    .filter((g) => g.allowed)
-    .map((g) => {
-      const now = live.get(g.jid)
-      return { jid: g.jid, label: now ? groupLabel(now) : g.name || g.jid, size: now?.size ?? null }
-    })
-})
 
 export default whatsapp

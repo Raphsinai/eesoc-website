@@ -2065,6 +2065,38 @@ def _check_sendable(subject: str, audiences: list[str], recipients: list) -> Non
         )
 
 
+async def _whatsapp_targets(audiences: list[str]) -> list[dict]:
+    """The WhatsApp groups ticked among `audiences`, each still enabled on the
+    WhatsApp card — or a 400 saying which is not, rather than a send that
+    quietly reaches fewer places than the screen showed."""
+    jids = emailing.whatsapp_groups_in(audiences)
+    if not jids:
+        return []
+    groups = await whatsapp.pick(jids)
+    if len(groups) != len(jids):
+        raise HTTPException(
+            400,
+            "A WhatsApp group ticked here isn't enabled any more. Untick it, or "
+            "enable it again on the WhatsApp card.",
+        )
+    return groups
+
+
+def _sending_message(recipients: int, groups: list[dict], about: str = "") -> str:
+    parts = []
+    if recipients:
+        parts.append(
+            f"Sending to {recipients} recipient(s){about}. This takes about "
+            f"{_estimate_minutes(recipients)}; the history below updates as it goes."
+        )
+    if groups:
+        parts.append(
+            f"Posting into {', '.join(g.get('name') or g['jid'] for g in groups)} on "
+            "WhatsApp — the WhatsApp card lists how each went."
+        )
+    return " ".join(parts)
+
+
 @router.post("/email/send", dependencies=[Depends(verify_csrf)])
 async def send_newsletter(
     subject: str = Body(embed=True),
@@ -2073,47 +2105,61 @@ async def send_newsletter(
     audiences: list[str] = Body(default=[], embed=True),
     session: AuthSession = Depends(require_site),
 ) -> dict:
-    """Send a newsletter.
+    """Send a newsletter — by email, into WhatsApp groups, or both: a
+    WhatsApp group is ticked in the same list as everyone else.
 
     Returns as soon as the campaign is recorded rather than when the last
     message goes out: pacing means a few hundred recipients takes minutes, and
     an admin screen that hangs for that long gets reloaded — which is how
     somebody ends up sending twice.
     """
-    recipients = await emailing.resolve(audiences)
-    _check_sendable(subject, audiences, recipients)
+    mail_audiences = emailing.email_keys(audiences)
+    if not subject.strip():
+        raise HTTPException(400, "Give it a subject.")
+    if not mail_audiences and not emailing.whatsapp_groups_in(audiences):
+        raise HTTPException(400, "Choose who it goes to.")
+    groups = await _whatsapp_targets(audiences)
+    recipients = await emailing.resolve(mail_audiences) if mail_audiences else []
+    if mail_audiences:
+        _check_sendable(subject, mail_audiences, recipients)
 
-    html, text = emailing.render_body(body)
-    campaign = await database.post(
-        "/email/campaigns",
-        {
-            "subject": subject.strip(),
-            "heading": (heading or subject).strip(),
-            "body": body,
-            "audiences": audiences,
-            "created_by": session.user.id,
-        },
-    )
-
-    async def build(batch: list[dict], unsubscribe: str) -> list[str]:
-        return await mailer.send_campaign(
-            [r["email"] for r in batch],
-            subject.strip(),
-            (heading or subject).strip(),
-            text,
-            html,
-            unsubscribe,
+    campaign = None
+    if mail_audiences:
+        html, text = emailing.render_body(body)
+        campaign = await database.post(
+            "/email/campaigns",
+            {
+                "subject": subject.strip(),
+                "heading": (heading or subject).strip(),
+                "body": body,
+                "audiences": audiences,
+                "created_by": session.user.id,
+            },
         )
 
-    _dispatch(emailing.send_bulk(campaign["id"], recipients, build))
+        async def build(batch: list[dict], unsubscribe: str) -> list[str]:
+            return await mailer.send_campaign(
+                [r["email"] for r in batch],
+                subject.strip(),
+                (heading or subject).strip(),
+                text,
+                html,
+                unsubscribe,
+            )
+
+        _dispatch(emailing.send_bulk(campaign["id"], recipients, build))
+
+    if groups:
+        post = await whatsapp.message((heading or subject).strip(), body)
+        _dispatch(whatsapp.post(
+            post, groups, campaign_id=campaign and campaign["id"], by=session.user.id,
+        ))
+
     return {
         "ok": True,
-        "campaignId": campaign["id"],
+        "campaignId": campaign and campaign["id"],
         "recipients": len(recipients),
-        "message": (
-            f"Sending to {len(recipients)} recipient(s). This takes about "
-            f"{_estimate_minutes(len(recipients))}; the history below updates as it goes."
-        ),
+        "message": _sending_message(len(recipients), groups),
     }
 
 
@@ -2136,8 +2182,27 @@ async def announce_event(
     if event is None:
         raise HTTPException(404, "No such event")
 
-    recipients = await emailing.resolve(audiences)
-    _check_sendable(subject, audiences, recipients)
+    # Email audiences and WhatsApp groups, ticked in the same list.
+    mail_audiences = emailing.email_keys(audiences)
+    if not subject.strip():
+        raise HTTPException(400, "Give it a subject.")
+    if not mail_audiences and not emailing.whatsapp_groups_in(audiences):
+        raise HTTPException(400, "Choose who it goes to.")
+    groups = await _whatsapp_targets(audiences)
+    recipients = await emailing.resolve(mail_audiences) if mail_audiences else []
+    if mail_audiences:
+        _check_sendable(subject, mail_audiences, recipients)
+
+    if groups:
+        post = await whatsapp.message((heading or subject).strip(), body, event)
+    if not mail_audiences:
+        _dispatch(whatsapp.post(post, groups, by=session.user.id))
+        return {
+            "ok": True,
+            "campaignId": None,
+            "recipients": 0,
+            "message": _sending_message(0, groups),
+        }
 
     html, text = emailing.render_body(body)
     starts = _parse_dt(event.get("starts_at"))
@@ -2190,14 +2255,13 @@ async def announce_event(
             kind="event_announcement", event_id=event_id,
         )
     )
+    if groups:
+        _dispatch(whatsapp.post(post, groups, campaign_id=campaign["id"], by=session.user.id))
     return {
         "ok": True,
         "campaignId": campaign["id"],
         "recipients": len(recipients),
-        "message": (
-            f"Sending to {len(recipients)} recipient(s) about {event['title']}. "
-            f"This takes about {_estimate_minutes(len(recipients))}."
-        ),
+        "message": _sending_message(len(recipients), groups, f" about {event['title']}"),
     }
 
 

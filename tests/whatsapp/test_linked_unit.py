@@ -10,9 +10,11 @@ pays for in its own groups:
      so a second scheduler — or a retry — never posts it twice;
   3. a second press of "Post" with the same words is not a second post;
   4. a failure is recorded and does not stop the next group;
-  5. an email posts only into the groups picked for it — still enabled —
-     with its event's details; nothing is picked by default;
-  6. only a group the number can post in may be chosen.
+  5. a WhatsApp group is an audience like any other: ticked in the same list,
+     skipped by email, posted into by the same Send — a newsletter, an event
+     announcement or a queued email, WhatsApp alone included;
+  6. only a group the number can post in may be enabled, under a name that
+     says what it is.
 """
 
 import asyncio
@@ -202,18 +204,55 @@ def test_a_refused_post_is_recorded_and_the_next_group_still_goes(db, wa):
     assert run(whatsapp.post("hello", [ANNOUNCE]))[0]["status"] == "sent"
 
 
-# --------------------------------------------------- 5. with an email
+# ------------------------------------------- 5. a recipient like any other
 
 
 ROW = {
     "id": 9, "kind": "on_sale", "event_id": 7, "subject": "Tickets for Robot Wars are on sale",
-    "heading": "", "body": "", "whatsapp_groups": [YEAR2["jid"]], "reviewed_by": 3,
+    "heading": "", "body": "", "reviewed_by": 3,
+    # A WhatsApp group is ticked in the same list as the email audiences.
+    "audiences": ["topic:tickets_on_sale", f"whatsapp:{YEAR2['jid']}"],
 }
 
 
-def test_an_email_goes_only_into_the_groups_picked_for_it(db, wa):
-    # Nothing picked: nothing posted, however many groups are enabled.
-    assert run(whatsapp.post_campaign({**ROW, "whatsapp_groups": []})) == []
+def test_whatsapp_groups_are_audience_keys_that_email_skips(monkeypatch):
+    emailing = importlib.import_module("services.emailing")
+    keys = ["members", "whatsapp:111-1@g.us", "test", "whatsapp:111-1@g.us", "whatsapp:222-2@g.us"]
+    assert emailing.whatsapp_groups_in(keys) == ["111-1@g.us", "222-2@g.us"]
+    assert emailing.email_keys(keys) == ["members", "test"]
+
+    async def must_not_be_asked(*a, **k):
+        raise AssertionError("a WhatsApp group was resolved as email")
+
+    monkeypatch.setattr(database, "get", must_not_be_asked)
+    assert run(emailing.resolve(["whatsapp:111-1@g.us"])) == []
+
+
+def test_enabled_groups_are_offered_beside_the_email_audiences(monkeypatch, db):
+    emailing = importlib.import_module("services.emailing")
+
+    async def no_people(keys):
+        return []
+
+    async def no_topics():
+        return []
+
+    async def no_tests():
+        return []
+
+    monkeypatch.setattr(emailing, "resolve", no_people)
+    monkeypatch.setattr(emailing, "topics", no_topics)
+    monkeypatch.setattr(emailing, "test_recipients", no_tests)
+    offered = [a for a in run(emailing.audiences()) if a["group"] == "WhatsApp"]
+    assert [(a["key"], a["label"], a["whatsapp"]) for a in offered] == [
+        ("whatsapp:111-1@g.us", "EESoc Announcements", True),
+        ("whatsapp:222-2@g.us", "EEE Year 2", True),
+    ]
+
+
+def test_an_email_posts_only_into_the_groups_ticked_among_its_audiences(db, wa):
+    # No WhatsApp group ticked: nothing posted, however many are enabled.
+    assert run(whatsapp.post_campaign({**ROW, "audiences": ["topic:tickets_on_sale"]})) == []
     assert wa.sent == []
 
     results = run(whatsapp.post_campaign(ROW))
@@ -224,24 +263,24 @@ def test_an_email_goes_only_into_the_groups_picked_for_it(db, wa):
     assert all(p["campaign_id"] == 9 and p["created_by"] == 3 for p in db.posts)
 
 
-def test_a_group_picked_for_an_email_but_disabled_since_is_left_out(db, wa):
-    db.groups = [dict(ANNOUNCE)]  # Year 2 disabled after the email picked it
-    row = {**ROW, "id": 10, "whatsapp_groups": [YEAR2["jid"], ANNOUNCE["jid"]]}
+def test_a_group_ticked_but_disabled_since_is_left_out(db, wa):
+    db.groups = [dict(ANNOUNCE)]  # Year 2 disabled after the email ticked it
+    row = {**ROW, "id": 10, "audiences": [f"whatsapp:{YEAR2['jid']}", f"whatsapp:{ANNOUNCE['jid']}"]}
     results = run(whatsapp.post_campaign(row))
     assert [r["name"] for r in results] == ["EESoc Announcements"]
     assert [s[0] for s in wa.sent] == [ANNOUNCE["jid"]]
 
 
-def test_an_email_with_no_groups_chosen_posts_nothing_and_does_not_raise(db, wa):
+def test_an_email_whose_groups_are_all_disabled_posts_nothing_and_does_not_raise(db, wa):
     db.groups = []
     assert run(whatsapp.post_campaign(ROW)) == []
 
 
-def test_starting_a_send_dispatches_the_whatsapp_post_only_when_ticked(monkeypatch):
-    started = []
+def _queue_fakes(monkeypatch, recipients):
+    started, patched = [], []
 
     async def fake_recipients(row):
-        return [{"email": "a@example.com"}], []
+        return list(recipients), []
 
     async def fake_builder(row, **kwargs):
         return None
@@ -249,25 +288,46 @@ def test_starting_a_send_dispatches_the_whatsapp_post_only_when_ticked(monkeypat
     async def fake_post(path, json=None, params=None):
         return {**ROW, "status": "sending"}
 
+    async def fake_patch(path, json=None, params=None):
+        patched.append((path, params))
+        return {}
+
     monkeypatch.setattr(campaigns, "recipients_for", fake_recipients)
     monkeypatch.setattr(campaigns, "builder_for", fake_builder)
-    monkeypatch.setattr(campaigns, "check_sendable", lambda *a: None)
-    monkeypatch.setattr(database, "post", fake_post)
     monkeypatch.setattr(campaigns.emailing, "send_bulk", lambda *a, **k: ("email", a[0]))
+    monkeypatch.setattr(campaigns.mailer, "configured", lambda *a, **k: True)
+    monkeypatch.setattr(database, "post", fake_post)
+    monkeypatch.setattr(database, "patch", fake_patch)
     monkeypatch.setattr(whatsapp, "post_campaign", lambda row: ("whatsapp", row["id"], row["reviewed_by"]))
     monkeypatch.setattr(campaigns, "dispatch", started.append)
+    return started, patched
 
-    run(campaigns.start_send({**ROW, "whatsapp_groups": []}, expect="scheduled", reviewed_by=3))
+
+def test_a_queued_email_posts_into_its_groups_as_it_sends(monkeypatch):
+    started, _ = _queue_fakes(monkeypatch, [{"email": "a@example.com"}])
+    run(campaigns.start_send({**ROW, "audiences": ["topic:tickets_on_sale"]}, expect="scheduled", reviewed_by=3))
     assert started == [("email", 9)]
     started.clear()
     run(campaigns.start_send(ROW, expect="scheduled", reviewed_by=4))
     assert started == [("email", 9), ("whatsapp", 9, 4)]
 
 
+def test_a_queued_email_for_whatsapp_only_posts_and_is_finished(monkeypatch):
+    started, patched = _queue_fakes(monkeypatch, [])
+    run(campaigns.start_send({**ROW, "audiences": [f"whatsapp:{YEAR2['jid']}"]}, expect="scheduled", reviewed_by=4))
+    # Nobody to mail: no bulk send, the record finished, the group posted.
+    assert started == [("whatsapp", 9, 4)]
+    assert patched == [("/email/campaigns/9", {"status": "sent"})]
+
+    # Neither email nor WhatsApp: refused, as ever.
+    with pytest.raises(campaigns.NotSendable):
+        run(campaigns.start_send({**ROW, "audiences": []}, expect="scheduled", reviewed_by=4))
+
+
 # --------------------------------------------------------- 6. the routes
 
 
-def test_only_a_group_the_number_can_post_in_may_be_chosen(db, wa):
+def test_only_a_group_the_number_can_post_in_may_be_enabled(db, wa):
     routes = importlib.import_module("routes.whatsapp")
     session = type("S", (), {"user": type("U", (), {"id": 3})()})()
     with pytest.raises(HTTPException) as cannot:
@@ -284,25 +344,45 @@ def test_only_a_group_the_number_can_post_in_may_be_chosen(db, wa):
     assert db.groups == []
 
 
-def test_posting_now_needs_words_and_groups_picked_from_the_enabled(db, wa):
+def test_an_announcements_channel_is_enabled_under_a_name_that_says_so(db, wa):
     routes = importlib.import_module("routes.whatsapp")
     session = type("S", (), {"user": type("U", (), {"id": 3})()})()
+    wa.groups_list.append({
+        "jid": "444-4@g.us", "name": "EESoc", "canPost": True,
+        "communityAnnouncements": True, "parent": {"jid": "555-5@g.us", "name": "EESoc"},
+    })
+    run(routes.choose_group(jid="444-4@g.us", chosen=True, session=session))
+    assert db.groups[-1]["name"] == "Announcements — EESoc"
 
-    def post_now(**kw):
-        args = {"heading": "AGM", "body": "Tonight, 6pm.", "event_id": None, "kind": None,
-                "groups": [YEAR2["jid"]], "session": session}
-        return run(routes.post_now(**{**args, **kw}))
 
-    for bad in ({"heading": "", "body": ""}, {"groups": []}, {"groups": ["999-9@g.us"]}):
-        with pytest.raises(HTTPException) as refused:
-            post_now(**bad)
-        assert refused.value.status_code == 400, bad
-    assert wa.sent == []
+def test_a_newsletter_send_mails_its_audiences_and_posts_into_its_groups(monkeypatch, db, wa):
+    admin = importlib.import_module("routes.admin")
+    session = type("S", (), {"user": type("U", (), {"id": 3})()})()
+    dispatched = []
+    monkeypatch.setattr(admin, "_dispatch", dispatched.append)
 
-    res = post_now()
-    assert res["ok"] and res["message"] == "Posted to EEE Year 2."
-    # Only the group picked — not every enabled one.
-    assert wa.sent == [(YEAR2["jid"], "*AGM*\n\nTonight, 6pm.", "post:1")]
+    # WhatsApp only: nothing to mail, so no mailbox needed and no campaign.
+    res = run(admin.send_newsletter(
+        subject="AGM tonight", body="6pm.", heading=None,
+        audiences=[f"whatsapp:{YEAR2['jid']}"], session=session,
+    ))
+    assert res["recipients"] == 0 and res["campaignId"] is None
+    assert "Posting into EEE Year 2" in res["message"]
+    assert len(dispatched) == 1
+    run(dispatched.pop())
+    assert wa.sent == [(YEAR2["jid"], "*AGM tonight*\n\n6pm.", "post:1")]
+
+    # A group that isn't enabled is refused, not quietly skipped.
+    with pytest.raises(HTTPException) as refused:
+        run(admin.send_newsletter(
+            subject="AGM", body="x", heading=None,
+            audiences=["whatsapp:999-9@g.us"], session=session,
+        ))
+    assert refused.value.status_code == 400
+
+    # Nothing ticked at all.
+    with pytest.raises(HTTPException):
+        run(admin.send_newsletter(subject="AGM", body="x", heading=None, audiences=[], session=session))
 
 
 # ------------------------------------------------- 7. what the browser gets

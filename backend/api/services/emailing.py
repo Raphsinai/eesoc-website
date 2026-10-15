@@ -162,6 +162,29 @@ DEPARTMENT_BY_KEY = {d["key"]: d for d in DEPARTMENT_LISTS}
 # -------------------------------------------------------------- audiences
 
 
+# A WhatsApp group enabled on the Email tab's WhatsApp card is an audience like
+# any other: ticked in the same list, sent by the same Send. Its key is
+# "whatsapp:<group id>". It is not an email address, so `resolve` skips it;
+# the send paths post into it (services/whatsapp.py).
+WHATSAPP_PREFIX = "whatsapp:"
+
+
+def whatsapp_groups_in(keys: list[str] | None) -> list[str]:
+    """The WhatsApp group ids among audience keys, in order, once each."""
+    out: list[str] = []
+    for key in keys or []:
+        if key.startswith(WHATSAPP_PREFIX):
+            jid = key[len(WHATSAPP_PREFIX):]
+            if jid and jid not in out:
+                out.append(jid)
+    return out
+
+
+def email_keys(keys: list[str] | None) -> list[str]:
+    """The audience keys that are email, not WhatsApp."""
+    return [k for k in keys or [] if not k.startswith(WHATSAPP_PREFIX)]
+
+
 async def audiences() -> list[dict]:
     """Everything an admin can tick, with a live count against each.
 
@@ -216,6 +239,18 @@ async def audiences() -> list[dict]:
             item["count"] = None
         groups.append(item)
 
+    # Last, as their own group: a different kind of place, like the
+    # department lists. Only the ones enabled on the WhatsApp card.
+    for group in await database.get("/whatsapp/groups") or []:
+        groups.append({
+            "key": f"{WHATSAPP_PREFIX}{group['jid']}",
+            "label": group.get("name") or group["jid"],
+            "group": "WhatsApp",
+            "description": "Posted into the group from the society's number.",
+            "count": None,
+            "whatsapp": True,
+        })
+
     return groups
 
 
@@ -240,6 +275,9 @@ async def resolve(keys: list[str]) -> list[dict]:
 
 
 async def _resolve_one(key: str) -> list[dict]:
+    if key.startswith(WHATSAPP_PREFIX):
+        return []  # a WhatsApp group, posted into rather than mailed
+
     if key in DEPARTMENT_BY_KEY:
         entry = DEPARTMENT_BY_KEY[key]
         # Not run through the opt-out filter: these are the department's lists,

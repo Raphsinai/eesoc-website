@@ -35,7 +35,7 @@ from fastapi import HTTPException
 from clients import database
 from clients import whatsapp as link
 from config import settings
-from services import campaigns, purchase
+from services import campaigns, emailing, purchase
 
 # The email body's own patterns, so a construct is recognised in both or in
 # neither: what the committee types once must mean the same in each place.
@@ -299,15 +299,26 @@ async def post(
     return results
 
 
+def groups_of(row: dict) -> list[str]:
+    """The WhatsApp groups an email goes to: the `whatsapp:` keys among its
+    audiences, ticked in the same list as everyone else it goes to.
+
+    (079's `whatsapp_groups` column held them for an hour before that, on
+    staging only; the snapshot refresh after the next deploy emptied it, and
+    nothing reads it now.)"""
+    return emailing.whatsapp_groups_in(row.get("audiences"))
+
+
 async def post_campaign(row: dict) -> list[dict]:
-    """Post an email's WhatsApp version into the groups picked for it, if
+    """Post an email's WhatsApp version into its WhatsApp groups, if it has
     any. Called as the email starts sending. Never raises: the email has gone
     whatever WhatsApp does, and what happened is on the posts list for the
     committee to see."""
-    if not row.get("whatsapp_groups"):
+    jids = groups_of(row)
+    if not jids:
         return []
     try:
-        groups = await pick(row["whatsapp_groups"])
+        groups = await pick(jids)
         if not groups:
             log.warning("Email %s was to go on WhatsApp, but none of its groups is enabled", row["id"])
             return []

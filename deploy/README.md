@@ -509,7 +509,8 @@ not it runs it.
 To link: Email tab → WhatsApp card → **Link a number**, then on the society's
 phone, WhatsApp Business → Settings → Linked devices → Link a device, and scan
 the QR code (or **Link with a code instead**, and type the code shown). Then
-enable the groups announcements may go to; each post picks among them. The session lives on the volume, so
+enable the groups announcements may go to; they then appear under **Who gets
+it** beside the email audiences. The session lives on the volume, so
 deploys do not need a re-link; unlinking from the phone, or **Unlink** on the
 card, ends it.
 

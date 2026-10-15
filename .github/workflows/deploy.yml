@@ -420,6 +420,10 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The whole history: the pin step asks whether staging is already on
+          # a newer commit than this one.
+          fetch-depth: 0
 
       - name: Install kustomize
         run: |
@@ -435,31 +439,38 @@ jobs:
       # The staging overlay, never the base: the base is shared, so a tag there
       # would reach production on the same sync and there would be nothing left
       # to promote.
-      - name: Pin the new image tags in staging
-        working-directory: deploy/k8s/overlays/staging
-        run: |
-          for svc in api database union frontend garage-init whatsapp; do
-            kustomize edit set image \
-              "ghcr.io/OWNER/eesoc-${svc}=${{ env.REGISTRY }}/${{ env.OWNER_LC }}/eesoc-${svc}:${{ github.sha }}"
-          done
-
-      - name: Commit for ArgoCD to pick up
+      # Two pushes close together race here. The other run's pin lands first,
+      # and rebasing this pin onto it conflicts on the same lines — which left
+      # staging a commit behind on 2026-10-12 and 2026-10-15. So every attempt
+      # starts again from main as it now is and makes the edit afresh. And it
+      # never winds staging back: if main is already pinned to a commit newer
+      # than this one, that one stays.
+      - name: Pin the new image tags in staging, and commit for ArgoCD
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add deploy/k8s/overlays/staging/kustomization.yaml
-          # [skip ci] stops this commit from triggering the workflow again.
-          git diff --staged --quiet || \
-            git commit -m "staging: ${{ github.sha }} [skip ci]"
-          # The other workflow (staging pin / promote) can push to main in the
-          # same minute, which rejected this push and left staging unpinned
-          # twice on 2026-10-06. Each edits a different overlay file, so a
-          # rebase onto the winner never conflicts.
+          overlay=deploy/k8s/overlays/staging
           for attempt in 1 2 3 4 5; do
-            git push && exit 0
-            echo "push rejected (attempt $attempt); rebasing onto origin/main"
+            git fetch -q origin main
+            git reset -q --hard origin/main
+            pinned=$(grep -m1 'newTag:' "$overlay/kustomization.yaml" | awk '{print $2}')
+            if [ "$pinned" != "$GITHUB_SHA" ] && git merge-base --is-ancestor "$GITHUB_SHA" "$pinned" 2>/dev/null; then
+              echo "staging is already on $pinned, which is newer than $GITHUB_SHA; leaving it"
+              exit 0
+            fi
+            (
+              cd "$overlay"
+              for svc in api database union frontend garage-init whatsapp; do
+                kustomize edit set image \
+                  "ghcr.io/OWNER/eesoc-${svc}=${{ env.REGISTRY }}/${{ env.OWNER_LC }}/eesoc-${svc}:${{ github.sha }}"
+              done
+            )
+            git add "$overlay/kustomization.yaml"
+            git diff --staged --quiet && exit 0
+            git commit -q -m "staging: ${{ github.sha }} [skip ci]"
+            git push -q origin HEAD:main && exit 0
+            echo "push rejected (attempt $attempt); starting again from main"
             sleep $((attempt * 3))
-            git pull --rebase origin main
           done
           exit 1
 

@@ -49,6 +49,18 @@ export function bare(jid) {
   return `${user.split(':')[0]}@${server}`
 }
 
+/** Whether saved credentials are a link that was finished. Baileys sets
+ *  `registered` only when a pairing code is confirmed; a link made with the QR
+ *  code never sets it, but has the account (`me`) and no pairing code waiting.
+ *  A pairing code asked for and never confirmed has `me` too (Baileys fills it
+ *  in on asking) — and the code, which is what tells it apart. Checking
+ *  `registered` alone once wiped every QR-linked session at each restart. */
+export function finishedLink(creds) {
+  if (!creds) return false
+  if (creds.registered) return true
+  return Boolean(creds.me?.id) && !creds.pairingCode
+}
+
 export class Link {
   /**
    * @param {object} o
@@ -119,7 +131,7 @@ export class Link {
   async start() {
     try {
       const { state } = await this.auth(this.dir)
-      if (state.creds?.registered) {
+      if (finishedLink(state.creds)) {
         this._set('connecting')
         await this._connect()
       } else {

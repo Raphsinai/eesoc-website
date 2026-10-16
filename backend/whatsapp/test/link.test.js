@@ -9,7 +9,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, it, mock } from 'node:test'
 
-import { Link, LinkError, bare } from '../src/link.js'
+import { Link, LinkError, bare, finishedLink } from '../src/link.js'
 import { createServer } from '../src/server.js'
 
 const quiet = { info() {}, warn() {}, error() {} }
@@ -278,6 +278,29 @@ describe('staying linked', () => {
     await assert.rejects(link.start())
     assert.equal(link.status().state, 'unlinked')
     assert.match(link.status().error, /can't be opened: EACCES/)
+  })
+
+  it('knows a finished link from an unfinished one, however it was made', () => {
+    const me = { id: '447700900123:5@s.whatsapp.net' }
+    assert.equal(finishedLink({ me }), true) // linked by QR code: never "registered"
+    assert.equal(finishedLink({ me, registered: true, pairingCode: 'ABCD1234' }), true) // by code, confirmed
+    assert.equal(finishedLink({ me, pairingCode: 'ABCD1234' }), false) // code asked for, never confirmed
+    assert.equal(finishedLink({ registered: false }), false)
+    assert.equal(finishedLink(undefined), false)
+  })
+
+  it('keeps a QR-linked session through a restart', async () => {
+    await fs.writeFile(path.join(dir, 'creds.json'), '{}')
+    const link = makeLink({
+      auth: async () => ({
+        state: { creds: { me: { id: '447700900123:5@s.whatsapp.net' }, registered: false } },
+        saveCreds: async () => {},
+      }),
+    })
+    await link.start()
+    assert.equal(link.status().state, 'connecting')
+    assert.equal(sockets.length, 1)
+    assert.deepEqual(await fs.readdir(dir), ['creds.json'])
   })
 
   it('signs out and forgets the session on unlink', async () => {

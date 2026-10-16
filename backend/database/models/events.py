@@ -19,6 +19,11 @@ class TicketType(BaseModel):
     # Overrides the event-level link for this type, for the common case where
     # each ticket type is a separate Union product.
     purchase_url: str | None = None
+    # This type's own sale window (080), inside the event's: early bird until
+    # Friday, general from Friday. None = opens with the event / sells until
+    # the event's booking closes.
+    sales_open_at: datetime | None = None
+    sales_close_at: datetime | None = None
 
 
 class TicketTypeAvailability(TicketType):

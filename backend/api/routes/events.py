@@ -41,6 +41,7 @@ from utils.present import (
     format_time_range,
     london,
     sales_state,
+    ticket_sale_state,
 )
 from utils.year import academic_year
 
@@ -81,6 +82,7 @@ REASONS = {
     "reservations_closed": "Booking for this event has closed.",
     "sold_out": "This event is full.",
     "type_sold_out": "That ticket type has sold out.",
+    "type_not_on_sale": "That ticket type is not on sale right now.",
     "over_user_limit": (
         "You've already reserved this ticket. Check your email for the "
         "sign-in code to see or change your booking."
@@ -104,10 +106,15 @@ def _ticket_view(tt: dict, is_member: bool) -> dict:
         "requiresPurchase": bool(tt.get("requires_purchase", True)),
         # Precomputed so the dropdown can disable an option without duplicating
         # the eligibility rule in the client.
+        # This type's own sale window (080): "open", "scheduled" (not yet —
+        # general admission before Friday) or "ended" (early bird after it).
+        "salesState": ticket_sale_state(tt),
+        "salesOpenAt": tt.get("sales_open_at"),
+        "salesCloseAt": tt.get("sales_close_at"),
         # Selectable even when members-only and we cannot see a membership:
         # eligibility is confirmed later, so the option stays open and the UI
         # shows a warning instead of a locked dropdown.
-        "selectable": not tt.get("sold_out"),
+        "selectable": not tt.get("sold_out") and ticket_sale_state(tt) == "open",
         "needsMembership": bool(tt.get("members_only")) and not is_member,
     }
 
@@ -131,6 +138,23 @@ def _require_sales_open(event: dict) -> None:
         409,
         f"Tickets go on sale on {format_date(when)} at {format_time_range(when, None)}.",
     )
+
+
+def _require_ticket_on_sale(ticket: dict) -> None:
+    """Refuse a ticket type outside its own sale window (080) — general
+    admission before it opens, early bird after it ends — even while the
+    event itself is on sale. The adapter refuses too; this is the message."""
+    state = ticket_sale_state(ticket)
+    name = f"“{ticket['name']}”"
+    if state == "scheduled":
+        when = datetime.fromisoformat(str(ticket["sales_open_at"]))
+        raise HTTPException(
+            409,
+            f"{name} goes on sale on {format_date(when)} at "
+            f"{format_time_range(when, None)}.",
+        )
+    if state == "ended":
+        raise HTTPException(409, f"{name} is no longer on sale.")
 
 
 
@@ -358,6 +382,7 @@ async def reserve(
     )
     if ticket is None:
         raise HTTPException(404, "No such ticket type for this event")
+    _require_ticket_on_sale(ticket)
 
     if quantity < 1:
         raise HTTPException(400, "Quantity must be at least 1.")
@@ -741,6 +766,7 @@ async def hold_seat(
     )
     if ticket is None:
         raise HTTPException(404, "No such ticket type for this event")
+    _require_ticket_on_sale(ticket)
 
     # Deliberately not refused: membership is verified at confirmation, so a
     # brand-new member is not turned away by a feed that is a few hours stale.

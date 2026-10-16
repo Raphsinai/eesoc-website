@@ -192,6 +192,25 @@ sales do, and neither after the event ends (422). The event payload carries
 `bookingClosesAt` and `unionSalesCloseAt`, and `salesState` is `closed` once
 booking has closed.
 
+**Ticket type windows** (migration 080). Each ticket type may also set
+`sales_open_at` and `sales_close_at` — early bird until Friday 10:00, general
+from Friday 10:00. They narrow the event's window, never widen it: null means
+"opens with the event" / "sells until the event's booking closes". Outside its
+window a type cannot be reserved or held (409, `detail` e.g. "“General” goes on
+sale on Fri 16 Oct at 10:00." or "“Early bird” is no longer on sale."; the
+adapter refuses too, with reason `type_not_on_sale`, including a guest draft
+whose type closed mid-form), and the waitlist is not offered it.
+Committee-added tickets and ticket changes are not gated. Saving refuses (422)
+a type that opens before the event's own `sales_open_at`, at or after
+reservations close, closes before it opens or before the event's sale opens,
+or closes after the event ends. Each entry of `ticketTypes[]` carries
+`salesState` (`open` | `scheduled` | `ended`), `salesOpenAt` and
+`salesCloseAt`, and `selectable` is false outside the window. The event's own
+`salesState` is unchanged; the card badge reads "On sale <date>" while the
+event is on sale but no type is bookable and a later one is coming. The
+"tickets are on sale" email and WhatsApp post leave out ended types and list
+a later one with the time it goes on sale.
+
 ### `GET /me/reservations` 🔒 · `POST /reservations/{id}/cancel` 🔒
 ### `PATCH /reservations/{id}/order-number` 🔒
 ```json

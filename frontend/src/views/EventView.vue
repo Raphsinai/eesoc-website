@@ -341,6 +341,26 @@ const salesOpensText = computed(() => {
   })
 })
 
+// A ticket type's own sale times (080) — early bird until Friday, general from
+// Friday — in the viewer's own timezone, like the event's.
+function shortWhen(iso) {
+  if (!iso) return ''
+  return new Date(iso).toLocaleString(undefined, {
+    weekday: 'short', day: '2-digit', month: 'short',
+    hour: '2-digit', minute: '2-digit',
+  })
+}
+
+// The event is on sale but no ticket type is right now: early bird has sold
+// out or ended and general has not opened yet. Says when the next one does.
+const nextTypeOpening = computed(() => {
+  const types = event.value?.ticketTypes || []
+  if (types.some((t) => t.selectable)) return null
+  return types
+    .filter((t) => t.salesState === 'scheduled')
+    .sort((a, b) => new Date(a.salesOpenAt) - new Date(b.salesOpenAt))[0] || null
+})
+
 // When booking stops (section 17), if the committee set a time — shown above
 // the form while it is open, and in the notice that replaces it once closed.
 const bookingClosesText = computed(() => {
@@ -572,6 +592,8 @@ const bookingClosesText = computed(() => {
                   :disabled="!t.selectable"
                 >
                   {{ t.name }} — {{ t.price }}<template v-if="t.soldOut"> (sold out)</template>
+                  <template v-else-if="t.salesState === 'scheduled'"> · on sale {{ shortWhen(t.salesOpenAt) }}</template>
+                  <template v-else-if="t.salesState === 'ended'"> · no longer on sale</template>
                   <template v-else-if="t.membersOnly"> · members only</template>
                   <template v-else-if="t.remaining !== null"> · {{ t.remaining }} left</template>
                 </option>
@@ -580,6 +602,22 @@ const bookingClosesText = computed(() => {
 
             <p v-if="selected?.description" style="margin:0; font:var(--type-small); color:var(--text-muted)">
               {{ selected.description }}
+            </p>
+            <p
+              v-if="selected?.selectable && selected.salesCloseAt"
+              class="booking-closes"
+              data-testid="ticket-sale-ends"
+              style="margin:0"
+            >
+              {{ selected.name }} is on sale until {{ shortWhen(selected.salesCloseAt) }}
+            </p>
+            <p
+              v-if="nextTypeOpening"
+              class="sales-notice"
+              data-testid="next-ticket-opening"
+              style="margin:0; padding:var(--space-3); font:var(--type-small); color:var(--text-strong)"
+            >
+              {{ nextTypeOpening.name }} goes on sale {{ shortWhen(nextTypeOpening.salesOpenAt) }}.
             </p>
 
             <Field v-if="maxQuantity > 1" label="How many">

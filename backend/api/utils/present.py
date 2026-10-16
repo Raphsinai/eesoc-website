@@ -110,6 +110,33 @@ def sales_open(event: dict) -> bool:
     return sales_state(event)[0] == "open"
 
 
+def ticket_sale_state(ticket: dict) -> str:
+    """Where one ticket type's own sale window stands (080):
+    "open" | "scheduled" (not on sale yet) | "ended".
+
+    Only the type's own times — early bird until Friday, general from Friday.
+    The event's window is `sales_state`'s, and applies on top: a type with no
+    times of its own is "open" here and sells whenever the event does.
+    """
+    now = datetime.now(timezone.utc)
+    opens = _aware(ticket.get("sales_open_at"))
+    if opens is not None and opens > now:
+        return "scheduled"
+    closes = _aware(ticket.get("sales_close_at"))
+    if closes is not None and closes <= now:
+        return "ended"
+    return "open"
+
+
+def next_ticket_opening(types: list[dict]) -> datetime | None:
+    """When the soonest ticket type that is not on sale yet goes on sale."""
+    return min(
+        (_aware(t.get("sales_open_at")) for t in types
+         if ticket_sale_state(t) == "scheduled"),
+        default=None,
+    )
+
+
 def event_status(event: dict) -> tuple[str, str]:
     """The badge on an event card: (label, tone).
 
@@ -137,6 +164,20 @@ def event_status(event: dict) -> tuple[str, str]:
     if state == "scheduled":
         return f"On sale {format_date(_parse(opens))}", "accent"
     if state == "closed":
+        return "Booking closed", "neutral"
+
+    # The event is on sale, but each ticket type can have its own window
+    # (080). Between early bird selling out or ending and general opening,
+    # nothing can be booked, and the badge says when that changes. With no
+    # windows set this never fires: every type is in its window, and all of
+    # them sold out is already "Sold out" above.
+    types = [t for t in types if ticket_sale_state(t) == "open"]
+    if all(t.get("sold_out") for t in types):
+        opening = next_ticket_opening(event.get("ticket_types") or [])
+        if opening is not None:
+            return f"On sale {format_date(opening)}", "accent"
+        if types:
+            return "Sold out", "danger"
         return "Booking closed", "neutral"
 
     remaining = event.get("remaining")
@@ -199,3 +240,11 @@ def _parse(value) -> datetime | None:
         return datetime.fromisoformat(str(value))
     except ValueError:
         return None
+
+
+def _aware(value) -> datetime | None:
+    """`_parse`, with a naive value taken as UTC so it compares with now."""
+    when = _parse(value)
+    if when is not None and when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when

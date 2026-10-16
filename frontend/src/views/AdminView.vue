@@ -255,6 +255,9 @@ const blank = () => ({
   reservations_close_at: '',
   union_close_enabled: false,
   union_sales_close_at: '',
+  // Ticket types on sale at different times — early bird, then general. Off
+  // by default: every type then sells for the event's whole window.
+  ticket_windows: false,
   // Where to buy, for the emails. Only needed when the Union's own product
   // feed carries no URL — which, for our centre, is most of the time.
   purchase_url: '',
@@ -335,7 +338,15 @@ function editEvent(e) {
     meeting_url: e.meeting_url ?? '',
     meeting_url_private: Boolean(e.meeting_url_private),
     target_years: e.target_years ?? [],
-    ticket_types: (e.ticket_types ?? []).map((t) => ({ ...t, price_pounds: toPounds(t.price_pence) })),
+    ticket_types: (e.ticket_types ?? []).map((t) => ({
+      ...t,
+      price_pounds: toPounds(t.price_pence),
+      sales_open_enabled: Boolean(t.sales_open_at),
+      sales_open_at: toLocalInput(t.sales_open_at),
+      sales_close_enabled: Boolean(t.sales_close_at),
+      sales_close_at: toLocalInput(t.sales_close_at),
+    })),
+    ticket_windows: (e.ticket_types ?? []).some((t) => t.sales_open_at || t.sales_close_at),
   })
   // Prefill the product and per-ticket line selects from existing links.
   const ev = links.value.find((l) => l.event_id === e.id && l.ticket_type_id === null)
@@ -395,8 +406,19 @@ async function saveEvent() {
       // returns a list, so an untouched save round-trips unchanged.
       target_years: draft.target_years,
       ticket_types: draft.ticket_types.filter((t) => t.name.trim())
-        .map(({ price_pounds, ...t }) => ({
+        .map(({ price_pounds, sales_open_enabled, sales_close_enabled, ...t }) => ({
           ...t, price_pence: toPence(t.name, price_pounds), capacity: t.capacity || null,
+          // A ticket type's own window only means something inside the
+          // event's, and only while its box is ticked — a hidden value must
+          // not linger, as with the event's own close times above.
+          sales_open_at:
+            draft.sales_scheduled && draft.ticket_windows && sales_open_enabled && t.sales_open_at
+              ? new Date(t.sales_open_at).toISOString()
+              : null,
+          sales_close_at:
+            draft.sales_scheduled && draft.ticket_windows && sales_close_enabled && t.sales_close_at
+              ? new Date(t.sales_close_at).toISOString()
+              : null,
         })),
     }
     if (editingId.value) await api.put(`/admin/events/${editingId.value}`, payload)
@@ -2189,7 +2211,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 No ticket types — this is a drop-in event. The page will say
                 “No booking needed” and nobody has to reserve a place.
               </p>
-              <Button size="sm" variant="ghost" @click="draft.ticket_types.push({ name: '', price_pounds: '', capacity: null, max_per_user: 1, members_only: false, requires_purchase: true, purchase_url: '' })">
+              <Button size="sm" variant="ghost" @click="draft.ticket_types.push({ name: '', price_pounds: '', capacity: null, max_per_user: 1, members_only: false, requires_purchase: true, purchase_url: '', sales_open_enabled: false, sales_open_at: '', sales_close_enabled: false, sales_close_at: '' })">
                 Add ticket type
               </Button>
 
@@ -2254,6 +2276,61 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                     <p style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
                       No pay-by deadline goes past this: booked at 12:00 with a 16:00
                       close, they have until 16:00. Must not be before reservations close.
+                    </p>
+                  </template>
+
+                  <!-- Each ticket type's own window (080), inside the event's:
+                       early bird from the sale date until Friday, general from
+                       Friday. Tickboxes rather than blank times, for the same
+                       Safari reason as above. -->
+                  <label
+                    v-if="draft.ticket_types.length > 1 || draft.ticket_windows"
+                    style="margin-top:var(--space-2); font:var(--type-small); color:var(--text-body); display:flex; gap:var(--space-2); align-items:center"
+                  >
+                    <input v-model="draft.ticket_windows" type="checkbox" data-testid="ticket-windows" />
+                    Ticket types go on sale at different times (early bird, general…)
+                  </label>
+                  <template v-if="draft.ticket_windows">
+                    <div
+                      v-for="(t, i) in draft.ticket_types"
+                      :key="`window-${i}`"
+                      :data-testid="`ticket-window-${i}`"
+                      style="display:grid; gap:var(--space-2); padding:var(--space-3); border-left:2px solid var(--border-hairline)"
+                    >
+                      <span style="font:var(--type-small); color:var(--text-strong)">{{ t.name.trim() || 'Unnamed ticket type' }}</span>
+                      <label style="font:var(--type-2xs); color:var(--text-muted); display:flex; gap:var(--space-2); align-items:center">
+                        <input v-model="t.sales_open_enabled" type="checkbox" />
+                        Goes on sale later than the event's sale date
+                      </label>
+                      <Input
+                        v-if="t.sales_open_enabled"
+                        v-model="t.sales_open_at"
+                        type="datetime-local"
+                        :aria-label="`${t.name} goes on sale`"
+                      />
+                      <label style="font:var(--type-2xs); color:var(--text-muted); display:flex; gap:var(--space-2); align-items:center">
+                        <input v-model="t.sales_close_enabled" type="checkbox" />
+                        Stops selling at a set time
+                      </label>
+                      <Input
+                        v-if="t.sales_close_enabled"
+                        v-model="t.sales_close_at"
+                        type="datetime-local"
+                        :aria-label="`${t.name} stops selling`"
+                      />
+                      <p
+                        v-if="(t.sales_open_enabled && !t.sales_open_at) || (t.sales_close_enabled && !t.sales_close_at)"
+                        style="margin:0; font:var(--type-2xs); color:var(--danger)"
+                      >
+                        Pick a time, or untick the box.
+                      </p>
+                    </div>
+                    <p style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
+                      Early bird: tick “Stops selling” on it. General: tick “Goes on
+                      sale later” with the same time. Unticked, a ticket type sells for
+                      as long as the event does. The “tickets are on sale” email goes
+                      out at the event's sale date and lists a later ticket with the
+                      time it goes on sale.
                     </p>
                   </template>
                 </template>

@@ -49,7 +49,8 @@ EVENT_COLUMNS = """
 
 TT_COLUMNS = """
     id, event_id, name, description, price_pence, capacity, requires_purchase,
-    members_only, max_per_user, sort_order, purchase_url
+    members_only, max_per_user, sort_order, purchase_url,
+    sales_open_at, sales_close_at
 """
 
 # A reservation consumes stock while it is confirmed, or held/draft and not yet
@@ -224,11 +225,51 @@ def _check_sale_windows(event: EventWrite) -> None:
         if when and when > end:
             raise HTTPException(422, f"{label} cannot be after the event ends.")
 
+    # Each ticket type's own window (080) sits inside the event's: the event's
+    # sale time is when the event goes on sale at all, and is what the
+    # on-sale email announces, so a type cannot open before it. A window that
+    # can never be open is a typo, refused here rather than found when
+    # somebody cannot book.
+    opens = _utc(event.sales_open_at) if event.sales_open_at else None
+    for tt in event.ticket_types:
+        t_open = _utc(tt.sales_open_at) if tt.sales_open_at else None
+        t_close = _utc(tt.sales_close_at) if tt.sales_close_at else None
+        name = f"“{tt.name.strip()}”"
+        if t_open and t_close and t_open >= t_close:
+            raise HTTPException(422, f"{name} stops selling before it goes on sale.")
+        if t_open and opens and t_open < opens:
+            raise HTTPException(
+                422,
+                f"{name} goes on sale before the event's tickets do. Set the "
+                "event's sale time to the earliest any ticket goes on sale.",
+            )
+        if t_close and opens and t_close <= opens:
+            raise HTTPException(
+                422, f"{name} stops selling before the event's tickets go on sale."
+            )
+        if t_open and reserve and t_open >= reserve:
+            raise HTTPException(
+                422, f"{name} goes on sale after reservations for the event close."
+            )
+        if t_close and t_close > end:
+            raise HTTPException(422, f"{name} cannot stop selling after the event ends.")
+
 
 def _reservations_closed(event) -> bool:
     """Whether booking has closed for this event row."""
     closes = event["reservations_close_at"]
     return closes is not None and closes <= datetime.now(timezone.utc)
+
+
+def _type_off_sale(tt) -> bool:
+    """Whether this ticket type is outside its own sale window right now (080).
+
+    Only the type's own times: the event's window is checked separately, and a
+    type with no times of its own sells whenever the event does.
+    """
+    now = datetime.now(timezone.utc)
+    opens, closes = tt["sales_open_at"], tt["sales_close_at"]
+    return (opens is not None and opens > now) or (closes is not None and closes <= now)
 
 
 # A failed confirmation email is retried this many times in all, then left for
@@ -436,12 +477,12 @@ async def create_event(event: EventWrite, created_by: int | None = None) -> Even
                 INSERT INTO public.ticket_types
                     (event_id, name, description, price_pence, capacity,
                      requires_purchase, members_only, max_per_user, sort_order,
-                     purchase_url)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10);
+                     purchase_url, sales_open_at, sales_close_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12);
                 """,
                 row["id"], tt.name, tt.description, tt.price_pence, tt.capacity,
                 tt.requires_purchase, tt.members_only, tt.max_per_user, tt.sort_order,
-                tt.purchase_url,
+                tt.purchase_url, tt.sales_open_at, tt.sales_close_at,
             )
         return await _detail(conn, row)
 
@@ -538,12 +579,13 @@ async def update_event(event_id: int, event: EventWrite) -> EventDetail:
                     UPDATE public.ticket_types SET
                         name=$2, description=$3, price_pence=$4, capacity=$5,
                         requires_purchase=$6, members_only=$7, max_per_user=$8,
-                        sort_order=$9, purchase_url=$10
+                        sort_order=$9, purchase_url=$10,
+                        sales_open_at=$11, sales_close_at=$12
                      WHERE id=$1;
                     """,
                     tt.id, tt.name, tt.description, tt.price_pence, tt.capacity,
                     tt.requires_purchase, tt.members_only, tt.max_per_user,
-                    tt.sort_order, tt.purchase_url,
+                    tt.sort_order, tt.purchase_url, tt.sales_open_at, tt.sales_close_at,
                 )
             else:
                 await conn.execute(
@@ -551,12 +593,12 @@ async def update_event(event_id: int, event: EventWrite) -> EventDetail:
                     INSERT INTO public.ticket_types
                         (event_id, name, description, price_pence, capacity,
                          requires_purchase, members_only, max_per_user, sort_order,
-                         purchase_url)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10);
+                         purchase_url, sales_open_at, sales_close_at)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12);
                     """,
                     event_id, tt.name, tt.description, tt.price_pence, tt.capacity,
                     tt.requires_purchase, tt.members_only, tt.max_per_user,
-                    tt.sort_order, tt.purchase_url,
+                    tt.sort_order, tt.purchase_url, tt.sales_open_at, tt.sales_close_at,
                 )
 
         # Anything the form no longer lists has been removed deliberately —
@@ -607,13 +649,13 @@ async def add_ticket_type(event_id: int, tt: TicketType) -> TicketType:
                 INSERT INTO public.ticket_types
                     (event_id, name, description, price_pence, capacity,
                      requires_purchase, members_only, max_per_user, sort_order,
-                     purchase_url)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                     purchase_url, sales_open_at, sales_close_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
                 RETURNING {TT_COLUMNS};
                 """,
                 event_id, tt.name, tt.description, tt.price_pence, tt.capacity,
                 tt.requires_purchase, tt.members_only, tt.max_per_user, tt.sort_order,
-                tt.purchase_url,
+                tt.purchase_url, tt.sales_open_at, tt.sales_close_at,
             )
         except UniqueViolationError:
             raise HTTPException(409, f"'{tt.name}' already exists on this event")
@@ -641,13 +683,13 @@ async def update_ticket_type(ticket_type_id: int, tt: TicketType) -> TicketType:
             UPDATE public.ticket_types SET
                 name=$2, description=$3, price_pence=$4, capacity=$5,
                 requires_purchase=$6, members_only=$7, max_per_user=$8, sort_order=$9,
-                purchase_url=$10
+                purchase_url=$10, sales_open_at=$11, sales_close_at=$12
              WHERE id=$1
             RETURNING {TT_COLUMNS};
             """,
             ticket_type_id, tt.name, tt.description, tt.price_pence, tt.capacity,
             tt.requires_purchase, tt.members_only, tt.max_per_user, tt.sort_order,
-            tt.purchase_url,
+            tt.purchase_url, tt.sales_open_at, tt.sales_close_at,
         )
     if row is None:
         raise HTTPException(404, "No such ticket type")
@@ -700,6 +742,9 @@ async def reserve(req: ReservationRequest) -> ReservationResult:
         )
         if tt is None:
             raise HTTPException(404, "No such ticket type for this event")
+        # Early bird after it ends, general before it starts.
+        if _type_off_sale(tt):
+            return ReservationResult(ok=False, reason="type_not_on_sale")
 
         # 2. Fresh snapshot — includes anything committed while we waited above.
         counts = await conn.fetchrow(
@@ -1524,6 +1569,8 @@ async def create_draft(req: ReservationRequest, minutes: int = 15) -> Reservatio
         )
         if tt is None:
             raise HTTPException(404, "No such ticket type for this event")
+        if _type_off_sale(tt):
+            return ReservationResult(ok=False, reason="type_not_on_sale")
 
         counts = await conn.fetchrow(
             f"""
@@ -1581,7 +1628,8 @@ async def claim_draft(
             """
             SELECT r.id, r.event_id, r.ticket_type_id, r.quantity, r.expires_at,
                    r.status, r.visitor_hash, e.hold_hours, e.starts_at, tt.max_per_user,
-                   tt.requires_purchase, tt.members_only, e.reservations_close_at
+                   tt.requires_purchase, tt.members_only, e.reservations_close_at,
+                   tt.sales_open_at, tt.sales_close_at
               FROM public.reservations r
               JOIN public.events e        ON e.id  = r.event_id
               JOIN public.ticket_types tt ON tt.id = r.ticket_type_id
@@ -1608,6 +1656,10 @@ async def claim_draft(
             # Booking closed while they filled the form in. The seat goes back.
             await conn.execute("DELETE FROM public.reservations WHERE id = $1;", draft["id"])
             return ReservationResult(ok=False, reason="reservations_closed")
+        if _type_off_sale(draft):
+            # The same, for this ticket type alone: early bird ended mid-form.
+            await conn.execute("DELETE FROM public.reservations WHERE id = $1;", draft["id"])
+            return ReservationResult(ok=False, reason="type_not_on_sale")
 
         # The per-person limit, which this path used to skip entirely: a guest
         # could submit the form again and again and hold a ticket each time.
@@ -1787,7 +1839,8 @@ async def promote_waitlist(academic_year: str | None = None) -> dict:
 
                     # Their preferred type if it has room, otherwise any type
                     # that does — the queue is event-wide, so the offer should
-                    # be too.
+                    # be too. Only a type on sale right now (080): an early-bird
+                    # place freed after early bird ended is not offered.
                     ticket = await conn.fetchrow(
                         f"""
                         SELECT tt.id, tt.requires_purchase, tt.members_only
@@ -1799,6 +1852,8 @@ async def promote_waitlist(academic_year: str | None = None) -> dict:
                                  GROUP BY ticket_type_id
                                ) live ON live.ticket_type_id = tt.id
                          WHERE tt.event_id = $1
+                           AND (tt.sales_open_at IS NULL OR tt.sales_open_at <= NOW())
+                           AND (tt.sales_close_at IS NULL OR tt.sales_close_at > NOW())
                            AND (tt.capacity IS NULL
                                 OR tt.capacity - COALESCE(live.taken,0) >= $2)
                          ORDER BY (tt.id = $3) DESC, tt.sort_order

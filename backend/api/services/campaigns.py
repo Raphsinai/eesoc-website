@@ -42,6 +42,7 @@ from utils.present import (
     format_price,
     format_time_range,
     london,
+    ticket_sale_state,
 )
 
 log = logging.getLogger("api.campaigns")
@@ -104,11 +105,23 @@ def event_when(event: dict) -> str:
 
 
 def event_tickets(event: dict) -> list[tuple[str, str]]:
-    return [
-        (t["name"], format_price(t.get("price_pence", 0)))
-        for t in event.get("ticket_types", [])
-        if not t.get("sold_out")
-    ]
+    """(name, price) for each ticket somebody could still get, as of sending.
+
+    A ticket type with its own sale window (080) that has ended — early bird —
+    is left out, and one that is not on sale yet says when it will be, so an
+    on-sale email sent at early bird's start does not read as if general
+    admission were on sale too.
+    """
+    tickets = []
+    for t in event.get("ticket_types", []):
+        state = ticket_sale_state(t)
+        if t.get("sold_out") or state == "ended":
+            continue
+        price = format_price(t.get("price_pence", 0))
+        if state == "scheduled":
+            price = f"{price} · on sale {when_text(t.get('sales_open_at'))}"
+        tickets.append((t["name"], price))
+    return tickets
 
 
 async def _event(row: dict) -> dict:

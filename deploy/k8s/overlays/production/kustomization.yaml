@@ -30,22 +30,22 @@ components:
 images:
 - name: ghcr.io/OWNER/eesoc-api
   newName: ghcr.io/raphsinai/eesoc-api
-  newTag: 6ccc4b6dc995a000cabd3ec877d63ce5888205b8
+  newTag: 6b6973c6411bc701aab6625ce9d3eef184e4c193
 - name: ghcr.io/OWNER/eesoc-database
   newName: ghcr.io/raphsinai/eesoc-database
-  newTag: 6ccc4b6dc995a000cabd3ec877d63ce5888205b8
+  newTag: 6b6973c6411bc701aab6625ce9d3eef184e4c193
 - name: ghcr.io/OWNER/eesoc-frontend
   newName: ghcr.io/raphsinai/eesoc-frontend
-  newTag: 6ccc4b6dc995a000cabd3ec877d63ce5888205b8
+  newTag: 6b6973c6411bc701aab6625ce9d3eef184e4c193
 - name: ghcr.io/OWNER/eesoc-garage-init
   newName: ghcr.io/raphsinai/eesoc-garage-init
-  newTag: 6ccc4b6dc995a000cabd3ec877d63ce5888205b8
+  newTag: 6b6973c6411bc701aab6625ce9d3eef184e4c193
 - name: ghcr.io/OWNER/eesoc-union
   newName: ghcr.io/raphsinai/eesoc-union
-  newTag: 6ccc4b6dc995a000cabd3ec877d63ce5888205b8
+  newTag: 6b6973c6411bc701aab6625ce9d3eef184e4c193
 - name: ghcr.io/OWNER/eesoc-whatsapp
   newName: ghcr.io/raphsinai/eesoc-whatsapp
-  newTag: 6ccc4b6dc995a000cabd3ec877d63ce5888205b8
+  newTag: 6b6973c6411bc701aab6625ce9d3eef184e4c193
 
 # Single-node cluster. A second replica of anything lands on the same node as
 # the first, so it buys no availability — it only consumes one of the kubelet's

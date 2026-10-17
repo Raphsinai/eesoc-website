@@ -128,6 +128,7 @@ WhatsApp Business number linked as a device (the WhatsApp Web protocol, not the
 Business API), which WhatsApp's terms do not allow for automation; if it is
 flagged as a bot, the number that runs the community is banned. Keep it to
 groups, a few posts an hour, one replica — do not scale it, loosen its pacing or
-hourly cap, add direct messages, or turn it on in production without Raph.
+hourly cap, or add direct messages. It is on in production (Raph, 2026-10-17);
+turning it off there is removing one `components:` line from its overlay.
 Staging may be linked to the real number: its Send says so before posting, and
 the snapshot scrub strips WhatsApp groups from emails copied from production.

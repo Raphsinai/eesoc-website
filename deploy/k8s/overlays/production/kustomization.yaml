@@ -12,6 +12,12 @@ resources:
 - snapshot-cronjob.yaml
 - ../../../snapshot
 
+# The WhatsApp link (components/whatsapp): the society's number as a linked
+# device, posting into its groups. Turned on here by Raph, 2026-10-17 — the
+# one line that does it. Remove it to turn WhatsApp posting off again.
+components:
+- ../../components/whatsapp
+
 # The scrub, its verification, and the two scripts that drive them. A generator
 # rather than a checked-in ConfigMap so the content is versioned with the
 # files: kustomize appends a hash to the name, so editing scrub.sql changes the

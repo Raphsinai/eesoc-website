@@ -497,10 +497,10 @@ components:
 - ../../components/whatsapp
 ```
 
-Staging has it. **Production does not until somebody adds that line to
-`overlays/production/kustomization.yaml`** — a change to review and approve
-like a promote, because it is the moment the site can start posting into the
-real community. The component brings the deployment (one replica,
+Both environments have it; production since 2026-10-17, turned on by Raph.
+**Removing that line from `overlays/production/kustomization.yaml` turns
+WhatsApp posting off on eesoc.com**, and adding it back is a change to approve
+like a promote, because it is what lets the site post into the real community. The component brings the deployment (one replica,
 `Recreate`), a 256Mi volume for the linked session, a NetworkPolicy letting only
 the api reach it, and `WHATSAPP_API_URL` for the api. Its image is built and
 pinned with the others; production gets its pin on the next promote whether or

@@ -93,9 +93,5 @@ data:
   # breakage the process cannot detect itself.
   # Keys: login, bookings, lockers, sponsor_portal, admin, passkeys (forcing
   # login forces passkeys too; an automatic mail outage leaves passkeys on)
-  #
-  # Lockers: paused until a Union product is linked to them. Without a link
-  # the site cannot tell who has paid, so every booking would be taken on
-  # trust and reconciled by hand. Empty this to turn booking back on.
-  MAINTENANCE_FEATURES: "lockers"
-  MAINTENANCE_MESSAGE: "Locker booking is paused while we finish setting up payment through the Union shop. It will be back shortly."
+  MAINTENANCE_FEATURES: ""
+  MAINTENANCE_MESSAGE: ""

@@ -1,0 +1,23 @@
+# Give staging's own Garage a private eesoc-snapshots bucket, where the refresh
+# job keeps the last production snapshot it fetched.
+#
+# Staging runs on the homelab (deploy/homelab), which has no route to
+# production's Garage, so most refreshes restore this copy rather than a fresh
+# one — see refresh-job.yaml. It is a separate bucket on purpose: eesoc-media
+# is served anonymously at /media, and a database dump must never be.
+#
+# garage-init creates the bucket and gives staging's own key read/write on it.
+# STAGING_RO_* are production-only and absent here, so no read-only key is
+# imported.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: garage
+spec:
+  template:
+    spec:
+      containers:
+        - name: init
+          env:
+            - name: SNAPSHOT_BUCKET
+              value: eesoc-snapshots

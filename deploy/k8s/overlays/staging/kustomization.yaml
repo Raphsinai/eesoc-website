@@ -65,6 +65,7 @@ replicas:
 patches:
 - path: ingress-hosts.yaml
 - path: refresh-access.yaml
+- path: garage-snapshot-cache.yaml
 - path: configmap.yaml
 - patch: |
     - op: replace

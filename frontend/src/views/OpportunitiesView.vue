@@ -31,6 +31,13 @@ const posting = ref(false)
 const view = ref('list')
 const filter = ref('')
 const imageFiles = ref([])
+const existingImages = ref([])
+const editingId = ref(null)
+const editingNotes = ref('')
+const editingAnnouncement = ref(null)
+const draft = reactive({ subject: '', body: '' })
+const draftBusy = ref(false)
+const draftNotice = ref('')
 const opportunity = ref(null)
 const form = reactive({
   title: '', description: '', links: [''], contact_email: '',
@@ -92,13 +99,22 @@ function startSubmit() {
     return
   }
   submitted.value = false
+  draftNotice.value = ''
+  editingId.value = null
+  editingNotes.value = ''
+  imageFiles.value = []
+  existingImages.value = []
+  Object.assign(form, {
+    title: '', description: '', links: [''], contact_email: '',
+    contact_phone: '', target_years: [],
+  })
   formError.value = ''
   view.value = 'submit'
 }
 
 function chooseImages(event) {
   const files = Array.from(event.target.files || [])
-  if (files.length > 5 || files.some((file) => !['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type) || file.size > 10 * 1024 * 1024)) {
+  if (files.length + existingImages.value.length > 5 || files.some((file) => !['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type) || file.size > 10 * 1024 * 1024)) {
     formError.value = 'Choose up to five JPEG, PNG, WebP or GIF images, each under 10 MB.'
     imageFiles.value = []
     event.target.value = ''
@@ -145,9 +161,9 @@ async function submit() {
   }
   posting.value = true
   try {
-    const ids = []
+    const ids = existingImages.value.map((image) => image.id)
     for (const file of imageFiles.value) ids.push(await uploadImage(file))
-    await api.post('/opportunities', {
+    const payload = {
       title: form.title.trim(),
       description: form.description.trim(),
       links: urls,
@@ -155,7 +171,14 @@ async function submit() {
       contact_phone: form.contact_phone.trim() || null,
       target_years: form.target_years,
       image_ids: ids,
-    })
+    }
+    if (editingId.value) {
+      await api.put(`/me/opportunities/${editingId.value}`, payload)
+    } else {
+      await api.post('/opportunities', payload)
+    }
+    editingId.value = null
+    existingImages.value = []
     Object.assign(form, {
       title: '', description: '', links: [''], contact_email: '',
       contact_phone: '', target_years: [],
@@ -168,6 +191,64 @@ async function submit() {
     formError.value = e.message
   } finally {
     posting.value = false
+  }
+}
+
+function editRejected(item) {
+  if (!session.authenticated) { openLogin(); return }
+  if (item.status !== 'rejected' || !item.allowEdit) return
+  editingId.value = item.id
+  editingNotes.value = item.reviewNotes || ''
+  imageFiles.value = []
+  existingImages.value = [...item.images]
+  Object.assign(form, {
+    title: item.title,
+    description: item.description,
+    links: item.links.length ? [...item.links] : [''],
+    contact_email: item.contactEmail || '',
+    contact_phone: item.contactPhone || '',
+    target_years: [...item.targetYears],
+  })
+  submitted.value = false
+  formError.value = ''
+  view.value = 'submit'
+}
+
+function openDraft(item) {
+  if (!session.authenticated || item.status !== 'approved' || item.emailCampaignId) return
+  editingAnnouncement.value = item.id
+  Object.assign(draft, {
+    subject: item.announcementSubject || `Opportunity: ${item.title}`,
+    body: item.announcementBody || '',
+  })
+  draftNotice.value = ''
+  formError.value = ''
+  view.value = 'draft'
+}
+
+async function saveDraft(sendForApproval = false) {
+  if (!session.authenticated || !editingAnnouncement.value) return
+  draftBusy.value = true
+  formError.value = ''
+  draftNotice.value = ''
+  try {
+    const id = editingAnnouncement.value
+    await api.put(`/me/opportunities/${id}/announcement`, {
+      subject: draft.subject.trim(), body: draft.body.trim(),
+    })
+    if (sendForApproval) {
+      await api.post(`/me/opportunities/${id}/announcement/submit`)
+      await loadMine()
+      view.value = 'mine'
+      draftNotice.value = 'Your announcement is now awaiting final approval by an EESoc admin. It has not been sent.'
+    } else {
+      await loadMine()
+      draftNotice.value = 'Draft saved. You can keep editing it before sending it to admins.'
+    }
+  } catch (e) {
+    formError.value = e.message
+  } finally {
+    draftBusy.value = false
   }
 }
 
@@ -194,7 +275,7 @@ watch(detailId, loadPublished)
     <header class="opps__hero">
       <span class="opps__eyebrow">EESoc community</span>
       <h1 class="opps__title">Opportunities</h1>
-      <p class="opps__intro">Internships, research, projects, competitions, scholarships and things worth sharing. Submitted by the community, reviewed by the EESoc committee.</p>
+      <p class="opps__intro">Internships, research, projects, competitions, scholarships and things worth sharing. Submitted by the community, reviewed by EESoc admins.</p>
       <div v-if="!detailId" class="opps__actions">
         <Button :variant="view === 'list' ? 'primary' : 'secondary'" @click="view = 'list'">Browse opportunities</Button>
         <Button :variant="view === 'submit' ? 'primary' : 'secondary'" @click="startSubmit">Submit an opportunity</Button>
@@ -252,7 +333,8 @@ watch(detailId, loadPublished)
 
     <section v-else-if="view === 'mine'" class="opps__column">
       <h2 class="opps__heading">My submissions</h2>
-      <p v-if="submitted" class="opps__success" role="status">Submitted for committee review. You can check its status here.</p>
+      <p v-if="submitted" class="opps__success" role="status">Submitted for admin review. You can check its status here.</p>
+      <p v-if="draftNotice" class="opps__success" role="status">{{ draftNotice }}</p>
       <p v-if="formError" class="opps__error" role="alert">{{ formError }}</p>
       <p v-if="mineLoading">Loading your submissions…</p>
       <Card v-for="item in mine" :key="item.id" variant="outline">
@@ -262,17 +344,48 @@ watch(detailId, loadPublished)
         </div>
         <p class="opps__meta">Submitted {{ date(item.createdAt) }} · For {{ item.targetYears.map(yearName).join(', ') }}</p>
         <p class="opps__description">{{ item.description }}</p>
-        <p v-if="item.reviewNotes" class="opps__review"><strong>Committee notes:</strong> {{ item.reviewNotes }}</p>
-        <p v-if="item.status === 'pending'" class="opps__meta">Waiting for committee review. Only you and the committee can see this.</p>
-        <router-link v-if="item.status === 'approved'" :to="`/opportunities/${item.id}`" class="opps__link">View published listing ↗</router-link>
+        <p v-if="item.reviewNotes" class="opps__review"><strong>Admin notes:</strong> {{ item.reviewNotes }}</p>
+        <p v-if="item.status === 'pending'" class="opps__meta">Waiting for admin review. Only you and the admins can see this.</p>
+        <template v-if="item.status === 'rejected'">
+          <p v-if="item.allowEdit" class="opps__meta">An admin has allowed revisions. Edit the details based on the feedback and submit them for another review.</p>
+          <p v-else class="opps__meta">This submission is closed. You can make a new submission instead.</p>
+          <div v-if="item.allowEdit"><Button size="sm" variant="secondary" @click="editRejected(item)">Edit & resubmit</Button></div>
+        </template>
+        <template v-if="item.status === 'approved'">
+          <router-link :to="`/opportunities/${item.id}`" class="opps__link">View published listing ↗</router-link>
+          <div v-if="!item.emailCampaignId" class="opps__actions">
+            <Badge tone="accent">Announcement draft</Badge>
+            <Button size="sm" variant="secondary" @click="openDraft(item)">Draft announcement email</Button>
+          </div>
+          <p v-else class="opps__meta">Announcement submitted to the admins' email approval queue. It will not be sent without final approval.</p>
+        </template>
       </Card>
       <Card v-if="!mineLoading && !mine.length" variant="outline"><p class="opps__empty">You have not submitted anything yet.</p></Card>
       <div><Button variant="secondary" @click="loadMine">Refresh status</Button></div>
     </section>
 
+    <section v-else-if="view === 'draft'" class="opps__column">
+      <h2 class="opps__heading">Draft your opportunity announcement</h2>
+      <p class="opps__intro">Your listing is already published. You can edit the email's subject and message, then approve it for the admins' separate final review. Its recipients will be selected automatically from the opportunity's target year groups; you cannot send it yourself.</p>
+      <form class="opps__form" @submit.prevent="saveDraft(false)">
+        <Field label="Email subject" required><Input v-model="draft.subject" maxlength="180" required placeholder="Opportunity: Summer research programme" /></Field>
+        <Field label="Announcement body" required help="Write a message for the target year groups. Links and the opportunity's description can be included using Markdown.">
+          <textarea v-model="draft.body" class="opps__textarea" rows="12" minlength="20" maxlength="10000" required placeholder="Describe what makes the opportunity worth sharing…" />
+        </Field>
+        <p v-if="formError" class="opps__error" role="alert">{{ formError }}</p>
+        <p v-if="draftNotice" class="opps__success" role="status">{{ draftNotice }}</p>
+        <div class="opps__actions">
+          <Button :disabled="draftBusy" type="submit">{{ draftBusy ? 'Saving…' : 'Save draft' }}</Button>
+          <Button :disabled="draftBusy || draft.subject.trim().length < 3 || draft.body.trim().length < 20" variant="secondary" type="button" @click="saveDraft(true)">Approve & send to admins</Button>
+          <Button :disabled="draftBusy" variant="ghost" type="button" @click="showMine">Back to submissions</Button>
+        </div>
+      </form>
+    </section>
+
     <section v-else-if="view === 'submit'" class="opps__column">
-      <h2 class="opps__heading">Submit an opportunity</h2>
-      <p class="opps__intro">You must be signed in. Your submission will not be public until it has been approved by the committee. Contact details you enter will be shown on the public listing if approved.</p>
+      <h2 class="opps__heading">{{ editingId ? 'Edit rejected opportunity' : 'Submit an opportunity' }}</h2>
+      <p class="opps__intro">{{ editingId ? 'An admin allowed revisions. Change the details using their notes, then resubmit for a new approval. The previous approval decision will not carry over.' : 'You must be signed in. Your submission will not be public until it has been approved by an admin. Contact details you enter will be shown on the public listing if approved.' }}</p>
+      <p v-if="editingId && editingNotes" class="opps__review"><strong>Admin feedback to address:</strong> {{ editingNotes }}</p>
       <form class="opps__form" @submit.prevent="submit">
         <Field label="Title" required><Input v-model="form.title" required maxlength="180" placeholder="e.g. Summer research programme" /></Field>
         <Field label="Description" required help="What is it, who is it for, and how can someone take part?">
@@ -294,13 +407,19 @@ watch(detailId, loadPublished)
             <label v-for="[id, label] in years" :key="id"><input v-model="form.target_years" type="checkbox" :value="id" /> {{ label }}</label>
           </div>
         </Field>
-        <Field label="Images" help="Optional. Up to 5 images, 10 MB each. JPEG, PNG, WebP or GIF. Uploads occur when you submit.">
+        <Field label="Images" help="Optional. Up to 5 images total, 10 MB each. JPEG, PNG, WebP or GIF. Uploads occur when you submit.">
+          <div v-if="existingImages.length" class="opps__gallery">
+            <div v-for="image in existingImages" :key="image.id">
+              <img :src="image.url" alt="Previously attached image" loading="lazy" />
+              <Button size="sm" variant="ghost" type="button" @click="existingImages = existingImages.filter((img) => img.id !== image.id)">Remove image</Button>
+            </div>
+          </div>
           <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple @change="chooseImages" />
           <span v-if="imageFiles.length" class="opps__meta">{{ imageFiles.length }} image(s) selected</span>
         </Field>
         <p v-if="formError" class="opps__error" role="alert">{{ formError }}</p>
         <div class="opps__actions">
-          <Button :disabled="posting" type="submit">{{ posting ? 'Submitting…' : 'Send for approval' }}</Button>
+          <Button :disabled="posting" type="submit">{{ posting ? 'Submitting…' : editingId ? 'Resubmit for approval' : 'Send for approval' }}</Button>
           <Button :disabled="posting" variant="ghost" type="button" @click="view = 'list'">Cancel</Button>
         </div>
       </form>

@@ -17,9 +17,9 @@ from pydantic import BaseModel, Field
 from clients import database
 from config import settings
 from models.auth import AuthSession
-from models.opportunities import OpportunityCreate
-from services import campaigns, storage
-from utils.deps import require_session, require_site, verify_csrf
+from models.opportunities import AnnouncementDraft, OpportunityCreate
+from services import campaigns, opportunity_notifications, storage
+from utils.deps import require_opportunities_admin, require_session, verify_csrf
 
 log = logging.getLogger("api.opportunities")
 router = APIRouter()
@@ -41,6 +41,7 @@ YEAR_LABELS = {
 class ReviewRequest(BaseModel):
     decision: Literal["approved", "rejected"]
     notes: str | None = Field(default=None, max_length=3000)
+    allow_edit: bool = False
 
 
 def _view(row: dict, *, private: bool = False, committee: bool = False) -> dict:
@@ -67,6 +68,14 @@ def _view(row: dict, *, private: bool = False, committee: bool = False) -> dict:
             "reviewNotes": row.get("review_notes"),
             "reviewedAt": row.get("reviewed_at"),
             "emailCampaignId": row.get("email_campaign_id"),
+            "allowEdit": bool(row.get("editable_after_rejection")),
+            "revision": row.get("revision", 1),
+            "announcementSubject": row.get("announcement_subject"),
+            "announcementBody": row.get("announcement_body"),
+            "announcementStatus": (
+                "awaiting_committee" if row.get("email_campaign_id") else
+                "draft" if row.get("status") == "approved" else None
+            ),
         })
     if committee:
         out["submittedBy"] = row.get("submitter_email")
@@ -135,6 +144,12 @@ async def submit_opportunity(
     row = await database.post(
         "/opportunities", {**payload.model_dump(mode="json"), "submitted_by": session.user.id}
     )
+    opportunity_notifications.dispatch(opportunity_notifications.alert_admins(
+        row["title"], f"Opportunity awaiting review: {row['title']}",
+        f"New submission from {row.get('submitter_email') or 'a member'}. "
+        "Only an admin or superuser can review it.",
+        f"{settings.site_origin.rstrip('/')}/admin?tab=opportunities",
+    ))
     return _view(row, private=True)
 
 
@@ -160,8 +175,73 @@ async def upload_opportunity_image(
     return {"id": row["id"], "url": storage.public_url(row["stored_name"])}
 
 
+@router.put("/me/opportunities/{opportunity_id}", dependencies=[Depends(verify_csrf)])
+async def resubmit_opportunity(
+    opportunity_id: int,
+    payload: OpportunityCreate,
+    session: AuthSession = Depends(require_session),
+) -> dict:
+    row = await database.put(f"/opportunities/{opportunity_id}", {
+        **payload.model_dump(mode="json"), "owner_id": session.user.id,
+    })
+    opportunity_notifications.dispatch(opportunity_notifications.alert_admins(
+        row["title"], f"Opportunity resubmitted: {row['title']}",
+        f"Revised submission #{row.get('revision', 1)} from "
+        f"{row.get('submitter_email') or 'a member'} needs another review.",
+        f"{settings.site_origin.rstrip('/')}/admin?tab=opportunities",
+    ))
+    opportunity_notifications.dispatch(opportunity_notifications.alert_submitter(row, resubmitted=True))
+    return _view(row, private=True)
+
+
+@router.put("/me/opportunities/{opportunity_id}/announcement", dependencies=[Depends(verify_csrf)])
+async def save_announcement(
+    opportunity_id: int,
+    draft: AnnouncementDraft,
+    session: AuthSession = Depends(require_session),
+) -> dict:
+    row = await database.put(f"/opportunities/{opportunity_id}/announcement", {
+        **draft.model_dump(), "owner_id": session.user.id,
+    })
+    return _view(row, private=True)
+
+
+@router.post("/me/opportunities/{opportunity_id}/announcement/submit", dependencies=[Depends(verify_csrf)])
+async def submit_announcement(
+    opportunity_id: int,
+    session: AuthSession = Depends(require_session),
+) -> dict:
+    row = await database.get(f"/opportunities/{opportunity_id}")
+    if row is None or row.get("submitted_by") != session.user.id or row.get("status") != "approved":
+        raise HTTPException(404, "No approved opportunity belonging to you")
+    if row.get("email_campaign_id"):
+        raise HTTPException(409, "This announcement has already been submitted for approval")
+    audiences = list(dict.fromkeys(
+        key for year in row["target_years"] for key in YEAR_AUDIENCES[year]
+    ))
+    result = await database.post(f"/opportunities/{opportunity_id}/announcement/submit", {
+        "owner_id": session.user.id, "audiences": audiences,
+    })
+    campaign_id = result["email_campaign_id"]
+    try:
+        campaign = await database.get(f"/email/campaigns/{campaign_id}")
+        recipients, _ = await campaigns.recipients_for(campaign)
+        await database.patch(
+            f"/email/campaigns/{campaign_id}", params={"recipients": len(recipients)}
+        )
+    except Exception:
+        log.exception("Could not count recipients for opportunity announcement %s", campaign_id)
+    opportunity_notifications.dispatch(opportunity_notifications.alert_admins(
+        row["title"], f"Opportunity announcement needs approval: {row['title']}",
+        f"The submitter has approved their draft for {len(audiences)} target year-group audiences. "
+        "An admin must review the recipient list and content before sending.",
+        f"{settings.site_origin.rstrip('/')}/admin?tab=email&review={campaign_id}",
+    ))
+    return {"emailCampaignId": campaign_id, "status": "awaiting_committee"}
+
+
 @router.get("/admin/opportunities")
-async def moderation_queue(_: AuthSession = Depends(require_site)) -> dict:
+async def moderation_queue(_: AuthSession = Depends(require_opportunities_admin)) -> dict:
     rows = await database.get("/opportunities", {"limit": 500}) or []
     return {"opportunities": [_view(r, committee=True) for r in rows]}
 
@@ -173,7 +253,7 @@ async def moderation_queue(_: AuthSession = Depends(require_site)) -> dict:
 async def moderate_opportunity(
     opportunity_id: int,
     request: ReviewRequest,
-    session: AuthSession = Depends(require_site),
+    session: AuthSession = Depends(require_opportunities_admin),
 ) -> dict:
     row = await database.get(f"/opportunities/{opportunity_id}")
     if row is None:
@@ -184,32 +264,15 @@ async def moderate_opportunity(
     body = {
         "decision": request.decision,
         "notes": request.notes,
+        "allow_edit": request.allow_edit if request.decision == "rejected" else False,
         "reviewed_by": session.user.id,
     }
     if request.decision == "approved":
-        subject, message, audiences = _announcement(row)
-        body.update({
-            "campaign_subject": subject,
-            "campaign_body": message,
-            "campaign_audiences": audiences,
-        })
-    # One adapter transaction changes status AND inserts the campaign. A
-    # concurrent review is refused by its WHERE status='pending' predicate.
+        subject, message, _ = _announcement(row)
+        body.update({"campaign_subject": subject, "campaign_body": message})
+    # The adapter atomically locks the decision. Approval publishes the listing
+    # and prepares the owner's email draft but DOES NOT create an email campaign.
     result = await database.post(f"/opportunities/{opportunity_id}/review", body)
-    campaign_id = result.get("email_campaign_id")
-    if campaign_id:
-        try:
-            campaign = await database.get(f"/email/campaigns/{campaign_id}")
-            recipients, _ = await campaigns.recipients_for(campaign)
-            campaign = await database.patch(
-                f"/email/campaigns/{campaign_id}", params={"recipients": len(recipients)}
-            ) or campaign
-            await campaigns._notify(campaign)
-        except Exception:
-            # The draft is persisted in the same transaction as publication;
-            # a preview count or notification failure never re-approves it.
-            log.exception("Opportunity %s approved, but email count/notification failed", opportunity_id)
-    return {
-        "opportunity": _view(result["opportunity"], committee=True),
-        "emailCampaignId": campaign_id,
-    }
+    reviewed = result["opportunity"]
+    opportunity_notifications.dispatch(opportunity_notifications.alert_submitter(reviewed))
+    return {"opportunity": _view(reviewed, committee=True), "emailCampaignId": None}

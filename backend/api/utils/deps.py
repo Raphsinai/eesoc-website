@@ -130,6 +130,20 @@ require_passkey_links = require_capability("passkey_links")
 require_locker_allowances = require_capability("locker_allowances")
 
 
+async def require_opportunities_admin(
+    session: AuthSession = Depends(require_session),
+) -> AuthSession:
+    """Opportunity moderation is reserved for admin and superuser roles.
+
+    Having some committee role is not enough. This intentionally checks the
+    role, not a general capability, so an events/industry officer cannot
+    access the submissions even if role capabilities later change.
+    """
+    if session.role not in ("admin", "superuser"):
+        raise HTTPException(403, "An admin or superuser must review opportunities")
+    return session
+
+
 async def require_event_editor(
     session: AuthSession = Depends(require_session),
 ) -> AuthSession:

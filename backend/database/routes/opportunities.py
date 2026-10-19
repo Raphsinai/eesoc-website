@@ -10,7 +10,10 @@ import json
 
 from fastapi import APIRouter, HTTPException
 
-from models.opportunities import Opportunity, OpportunityCreate, OpportunityReview
+from models.opportunities import (
+    Opportunity, OpportunityCreate, OpportunityReview,
+    OpportunityEdit, AnnouncementDraft, AnnouncementSubmit,
+)
 from postgres import get_pool
 
 router = APIRouter(prefix="/opportunities")
@@ -22,6 +25,8 @@ COLUMNS = """
     o.contact_email, o.contact_phone, o.target_years, o.image_ids,
     o.status, o.review_notes, o.reviewed_by, o.reviewed_at,
     o.approved_at, o.email_campaign_id, o.created_at,
+    o.editable_after_rejection, o.revision, o.updated_at,
+    o.announcement_subject, o.announcement_body,
     submitter.email AS submitter_email,
     COALESCE((SELECT jsonb_agg(jsonb_build_object(
                 'id', asset.id, 'stored_name', asset.stored_name,
@@ -104,53 +109,141 @@ async def create_opportunity(item: OpportunityCreate) -> Opportunity:
     return await get_opportunity(row["id"])
 
 
+def _review_conflict() -> HTTPException:
+    return HTTPException(409, "This opportunity has changed. Refresh and try again.")
+
+
+@router.put("/{opportunity_id}")
+async def resubmit_opportunity(opportunity_id: int, item: OpportunityEdit) -> Opportunity:
+    """Only its owner can replace a rejected, explicitly editable submission.
+
+    Updating returns it to the pending queue in a single transaction, not to
+    the public listing; approval is never inherited across revisions.
+    """
+    if item.owner_id is None:
+        raise HTTPException(400, "An owner is required")
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        if item.image_ids:
+            count = await conn.fetchval(
+                """SELECT count(*) FROM public.uploads
+                     WHERE id = ANY($1::bigint[]) AND uploaded_by = $2
+                       AND purpose = 'opportunity' AND content_type LIKE 'image/%';""",
+                item.image_ids, item.owner_id,
+            )
+            if count != len(item.image_ids):
+                raise HTTPException(400, "One or more images do not belong to your account")
+        row = await conn.fetchrow(
+            """UPDATE public.opportunities
+                  SET title=$3, description=$4, links=$5::jsonb,
+                      contact_email=$6, contact_phone=$7,
+                      target_years=$8::jsonb, image_ids=$9,
+                      status='pending', editable_after_rejection=FALSE,
+                      revision=revision+1, updated_at=NOW(),
+                      reviewed_by=NULL, reviewed_at=NULL,
+                      announcement_subject=NULL, announcement_body=NULL
+                WHERE id=$1 AND submitted_by=$2 AND status='rejected'
+                  AND editable_after_rejection=TRUE
+                RETURNING id;""",
+            opportunity_id, item.owner_id, item.title, item.description,
+            json.dumps([str(url) for url in item.links]),
+            str(item.contact_email) if item.contact_email else None,
+            item.contact_phone, json.dumps(item.target_years), item.image_ids,
+        )
+        if row is None:
+            raise _review_conflict()
+    return await get_opportunity(opportunity_id)
+
+
 @router.post("/{opportunity_id}/review")
 async def review_opportunity(opportunity_id: int, review: OpportunityReview) -> dict:
     if review.reviewed_by is None:
         raise HTTPException(400, "A reviewer account is required")
-    if review.decision == "approved" and not (
-        review.campaign_subject and review.campaign_body and review.campaign_audiences
-    ):
-        raise HTTPException(400, "An approved opportunity needs an email draft")
+    if review.allow_edit and review.decision != "rejected":
+        raise HTTPException(400, "Edits are only offered on rejection")
+    if review.decision == "rejected" and review.allow_edit and not (review.notes or "").strip():
+        raise HTTPException(400, "Write feedback when offering revisions")
 
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction():
         row = await conn.fetchrow(
             """UPDATE public.opportunities
-                  SET status = $2::varchar, reviewed_by = $3, review_notes = $4,
-                      reviewed_at = NOW(),
-                      approved_at = CASE WHEN $2::varchar = 'approved' THEN NOW() ELSE NULL END
-                WHERE id = $1 AND status = 'pending'
+                  SET status=$2::varchar, reviewed_by=$3, review_notes=$4,
+                      reviewed_at=NOW(), updated_at=NOW(),
+                      approved_at=CASE WHEN $2::varchar = 'approved' THEN NOW() ELSE NULL END,
+                      editable_after_rejection=CASE WHEN $2::varchar = 'rejected' THEN $5 ELSE FALSE END,
+                      announcement_subject=CASE WHEN $2::varchar = 'approved' THEN $6 ELSE NULL END,
+                      announcement_body=CASE WHEN $2::varchar = 'approved' THEN $7 ELSE NULL END
+                WHERE id=$1 AND status='pending'
                 RETURNING id;""",
-            opportunity_id, review.decision, (review.reviewed_by),
+            opportunity_id, review.decision, review.reviewed_by,
             review.notes.strip() if review.notes and review.notes.strip() else None,
+            review.allow_edit,
+            review.campaign_subject if review.decision == "approved" else None,
+            review.campaign_body if review.decision == "approved" else None,
         )
         if row is None:
-            existing = await conn.fetchval(
-                "SELECT status FROM public.opportunities WHERE id = $1;", opportunity_id
-            )
-            if existing is None:
+            exists = await conn.fetchval("SELECT id FROM public.opportunities WHERE id=$1", opportunity_id)
+            if exists is None:
                 raise HTTPException(404, "No such opportunity")
-            raise HTTPException(409, f"Already reviewed ({existing}); refresh the queue")
-
-        campaign_id = None
-        if review.decision == "approved":
-            # Approval and insertion are a single commit: no orphaned
-            # approved listing, and no double draft on competing reviews.
-            campaign_id = await conn.fetchval(
-                """INSERT INTO public.email_campaigns
-                       (subject, heading, body, audiences, status, kind,
-                        opportunity_id, created_by)
-                   VALUES ($1, $2, $3, $4::jsonb, 'awaiting_approval',
-                           'opportunity_announcement', $5, $6)
-                   RETURNING id;""",
-                review.campaign_subject, review.campaign_subject,
-                review.campaign_body, json.dumps(review.campaign_audiences),
-                opportunity_id, review.reviewed_by,
-            )
-            await conn.execute(
-                "UPDATE public.opportunities SET email_campaign_id = $2 WHERE id = $1;",
-                opportunity_id, campaign_id,
-            )
+            raise _review_conflict()
     return {"opportunity": (await get_opportunity(opportunity_id)).model_dump(mode="json"),
-            "email_campaign_id": campaign_id}
+            "email_campaign_id": None}
+
+
+@router.put("/{opportunity_id}/announcement")
+async def save_announcement(opportunity_id: int, draft: AnnouncementDraft) -> Opportunity:
+    if draft.owner_id is None:
+        raise HTTPException(400, "An owner is required")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """UPDATE public.opportunities
+                  SET announcement_subject=$3, announcement_body=$4, updated_at=NOW()
+                WHERE id=$1 AND submitted_by=$2 AND status='approved'
+                  AND email_campaign_id IS NULL
+                RETURNING id;""",
+            opportunity_id, draft.owner_id, draft.subject, draft.body,
+        )
+    if row is None:
+        raise _review_conflict()
+    return await get_opportunity(opportunity_id)
+
+
+@router.post("/{opportunity_id}/announcement/submit")
+async def submit_announcement(opportunity_id: int, payload: AnnouncementSubmit) -> dict:
+    """Owner's sign-off atomically creates one committee email queue entry.
+
+    The audiences are derived by the public API from the stored year groups;
+    the member cannot select arbitrary mailing lists. A conditional UPDATE
+    serializes competing submissions before the INSERT and unique index.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        row = await conn.fetchrow(
+            """UPDATE public.opportunities
+                  SET updated_at=NOW()
+                WHERE id=$1 AND submitted_by=$2 AND status='approved'
+                  AND email_campaign_id IS NULL
+                  AND length(trim(coalesce(announcement_subject, ''))) >= 3
+                  AND length(trim(coalesce(announcement_body, ''))) >= 20
+                RETURNING announcement_subject, announcement_body;""",
+            opportunity_id, payload.owner_id,
+        )
+        if row is None:
+            raise _review_conflict()
+        campaign_id = await conn.fetchval(
+            """INSERT INTO public.email_campaigns
+                 (subject, heading, body, audiences, status, kind,
+                  opportunity_id, created_by)
+               VALUES ($1, $1, $2, $3::jsonb, 'awaiting_approval',
+                       'opportunity_announcement', $4, $5)
+               RETURNING id;""",
+            row["announcement_subject"], row["announcement_body"],
+            json.dumps(payload.audiences), opportunity_id, payload.owner_id,
+        )
+        await conn.execute(
+            "UPDATE public.opportunities SET email_campaign_id=$2 WHERE id=$1",
+            opportunity_id, campaign_id,
+        )
+    return {"email_campaign_id": campaign_id}

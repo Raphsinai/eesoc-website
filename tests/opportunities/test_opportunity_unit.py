@@ -122,44 +122,166 @@ def test_public_list_is_filtered_and_my_list_is_owner_scoped(monkeypatch):
     assert private["opportunities"][0]["status"] == "rejected"
 
 
-def test_approval_queues_but_never_sends_without_email_review(monkeypatch):
+def test_review_prepares_draft_without_queueing_or_sending(monkeypatch):
     created = []
+    notices = []
 
     async def fake_get(path, params=None):
-        if path == "/opportunities/17":
-            return {**ROW, "status": "pending"}
-        if path == "/email/campaigns/123":
-            return {"id": 123, "status": "awaiting_approval", "audiences": ["dept_msc"]}
-        raise AssertionError(path)
+        assert path == "/opportunities/17"
+        return {**ROW, "status": "pending"}
 
     async def fake_post(path, body):
         created.append((path, body))
-        return {"opportunity": {**ROW, "status": "approved", "email_campaign_id": 123},
-                "email_campaign_id": 123}
+        return {"opportunity": {
+            **ROW, "status": "approved", "email_campaign_id": None,
+            "announcement_subject": body["campaign_subject"],
+            "announcement_body": body["campaign_body"],
+        }, "email_campaign_id": None}
 
-    async def fake_recipients(_campaign):
-        return ([{"email": "list@ic.ac.uk"}], [])
-
-    async def fake_patch(path, params):
-        assert path == "/email/campaigns/123" and params == {"recipients": 1}
-        return {"id": 123}
-
-    async def fake_notify(_campaign):
-        return None
+    def dispatch(coro):
+        # The production dispatcher creates a task; unit tests must not
+        # outlive their asyncio.run loop or accidentally email somebody.
+        notices.append(coro)
+        coro.close()
 
     monkeypatch.setattr(api.database, "get", fake_get)
     monkeypatch.setattr(api.database, "post", fake_post)
-    monkeypatch.setattr(api.database, "patch", fake_patch)
-    monkeypatch.setattr(api.campaigns, "recipients_for", fake_recipients)
-    monkeypatch.setattr(api.campaigns, "_notify", fake_notify)
+    monkeypatch.setattr(api.opportunity_notifications, "dispatch", dispatch)
 
     response = asyncio.run(api.moderate_opportunity(
         17, api.ReviewRequest(decision="approved"),
         SimpleNamespace(user=SimpleNamespace(id=101)),
     ))
-    assert response["emailCampaignId"] == 123
+    assert response["emailCampaignId"] is None
+    assert response["opportunity"]["announcementStatus"] == "draft"
     assert created[0][1]["reviewed_by"] == 101
-    assert created[0][1]["campaign_audiences"] == [
-        "dept_ee2", "dept_eie2", "dept_ee3", "dept_eie3", "dept_msc",
-    ]
-    assert not any("send" in path for path, _ in created)
+    assert created[0][1]["campaign_subject"] == f"Opportunity: {ROW['title']}"
+    assert "View this opportunity" in created[0][1]["campaign_body"]
+    assert len(notices) == 1
+    assert all("/email/campaigns" not in path for path, _ in created)
+
+
+def test_member_signoff_is_required_before_email_approval_queue(monkeypatch):
+    written = []
+    alerts = []
+
+    async def fake_get(path, params=None):
+        if path == "/opportunities/17":
+            return {**ROW, "status": "approved", "email_campaign_id": None}
+        if path == "/email/campaigns/123":
+            return {"id": 123, "status": "awaiting_approval", "audiences": ["dept_msc"]}
+        raise AssertionError(path)
+
+    async def fake_post(path, body):
+        written.append((path, body))
+        return {"email_campaign_id": 123}
+
+    async def fake_patch(path, params):
+        return {"id": 123}
+
+    async def fake_recipients(_campaign):
+        return ([{"email": "list@ic.ac.uk"}], [])
+
+    def dispatch(coro):
+        alerts.append(coro)
+        coro.close()
+
+    monkeypatch.setattr(api.database, "get", fake_get)
+    monkeypatch.setattr(api.database, "post", fake_post)
+    monkeypatch.setattr(api.database, "patch", fake_patch)
+    monkeypatch.setattr(api.campaigns, "recipients_for", fake_recipients)
+    monkeypatch.setattr(api.opportunity_notifications, "dispatch", dispatch)
+
+    result = asyncio.run(api.submit_announcement(
+        17, SimpleNamespace(user=SimpleNamespace(id=81)),
+    ))
+    assert result["emailCampaignId"] == 123
+    assert written == [("/opportunities/17/announcement/submit", {
+        "owner_id": 81,
+        "audiences": ["dept_ee2", "dept_eie2", "dept_ee3", "dept_eie3", "dept_msc"],
+    })]
+    assert len(alerts) == 1
+
+
+def test_announcement_cannot_be_submitted_by_a_different_owner(monkeypatch):
+    from fastapi import HTTPException
+
+    async def fake_get(path):
+        return {**ROW, "status": "approved"}
+
+    monkeypatch.setattr(api.database, "get", fake_get)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(api.submit_announcement(17, SimpleNamespace(user=SimpleNamespace(id=99))))
+    assert error.value.status_code == 404
+
+
+def test_opportunity_admin_guard_only_allows_admin_or_superuser():
+    from fastapi import HTTPException
+    from utils.deps import require_opportunities_admin
+
+    for role in ("events", "industry", None):
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(require_opportunities_admin(SimpleNamespace(role=role)))
+        assert error.value.status_code == 403
+    for role in ("admin", "superuser"):
+        session = SimpleNamespace(role=role)
+        assert asyncio.run(require_opportunities_admin(session)) is session
+
+
+def test_only_admins_superusers_are_notified(monkeypatch):
+    from services import opportunity_notifications as alerts
+
+    async def fake_get(path):
+        assert path == "/auth/admins"
+        return [
+            {"role": "events", "email": "events@example.org"},
+            {"role": "industry", "email": "industry@example.org"},
+            {"role": "admin", "email": "admin@example.org"},
+            {"role": "superuser", "email": "senior@example.org"},
+            {"role": "admin", "email": "ADMIN@example.org"},
+        ]
+
+    monkeypatch.setattr(alerts.database, "get", fake_get)
+    monkeypatch.setattr(alerts.settings, "superuser_email", "standing@example.org")
+    recipients = asyncio.run(alerts.admin_recipients())
+    assert recipients == ["admin@example.org", "senior@example.org", "standing@example.org"]
+
+
+def test_notifications_reach_current_admins_and_submitter_not_public_contact(monkeypatch):
+    from services import opportunity_notifications as alerts
+
+    sent = []
+
+    async def fake_get(path):
+        assert path == "/auth/admins"
+        return [
+            {"role": "events", "email": "events@example.org"},
+            {"role": "admin", "email": "admin@example.org"},
+        ]
+
+    async def fake_send_many(to, subject, text):
+        sent.append((tuple(to), subject, text))
+        return to
+
+    async def fake_send(to, subject, text):
+        sent.append(((to,), subject, text))
+        return True
+
+    monkeypatch.setattr(alerts.database, "get", fake_get)
+    monkeypatch.setattr(alerts.settings, "superuser_email", "superuser@example.org")
+    monkeypatch.setattr(alerts.mailer, "send_many", fake_send_many)
+    monkeypatch.setattr(alerts.mailer, "send", fake_send)
+
+    asyncio.run(alerts.alert_admins(
+        "Title", "Review now", "New submission", "https://eesoc.test/admin",
+    ))
+    assert sent[0][0] == ("admin@example.org", "superuser@example.org")
+    assert "events@example.org" not in str(sent[0])
+
+    asyncio.run(alerts.alert_submitter({
+        **ROW, "status": "rejected", "editable_after_rejection": True,
+    }))
+    assert sent[1][0] == ("submitter@example.org",)
+    assert "Please add eligibility details." in sent[1][2]
+    assert "edit it and resubmit" in sent[1][2]
+    assert "research@example.org" not in str(sent[1])

@@ -7,11 +7,12 @@ import Badge from '@/components/ds/Badge.vue'
 import Button from '@/components/ds/Button.vue'
 import Card from '@/components/ds/Card.vue'
 
-const emit = defineEmits(['open-email'])
+const emit = defineEmits(['open-email', 'changed'])
 const rows = ref([])
 const loading = ref(true)
 const busyId = ref(null)
 const notes = ref({})
+const allowEdit = ref({})
 const error = ref('')
 const notice = ref('')
 const showAll = ref(false)
@@ -29,13 +30,14 @@ async function refresh() {
     rows.value = (await api.get('/admin/opportunities')).opportunities
     for (const row of rows.value) {
       if (!(row.id in notes.value)) notes.value[row.id] = row.reviewNotes || ''
+      if (!(row.id in allowEdit.value)) allowEdit.value[row.id] = false
     }
   } catch (e) { error.value = e.message }
   finally { loading.value = false }
 }
 
 async function review(row, decision) {
-  if (decision === 'approved' && !confirm(`Approve “${row.title}” and create an email announcement draft?`)) return
+  if (decision === 'approved' && !confirm(`Approve and publish “${row.title}”? The submitter will then draft and approve the announcement before admins review it for sending.`)) return
   if (decision === 'rejected' && !confirm(`Reject “${row.title}”? The submitter will be able to read your notes.`)) return
   busyId.value = row.id
   notice.value = ''
@@ -44,11 +46,13 @@ async function review(row, decision) {
     const result = await api.post(`/admin/opportunities/${row.id}/review`, {
       decision,
       notes: (notes.value[row.id] || '').trim() || null,
+      allow_edit: decision === 'rejected' && Boolean(allowEdit.value[row.id]),
     })
     notice.value = decision === 'approved'
-      ? `“${row.title}” is now published. An announcement draft is waiting for separate email approval.`
-      : `“${row.title}” was rejected. The submitter can see its status and your notes.`
+      ? `“${row.title}” is published. The submitter must now draft and approve the email before it reaches the committee queue.`
+      : `“${row.title}” was rejected. The submitter has been notified of the decision and notes.`
     await refresh()
+    emit('changed')
     if (result.emailCampaignId) {
       // Keep the email on the queue — approving an opportunity must never
       // silently approve its audience or send bulk mail.
@@ -71,7 +75,7 @@ onMounted(refresh)
     <header class="opp-admin__header">
       <div>
         <h2>Opportunity submissions</h2>
-        <p>Review submissions before they appear on the website. Approval also creates an email draft for a separate decision in the Email tab; it never sends automatically.</p>
+        <p>Admins and superusers review these submissions. Approval publishes the listing and invites the submitter to draft an email. Only after their sign-off does the announcement enter the separate committee Email queue.</p>
       </div>
       <div class="opp-admin__controls">
         <Badge :tone="pending.length ? 'danger' : 'neutral'">{{ pending.length }} pending</Badge>
@@ -102,13 +106,19 @@ onMounted(refresh)
           <strong>Committee notes (optional)</strong>
           <textarea v-model="notes[item.id]" rows="3" maxlength="3000" placeholder="Notes for the submitter if rejected, or feedback on approval…" />
         </label>
+        <label class="opp-admin__check">
+          <input v-model="allowEdit[item.id]" type="checkbox" />
+          Let the submitter edit and resubmit this opportunity after rejection
+        </label>
         <div class="opp-admin__controls">
-          <Button size="sm" :disabled="busyId !== null" @click="review(item, 'approved')">Approve & queue announcement</Button>
+          <Button size="sm" :disabled="busyId !== null" @click="review(item, 'approved')">Approve & publish</Button>
           <Button size="sm" variant="danger" :disabled="busyId !== null" @click="review(item, 'rejected')">Reject</Button>
         </div>
       </template>
       <template v-else>
         <p v-if="item.reviewNotes" class="opp-admin__meta">Committee notes: {{ item.reviewNotes }}</p>
+        <p v-if="item.status === 'rejected' && item.allowEdit" class="opp-admin__meta">The submitter may edit and resubmit this opportunity.</p>
+        <p v-if="item.status === 'approved' && !item.emailCampaignId" class="opp-admin__meta">Awaiting submitter's announcement draft and sign-off.</p>
         <div v-if="item.status === 'approved'" class="opp-admin__controls">
           <router-link :to="`/opportunities/${item.id}`">View published listing ↗</router-link>
           <Button v-if="item.emailCampaignId" variant="secondary" size="sm" @click="emit('open-email', item.emailCampaignId)">Open email announcement</Button>
@@ -132,6 +142,7 @@ onMounted(refresh)
 .opp-admin__links a, .opp-admin a { color: var(--text-accent); font: var(--type-small); }
 .opp-admin__gallery { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 .opp-admin__gallery img { max-width: 180px; max-height: 130px; object-fit: cover; border-radius: var(--radius-sm); }
+.opp-admin__check { display: flex; gap: var(--space-2); align-items: center; font: var(--type-small); cursor: pointer; }
 .opp-admin__notes { display: grid; gap: var(--space-2); font: var(--type-small); }
 .opp-admin__notes textarea { width: 100%; padding: var(--space-3); background: var(--surface-card); color: var(--text-body); border: 1px solid var(--border-default); border-radius: var(--radius-sm); font: var(--type-small); }
 .opp-admin__notice { font: var(--type-small); color: var(--text-strong); border-left: 3px solid var(--text-accent); padding: var(--space-3); }

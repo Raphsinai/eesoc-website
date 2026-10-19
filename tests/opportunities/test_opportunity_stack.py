@@ -1,14 +1,13 @@
-"""End-to-end opportunity moderation against the isolated compose test stack.
+"""Authenticated opportunities workflow against the isolated Docker test stack.
 
-Uses ordinary member and admin sessions with real Postgres, real uploads, and
-existing email approvals. No send is authorised by these tests.
+All mail goes to Mailpit; none of these tests authorise a real bulk send.
 """
 
 from io import BytesIO
+from time import monotonic, sleep
 from uuid import uuid4
 
 import httpx
-
 from PIL import Image
 
 
@@ -31,11 +30,16 @@ def image_bytes():
     return buffer.getvalue()
 
 
-def test_member_opportunity_requires_login_is_private_until_approval_and_queues_mail(api, member_client, admin_client):
+def own(client, opportunity_id):
+    response = client.get("/me/opportunities")
+    assert response.status_code == 200, response.text
+    return next(r for r in response.json()["opportunities"] if r["id"] == opportunity_id)
+
+
+def test_submission_review_owner_signoff_final_queue_and_double_submit(
+    api, member_client, admin_client, superuser_client, mailpit,
+):
     payload = submission()
-    # The shared `api` fixture acquires cookies when member_client signs in,
-    # so only a fresh client is genuinely anonymous. Without that isolation
-    # this assertion may accidentally exercise a signed-in session.
     with httpx.Client(base_url=str(api.base_url), timeout=10.0) as guest:
         assert guest.post("/opportunities", json=payload).status_code == 401
         assert guest.post("/opportunities/images", files={
@@ -43,10 +47,9 @@ def test_member_opportunity_requires_login_is_private_until_approval_and_queues_
         }).status_code == 401
         assert guest.get("/me/opportunities").status_code == 401
 
-    bad = member_client.post("/opportunities/images", files={
+    assert member_client.post("/opportunities/images", files={
         "file": ("bad.svg", b"<svg></svg>", "image/svg+xml"),
-    })
-    assert bad.status_code == 400
+    }).status_code == 400
     image = member_client.post("/opportunities/images", files={
         "file": ("poster.png", image_bytes(), "image/png"),
     })
@@ -57,56 +60,88 @@ def test_member_opportunity_requires_login_is_private_until_approval_and_queues_
         **payload, "image_ids": [image_id], "submitted_by": -99,
     })
     assert created.status_code in (200, 201), created.text
-    row = created.json()
-    ident = row["id"]
-    assert row["status"] == "pending"
-    assert row["images"][0]["id"] == image_id
-    assert row["contactEmail"] == payload["contact_email"]
-    assert row["reviewNotes"] is None
-
+    ident = created.json()["id"]
+    assert created.json()["status"] == "pending"
+    assert created.json()["images"][0]["id"] == image_id
+    assert created.json()["contactEmail"] == payload["contact_email"]
+    assert created.json()["reviewNotes"] is None
     assert not any(r["id"] == ident for r in api.get("/opportunities").json()["opportunities"])
     assert api.get(f"/opportunities/{ident}").status_code == 404
-    assert any(r["id"] == ident for r in member_client.get("/me/opportunities").json()["opportunities"])
-    assert admin_client.get("/admin/opportunities").status_code == 200
+    assert own(member_client, ident)["status"] == "pending"
+
+    overview = admin_client.get("/admin/dashboard")
+    assert overview.status_code == 200
+    assert overview.json()["opportunitiesAwaitingApproval"] > 0
+    assert any(r["id"] == ident for r in overview.json()["pendingOpportunities"])
     assert any(r["id"] == ident for r in admin_client.get("/admin/opportunities").json()["opportunities"])
+    assert superuser_client.get("/admin/opportunities").status_code == 200
     assert member_client.get("/admin/opportunities").status_code == 403
     assert member_client.post(f"/admin/opportunities/{ident}/review", json={
         "decision": "approved",
     }).status_code == 403
 
+    # Listing approval does not add a bulk campaign yet.
     approved = admin_client.post(f"/admin/opportunities/{ident}/review", json={
         "decision": "approved", "notes": "Good fit for the cohort.",
     })
     assert approved.status_code == 200, approved.text
-    draft_id = approved.json()["emailCampaignId"]
-    assert isinstance(draft_id, int)
+    assert approved.json()["emailCampaignId"] is None
     public = api.get(f"/opportunities/{ident}")
     assert public.status_code == 200, public.text
     assert public.json()["title"] == payload["title"]
     assert "reviewNotes" not in public.json()
+    assert "announcementBody" not in public.json()
     assert "submittedBy" not in public.json()
-    assert any(r["id"] == ident for r in api.get("/opportunities").json()["opportunities"])
-    assert next(r for r in member_client.get("/me/opportunities").json()["opportunities"] if r["id"] == ident)["status"] == "approved"
+    mine = own(member_client, ident)
+    assert mine["status"] == "approved"
+    assert mine["announcementStatus"] == "draft"
+    assert "View this opportunity" in mine["announcementBody"]
+    assert mine["emailCampaignId"] is None
+    assert not any(c["subject"] == f"Opportunity: {payload['title']}" for c in
+                   admin_client.get("/admin/email/queue").json()["items"])
+
+    email_payload = {
+        "subject": f"Students: {payload['title']}",
+        "body": "**Applications open!**\n\nStudents can join through the attached official programme link.",
+    }
+    outsider = superuser_client.put(
+        f"/me/opportunities/{ident}/announcement", json=email_payload,
+    )
+    assert outsider.status_code == 409
+    draft = member_client.put(
+        f"/me/opportunities/{ident}/announcement", json=email_payload,
+    )
+    assert draft.status_code == 200, draft.text
+    assert draft.json()["announcementBody"] == email_payload["body"]
+    assert draft.json()["emailCampaignId"] is None
+    queued = member_client.post(f"/me/opportunities/{ident}/announcement/submit")
+    assert queued.status_code == 200, queued.text
+    campaign_id = queued.json()["emailCampaignId"]
+    assert isinstance(campaign_id, int)
+    assert own(member_client, ident)["announcementStatus"] == "awaiting_committee"
+    assert member_client.post(f"/me/opportunities/{ident}/announcement/submit").status_code == 409
+    assert member_client.put(f"/me/opportunities/{ident}/announcement", json=email_payload).status_code == 409
+    assert superuser_client.post(f"/me/opportunities/{ident}/announcement/submit").status_code == 404
+    assert admin_client.post(f"/admin/opportunities/{ident}/review", json={
+        "decision": "approved",
+    }).status_code == 409
 
     queue = admin_client.get("/admin/email/queue")
     assert queue.status_code == 200, queue.text
-    queued = next(r for r in queue.json()["items"] if r["id"] == draft_id)
-    assert queued["kind"] == "opportunity_announcement"
-    assert queued["status"] == "awaiting_approval"
-    details = admin_client.get(f"/admin/email/queue/{draft_id}")
+    queued_item = next(r for r in queue.json()["items"] if r["id"] == campaign_id)
+    assert queued_item["kind"] == "opportunity_announcement"
+    assert queued_item["status"] == "awaiting_approval"
+    assert queued_item["subject"] == email_payload["subject"]
+    details = admin_client.get(f"/admin/email/queue/{campaign_id}")
     assert details.status_code == 200, details.text
-    assert "View this opportunity" in details.json()["body"]
+    assert details.json()["body"] == email_payload["body"]
     assert set(["dept_ee1", "dept_ee3", "dept_eie3", "dept_msc"]) == set(details.json()["audiences"])
-
-    again = admin_client.post(f"/admin/opportunities/{ident}/review", json={"decision": "approved"})
-    assert again.status_code == 409
-    queue_again = admin_client.get("/admin/email/queue").json()["items"]
-    assert len([r for r in queue_again if r["id"] == draft_id]) == 1
-    # No send — the committee must separately approve this email.
-    assert admin_client.post(f"/admin/email/queue/{draft_id}/dismiss").status_code == 200
+    assert len([r for r in queue.json()["items"] if r["id"] == campaign_id]) == 1
+    assert admin_client.post(f"/admin/email/queue/{campaign_id}/dismiss").status_code == 200
+    # No bulk send; the committee must separately approve the content.
 
 
-def test_rejection_notes_visible_to_submitter_not_to_public(api, member_client, admin_client):
+def test_rejection_notes_edit_permission_and_resubmission(api, member_client, admin_client, superuser_client):
     payload = submission()
     created = member_client.post("/opportunities", json=payload)
     assert created.status_code in (200, 201), created.text
@@ -114,11 +149,67 @@ def test_rejection_notes_visible_to_submitter_not_to_public(api, member_client, 
 
     rejected = admin_client.post(f"/admin/opportunities/{ident}/review", json={
         "decision": "rejected", "notes": "Missing the organiser's details; please resubmit.",
+        "allow_edit": True,
     })
     assert rejected.status_code == 200, rejected.text
     assert rejected.json()["emailCampaignId"] is None
-    own = next(r for r in member_client.get("/me/opportunities").json()["opportunities"] if r["id"] == ident)
-    assert own["status"] == "rejected"
-    assert "please resubmit" in own["reviewNotes"]
+    own_row = own(member_client, ident)
+    assert own_row["status"] == "rejected"
+    assert own_row["allowEdit"] is True
+    assert "please resubmit" in own_row["reviewNotes"]
     assert api.get(f"/opportunities/{ident}").status_code == 404
-    assert admin_client.post(f"/admin/opportunities/{ident}/review", json={"decision": "approved"}).status_code == 409
+    assert superuser_client.put(f"/me/opportunities/{ident}", json=payload).status_code == 409
+
+    revised = {**payload, "title": f"Updated {payload['title']}",
+               "description": "New eligibility details and a fuller explanation of the organising research group."}
+    updated = member_client.put(f"/me/opportunities/{ident}", json=revised)
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["id"] == ident
+    assert updated.json()["status"] == "pending"
+    assert updated.json()["allowEdit"] is False
+    assert updated.json()["revision"] == 2
+    assert updated.json()["title"] == revised["title"]
+    assert updated.json()["reviewNotes"] == "Missing the organiser's details; please resubmit."
+    assert api.get(f"/opportunities/{ident}").status_code == 404
+    assert member_client.put(f"/me/opportunities/{ident}", json=revised).status_code == 409
+    assert admin_client.post(f"/admin/opportunities/{ident}/review", json={
+        "decision": "approved",
+    }).status_code == 200
+
+    closed = member_client.post("/opportunities", json=submission())
+    closed_id = closed.json()["id"]
+    assert admin_client.post(f"/admin/opportunities/{closed_id}/review", json={
+        "decision": "rejected", "notes": "This isn't relevant.", "allow_edit": False,
+    }).status_code == 200
+    assert own(member_client, closed_id)["allowEdit"] is False
+    assert member_client.put(f"/me/opportunities/{closed_id}", json=revised).status_code == 409
+    assert admin_client.post(f"/admin/opportunities/{closed_id}/review", json={
+        "decision": "approved",
+    }).status_code == 409
+    assert admin_client.post(f"/admin/opportunities/{ident}/review", json={
+        "decision": "rejected",
+    }).status_code == 409
+
+
+def test_non_admin_committee_role_cannot_moderate(api, superuser_client):
+    email = f"opportunities-events-{uuid4().hex[:9]}@example.com"
+    response = superuser_client.post("/admin/admins", json={
+        "email": email, "role": "events",
+    })
+    assert response.status_code in (200, 201), response.text
+    sign_in = api.post("/auth/dev-login", json={"email": email})
+    assert sign_in.status_code == 200, sign_in.text
+    assert sign_in.json()["role"] == "events"
+    token = sign_in.cookies.get("session")
+    csrf = sign_in.cookies.get("csrf")
+    with httpx.Client(base_url=str(api.base_url), timeout=10.0,
+                      headers={"Cookie": f"session={token}; csrf={csrf}",
+                               "X-CSRF-Token": sign_in.json()["csrf_token"]}) as officer:
+        assert officer.get("/admin/dashboard").status_code == 200
+        dash = officer.get("/admin/dashboard").json()
+        assert dash["pendingOpportunities"] == []
+        assert dash["opportunitiesAwaitingApproval"] == 0
+        assert officer.get("/admin/opportunities").status_code == 403
+        assert officer.post("/admin/opportunities/1/review", json={
+            "decision": "approved",
+        }).status_code == 403

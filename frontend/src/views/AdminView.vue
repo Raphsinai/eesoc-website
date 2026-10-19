@@ -34,7 +34,7 @@ const TABS = [
   ['events', 'Events', 'eventish'],
   ['overdue', 'Unpaid bookings', 'eventish'],
   ['resources', 'Resources', 'site'],
-  ['opportunities', 'Opportunities', 'site'],
+  ['opportunities', 'Opportunities', 'oppadmin'],
   ['files', 'Files', 'site'],
   ['committee', 'Committee', 'site'],
   ['links', 'Union products', 'site'],
@@ -47,6 +47,7 @@ const TABS = [
 function allowed(need) {
   if (need === 'any') return session.isAdmin
   if (need === 'card') return Boolean(session.committeeLogin)
+  if (need === 'oppadmin') return ['admin', 'superuser'].includes(session.role)
   // Events and the bookings that go with them: the events officers see all of
   // it, the industry officers see it for their own events.
   if (need === 'eventish') return can('events') || can('industry')
@@ -1357,6 +1358,7 @@ const sponsorPendingTotal = computed(() =>
 // not whatever it was when the page first loaded.
 watch(tab, (t) => {
   if (t === 'overview' || t === 'sponsors') loadSponsorInbox()
+  if (t === 'overview') load()
 })
 
 // The WhatsApp groups the roles digest is also posted into. None until ticked.
@@ -1835,7 +1837,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           :variant="tab === id ? 'primary' : 'ghost'"
           size="sm"
           @click="tab = id"
-        >{{ label }}<template v-if="id === 'email' && dash?.emailsAwaitingApproval"> ({{ dash.emailsAwaitingApproval }})</template></Button>
+        >{{ label }}<template v-if="id === 'email' && dash?.emailsAwaitingApproval"> ({{ dash.emailsAwaitingApproval }})</template><template v-if="id === 'opportunities' && dash?.opportunitiesAwaitingApproval"> ({{ dash.opportunitiesAwaitingApproval }})</template></Button>
       </nav>
 
       <p v-if="notice" style="font:var(--type-small); color:var(--text-muted)">{{ notice }}</p>
@@ -1845,6 +1847,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
       <OpportunitiesAdminPanel
         v-if="tab === 'opportunities'"
         @open-email="openOpportunityEmail"
+        @changed="load"
       />
 
       <!-- ============================ OVERVIEW ============================ -->
@@ -1899,6 +1902,22 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
       </template>
 
       <template v-if="tab === 'overview' && dash">
+        <Card v-if="['admin', 'superuser'].includes(session.role) && dash.opportunitiesAwaitingApproval" variant="raised" class="pending-card" style="margin-bottom:var(--space-6)">
+          <div style="display:grid; gap:var(--space-4)">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:var(--space-4)">
+              <h2 style="margin:0; font:var(--type-h4)">Opportunities awaiting approval <Badge tone="danger">{{ dash.opportunitiesAwaitingApproval }}</Badge></h2>
+              <Button size="sm" @click="tab = 'opportunities'">Review opportunities</Button>
+            </div>
+            <div v-for="item in dash.pendingOpportunities.slice(0, 5)" :key="item.id" style="display:flex; justify-content:space-between; gap:var(--space-3); flex-wrap:wrap; align-items:center">
+              <div style="display:grid; gap:var(--space-1)">
+                <strong style="font:var(--type-small)">{{ item.title }}</strong>
+                <span style="font:var(--type-2xs); color:var(--text-muted)">{{ item.submittedBy || 'Member' }} · {{ new Date(item.createdAt).toLocaleDateString('en-GB') }}</span>
+              </div>
+              <Button variant="secondary" size="sm" @click="tab = 'opportunities'">Review</Button>
+            </div>
+            <span v-if="dash.opportunitiesAwaitingApproval > 5" style="font:var(--type-small); color:var(--text-muted)">and {{ dash.opportunitiesAwaitingApproval - 5 }} more awaiting review</span>
+          </div>
+        </Card>
         <!-- Sponsors waiting on the committee. First on the page, because it is
              the one thing here somebody outside the committee is waiting on. -->
         <Card v-if="sponsorPendingTotal" variant="raised" class="pending-card">

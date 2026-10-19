@@ -91,6 +91,18 @@ async def dashboard(session: AuthSession = Depends(require_admin)) -> dict:
         ) or []
         if c.get("status") == "awaiting_approval"
     )
+    # Ordinary committee roles can use parts of this dashboard, but must not
+    # learn the titles, authors or number of private opportunity submissions.
+    pending_opportunities = []
+    if session.role in ("admin", "superuser"):
+        pending_opportunities = [
+            {"id": row["id"], "title": row["title"],
+             "submittedBy": row.get("submitter_email"),
+             "createdAt": row.get("created_at")}
+            for row in (await database.get(
+                "/opportunities", {"status": "pending", "limit": 500}
+            ) or []) if row.get("status") == "pending"
+        ]
     return {
         "academicYear": academic_year(),
         "counts": counts,
@@ -113,6 +125,8 @@ async def dashboard(session: AuthSession = Depends(require_admin)) -> dict:
         # than finding out when a booking silently fails to confirm.
         "warnings": _warnings(counts, union_health, awaiting),
         "emailsAwaitingApproval": awaiting,
+        "opportunitiesAwaitingApproval": len(pending_opportunities),
+        "pendingOpportunities": pending_opportunities,
     }
 
 

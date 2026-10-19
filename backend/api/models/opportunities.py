@@ -62,3 +62,23 @@ class OpportunityCreate(BaseModel):
         if len(set(value)) != len(value):
             raise ValueError("Choose each year only once")
         return value
+
+
+class AnnouncementDraft(BaseModel):
+    subject: str = Field(min_length=3, max_length=180)
+    body: str = Field(min_length=20, max_length=10000)
+
+    @field_validator("subject", "body")
+    @classmethod
+    def nonblank(cls, value: str) -> str:
+        value = value.strip()
+        if not value or not value.split():
+            raise ValueError("Cannot be blank")
+        return value
+
+    @field_validator("subject")
+    @classmethod
+    def one_line(cls, value: str) -> str:
+        if "\n" in value or "\r" in value:
+            raise ValueError("Write a single-line subject")
+        return value

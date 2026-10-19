@@ -310,20 +310,23 @@ nothing in the app depends on being publicly reachable.
 
 ### 2c. Staging's data: a scrubbed copy of production
 
-Staging restores a snapshot of production after **every deploy**, so it looks
-like the real site — the same events, sponsors, resources, committee and
-lockers — while anything edited in the staging dashboard is discarded on the
-next push. A staging edit can never become a production change.
+Normal staging code deployments **do not refresh the database**. Sessions,
+submission drafts, testing data, and in-progress approvals survive image
+releases and API pod restarts. They expire or change only according to their own
+application rules. Staging is still entirely separate from production and
+anything created there never automatically becomes production content.
 
-> **Since staging moved to its own cluster it cannot reach production's
-> Garage**, so the refresh restores the last snapshot staging kept rather than
-> a fresh one, and takes media from eesoc.com's public `/media`. Every deploy
-> still resets staging, but the data stays as of the kept snapshot
-> (2026-10-18) until production gets a read path for it. That is a production
-> change; see `deploy/homelab/README.md`, "Data".
+A **deliberate manual refresh** replaces staging's database with an anonymised
+production snapshot. This wipes its local sessions, logins and test edits, so
+run it only when a clean production-like data set is specifically needed.
+
+> **Since staging moved to its own homelab cluster it cannot reach production's
+> Garage**, so a manual refresh currently uses the last snapshot cached in its
+> private `eesoc-snapshots` bucket (2026-10-18), plus public media. See
+> `deploy/homelab/README.md`, "Data", for refresh and connectivity details.
 
 ```
-PRODUCTION (ns eesoc)                         STAGING (ns eesoc-staging)
+PRODUCTION (ns eesoc)                        STAGING (ns eesoc-staging)
   CronJob snapshot, every 6h
     1 pg_dump the live database
     2 restore into a throwaway
@@ -331,11 +334,14 @@ PRODUCTION (ns eesoc)                         STAGING (ns eesoc-staging)
     3 scrub.sql   — anonymise
     4 verify.sql  — prove it
     5 upload ─────────────────> eesoc-snapshots/latest.sql.gz
-                                         │  read-only key
-                                         v
-                                 PostSync hook, every deploy
-                                   1 fetch snapshot + media
-                                   2 DROP SCHEMA, restore
+                                       │  read-only key
+                                       v
+                              Suspended CronJob template
+                              (NEVER a deployment hook)
+                                Manual request only:
+                                  1 fetch snapshot + media
+                                  2 DROP SCHEMA, restore
+                                  3 run staging migrations
 ```
 
 **The copy is anonymised before it leaves production.** The database holds real
@@ -404,20 +410,31 @@ kubectl -n eesoc rollout restart deploy/garage   # imports the key
 Garage requires the `GK` + 24 hex / 64 hex shape; `key import` rejects anything
 else.
 
-#### Running one now
+#### Refreshing staging explicitly
 
-A deploy restores the newest snapshot, which may be up to six hours old. To take
-a fresh one first:
+This is **destructive for staging**: all staging logins, new users, draft
+submissions and test edits will be lost. Do not do this as part of deploy.
+
+If you need a fresh production snapshot, first produce one in production
+(which is a separate, operator-approved action):
 
 ```bash
 kubectl -n eesoc create job --from=cronjob/snapshot snapshot-now
 kubectl -n eesoc logs -f job/snapshot-now -c dump
 ```
 
-Then re-sync staging in ArgoCD, or delete the refresh job to make the hook run
-again. Change `schedule:` in `overlays/production/snapshot-cronjob.yaml` if
-staging needs to track production more closely; the only cost is reading the
-database more often.
+Then arrange for the scrubbed dump to be accessible in staging's private
+snapshot bucket. On the staging cluster, explicitly create a one-time job from
+the **suspended** CronJob template:
+
+```bash
+JOB=refresh-manual-$(date +%s)
+kubectl -n eesoc-staging create job --from=cronjob/refresh-from-production "$JOB"
+kubectl -n eesoc-staging get job "$JOB"
+```
+
+The operator must verify the refresh and subsequent migration completed before
+resuming testing. ArgoCD syncs and ordinary image rollouts never trigger this.
 
 #### Media
 

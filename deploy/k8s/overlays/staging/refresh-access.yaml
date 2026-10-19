@@ -2,7 +2,7 @@
 #
 # Without this the media copy hung: garage-ingress admits only app=api to the
 # S3 port, and a NetworkPolicy drops rather than refuses. The job's pods are
-# labelled app=refresh in refresh-job.yaml. This is a patch applied after the
+# labelled app=refresh in refresh-cronjob.yaml. This is a patch applied after the
 # base's commonLabels, so the selector is matched exactly as written.
 #
 # A strategic merge patch replaces the ingress list, so the base's two rules

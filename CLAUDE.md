@@ -75,22 +75,30 @@ Rolling *back* does not need the same caution as rolling forward — restoring t
 last known-good state is the safe direction. Still say what you are doing and
 why, then `git revert` the `promote:` commit, or run promote with an older SHA.
 
-### Staging's data is a scrubbed copy of production
+### Staging data and sessions persist across deployments
 
-Staging restores a snapshot of production after **every deploy**. From the
-homelab it cannot reach production's Garage, so it restores the last snapshot
-it kept (2026-10-18) until production gets a read path for it, which is a
-production change (`deploy/homelab/README.md`, "Data"). Two things follow, and
-both will bite you if you forget them:
+A staging release changes code/images only. **Do not restore its database after
+an ordinary push to `main`.** Staging user sessions, opportunities, submissions,
+and other test data must survive redeploys. Sessions are stored in Postgres, so
+API pod replacements do not require anybody to sign in again; normal 7-day
+session expiration and explicit logout still apply.
 
-- **Anything you change in the staging dashboard is discarded on the next
-  push.** Do not use staging to stage real content — an event created there is
-  gone, and was never on eesoc.com.
-- **The people in it are fake.** Emails are `user<id>@staging.invalid`, names
-  are `Test User <id>`, sessions and sign-in codes are deleted. Committee names
-  are real, because they are already published on the live site. A bug report
-  that depends on a specific member's data will not reproduce there from their
-  real details.
+Staging was initially seeded from a **scrubbed production snapshot**. Since the
+homelab cannot reach production's Garage, its cached snapshot (2026-10-18) is
+stale until the production read path is configured. The manual-only suspended
+`refresh-from-production` CronJob in `deploy/k8s/overlays/staging` can still
+be used for a deliberate reset:
+
+```bash
+kubectl -n eesoc-staging create job --from=cronjob/refresh-from-production refresh-manual-$(date +%s)
+```
+
+**WARNING:** A manual refresh drops staging's database schema, discarding all
+staging-only edits, accounts and sessions. Never run it merely to deploy code,
+and never run it against production. Production snapshots delete sessions,
+sign-in codes and passkey credentials before leaving production; people copied
+from production have anonymised identities (`user<id>@staging.invalid`). Real
+staging test accounts can be created by signing in independently afterward.
 
 If you add a migration with a new column holding an email, CID, name or phone
 number, add it to `deploy/snapshot/scrub.sql`. You do not have to remember:

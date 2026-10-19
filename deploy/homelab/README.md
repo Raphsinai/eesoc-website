@@ -120,23 +120,31 @@ Cloudflare dashboard. `cloudflared tunnel route dns` only adds records.
 
 ## Data: production's snapshot, kept
 
-The refresh job (`overlays/staging/refresh-job.yaml`) still restores a
-scrubbed production snapshot after every deploy. But production's Garage is
-reachable only inside production's cluster, so from here the job:
+The suspended, manual-only refresh template
+(`overlays/staging/refresh-cronjob.yaml`) can restore an anonymised production
+snapshot **only when explicitly invoked**. It does not run on commits, ArgoCD
+syncs or Kubernetes scheduling. Ordinary staging deployments preserve login
+sessions and staging-only edits. A manual refresh:
 
 1. tries production (`RCLONE_CONFIG_PROD_ENDPOINT`, currently empty because
    there is no route);
 2. otherwise restores the copy staging keeps in its own private
    `eesoc-snapshots` bucket (`overlays/staging/garage-snapshot-cache.yaml`).
    This is never `eesoc-media`, which is public;
-3. fetches every media object the snapshot refers to from
-   `https://eesoc.com/media/`, where they are public anyway, skipping what it
-   already has.
+3. fetches media referenced by the snapshot from `https://eesoc.com/media/`,
+   skipping existing files, then replaces staging's database and migrates it.
 
-Every deploy still discards staging edits. **But the data does not get newer
-on its own.** The kept copy is production's snapshot of 2026-10-18 12:17 UTC,
-seeded by hand through the old staging's read-only path just before that was
-removed.
+**Only a manual refresh loses your login and test submissions.** To run one:
+
+```bash
+JOB=refresh-manual-$(date +%s)
+kubectl -n eesoc-staging create job --from=cronjob/refresh-from-production "$JOB"
+kubectl -n eesoc-staging get job "$JOB"
+```
+
+This replaces the staging schema, deleting all staging-only accounts, sessions,
+and edits. The cached copy is still production's snapshot of 2026-10-18 12:17
+UTC, seeded before the move; normal deployments do not update that seed.
 
 To give staging fresh data again, production needs a read path for staging,
 and that is a production change, so it needs Raph's approval. The smallest
@@ -148,7 +156,7 @@ Staging's credential there is the existing read-only key
 
 To refresh by hand in the meantime, copy production's `latest.sql.gz` into
 staging's `eesoc-snapshots/latest.sql.gz` using that read-only key from
-anywhere that can reach production's Garage, then re-sync the app.
+anywhere that can reach production's Garage, then manually invoke `refresh-from-production` as above.
 
 ## Secrets (not in git)
 

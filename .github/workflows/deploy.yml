@@ -178,25 +178,39 @@ jobs:
               if not hosts(docs):
                   fail.append(f"{name} renders no Ingress hosts")
 
-          # The refresh job issues DROP SCHEMA. It belongs in staging and
-          # nowhere else; rendered into production it would destroy the live
-          # database on the next sync. restore.sh refuses to run outside the
-          # staging namespace, but that is the last line of defence, not the
-          # first — this is the first.
+          # Restoring a snapshot drops the entire staging schema (including
+          # sessions). It must NEVER run during a normal deploy, and must not
+          # even be renderable on production. Keep a suspended CronJob as a
+          # manual-only template; kubectl create job --from=cronjob is explicit.
           def names(docs, kind):
               return {d["metadata"]["name"] for d in docs if d["kind"] == kind}
 
-          if "refresh-from-production" in names(prod, "Job"):
-              fail.append("the staging refresh job renders into PRODUCTION — "
-                          "it would DROP SCHEMA on the live database")
+          for kind in ("Job", "CronJob"):
+              if "refresh-from-production" in names(prod, kind):
+                  fail.append(f"the staging refresh {kind} renders into PRODUCTION")
 
-          # And the reverse: the snapshot reads real data, so it runs only
-          # where the real data is.
+          # Staging must not acquire a live PostSync/Job just because Argo
+          # reconciles a new build. Suspended means no schedule can run.
+          if "refresh-from-production" in names(stage, "Job"):
+              fail.append("staging refresh is an automatic Job; logins would be lost")
+          manual = [d for d in stage if d["kind"] == "CronJob"
+                    and d["metadata"]["name"] == "refresh-from-production"]
+          if len(manual) != 1:
+              fail.append("staging must have exactly one manual refresh CronJob")
+          else:
+              refresh = manual[0]
+              if refresh["spec"].get("suspend") is not True:
+                  fail.append("staging refresh must remain SUSPENDED")
+              annotations = refresh["metadata"].get("annotations") or {}
+              if annotations.get("argocd.argoproj.io/hook"):
+                  fail.append("staging refresh must not run as an ArgoCD hook")
+              containers = refresh["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+              if not any(c.get("name") == "restore" for c in containers.get("initContainers", [])):
+                  fail.append("manual refresh lost its guarded restore container")
+
+          # The production snapshot runs only in production, never staging.
           if "snapshot" in names(stage, "CronJob"):
               fail.append("the production snapshot CronJob renders into staging")
-
-          if "refresh-from-production" not in names(stage, "Job"):
-              fail.append("staging has no refresh job; it will not track production")
 
           for f in fail:
               print(f"::error::{f}")

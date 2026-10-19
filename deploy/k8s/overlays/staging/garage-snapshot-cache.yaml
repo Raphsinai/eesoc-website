@@ -3,7 +3,7 @@
 #
 # Staging runs on the homelab (deploy/homelab), which has no route to
 # production's Garage, so most refreshes restore this copy rather than a fresh
-# one — see refresh-job.yaml. It is a separate bucket on purpose: eesoc-media
+# one — see refresh-cronjob.yaml. It is a separate bucket on purpose: eesoc-media
 # is served anonymously at /media, and a database dump must never be.
 #
 # garage-init creates the bucket and gives staging's own key read/write on it.

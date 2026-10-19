@@ -12,11 +12,11 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: eesoc-staging
-  # Refreshes staging from the latest production snapshot after every deploy.
-  # The scrub/restore scripts, shared with the other environment.
+  # Manual-only refresh template; code deploys keep users and sessions.
+  # The snapshot scripts remain shared with production.
 resources:
 - ../../base
-- refresh-job.yaml
+- refresh-cronjob.yaml
 - ../../../snapshot
 
 # The WhatsApp link (components/whatsapp says why it is opt-in per
@@ -56,8 +56,9 @@ replicas:
 
 
   # One Postgres instance, a fifth of the disk, half the memory ceiling.
-  # Production's 10Gi is sized for years of real bookings; staging's data is
-  # thrown away and recreated. The memory *request* is left alone — that is what
+  # Production's 10Gi is sized for years of real bookings; staging's data
+  # persists across ordinary code deploys and resets only manually.
+  # The memory *request* is left alone — that is what
   # the scheduler reserves, and the limit is what decides who is killed first
   # when the node is squeezed.
 

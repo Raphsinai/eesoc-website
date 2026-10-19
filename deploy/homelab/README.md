@@ -118,37 +118,98 @@ cloudflared tunnel token eesoc-staging           # re-create the Secret after a 
 To roll the hostname back to somewhere else, replace the CNAME in the
 Cloudflare dashboard. `cloudflared tunnel route dns` only adds records.
 
-## Data: production's snapshot, kept
+## Data: production's snapshot, through snapshot.eesoc.com
 
-The refresh job (`overlays/staging/refresh-job.yaml`) still restores a
-scrubbed production snapshot after every deploy. But production's Garage is
-reachable only inside production's cluster, so from here the job:
+The refresh job (`overlays/staging/refresh-job.yaml`) restores a scrubbed
+production snapshot after every deploy. Production's Garage lives inside
+production's cluster, so the job reads it through the one route production
+gives it:
 
-1. tries production (`RCLONE_CONFIG_PROD_ENDPOINT`, currently empty because
-   there is no route);
-2. otherwise restores the copy staging keeps in its own private
-   `eesoc-snapshots` bucket (`overlays/staging/garage-snapshot-cache.yaml`).
-   This is never `eesoc-media`, which is public;
+```
+refresh job ─https─> Cloudflare ─> edge nginx, TensorHost      signed GET/HEAD of one object
+                                     │                         deploy/nginx/snapshot.eesoc.com.conf
+                             ingress controller                that one path (Exact)
+                                     │                         overlays/production/snapshot-ingress.yaml
+                             garage :3900 (S3 API)             PROD_RO_* key, read only
+```
+
+The job:
+
+1. fetches `eesoc-snapshots/latest.sql.gz` from `https://snapshot.eesoc.com`
+   and keeps a copy in staging's own private `eesoc-snapshots` bucket
+   (`overlays/staging/garage-snapshot-cache.yaml`). This is never
+   `eesoc-media`, which is public;
+2. otherwise, when production cannot be reached, restores that kept copy;
 3. fetches every media object the snapshot refers to from
    `https://eesoc.com/media/`, where they are public anyway, skipping what it
-   already has.
+   already has. Media never goes through snapshot.eesoc.com, which carries the
+   snapshot and nothing else.
 
-Every deploy still discards staging edits. **But the data does not get newer
-on its own.** The kept copy is production's snapshot of 2026-10-18 12:17 UTC,
-seeded by hand through the old staging's read-only path just before that was
-removed.
+Its log says which snapshot it restored, and when production took it. Every
+deploy still discards staging edits.
 
-To give staging fresh data again, production needs a read path for staging,
-and that is a production change, so it needs Raph's approval. The smallest
-version: an Ingress in the production overlay on a dedicated hostname for
-Garage's S3 port, fronted by an edge vhost that allows only `GET`/`HEAD`.
-Staging's credential there is the existing read-only key
-(`PROD_RO_*`), which Garage limits to the two buckets. Then set
-`RCLONE_CONFIG_PROD_ENDPOINT` to that URL in the refresh job.
+**Until the route is live, step 1 fails within seconds** and every deploy
+restores the kept copy: production's snapshot of 2026-10-18 12:17 UTC, seeded
+by hand through the old staging's read-only path just before that was
+removed. It is live once all three of these are in place. Each is a production
+change, so each needs Raph's approval:
 
-To refresh by hand in the meantime, copy production's `latest.sql.gz` into
-staging's `eesoc-snapshots/latest.sql.gz` using that read-only key from
-anywhere that can reach production's Garage, then re-sync the app.
+| Piece | Where | How it gets there |
+|---|---|---|
+| The Ingress, and the NetworkPolicy rule admitting the ingress controller to Garage's 3900 | `overlays/production/snapshot-ingress.yaml`, `snapshot-access.yaml` | ArgoCD, on its next sync of `main` after the merge. **Not** on promote. |
+| DNS: `snapshot.eesoc.com`, a proxied CNAME to `eesoc.com` | Cloudflare, eesoc.com zone | by hand |
+| The edge vhost and its certificate | `deploy/nginx/snapshot.eesoc.com.conf` on the edge VM | by hand; install steps are at the top of the file |
+
+The order does not matter: until all three exist, requests fail and staging
+restores its kept copy. To check from anywhere once they do:
+
+```bash
+curl -sI https://snapshot.eesoc.com/eesoc-snapshots/latest.sql.gz   # 403: unsigned
+kubectl -n eesoc-staging logs job/refresh-from-production -c fetch | head -3
+```
+
+### What it exposes
+
+Garage's S3 API can write, which is why this route is narrow at every layer.
+Each layer alone would stop a write:
+
+| Layer | Lets through |
+|---|---|
+| Edge vhost | a **signed** `GET` or `HEAD` of `/eesoc-snapshots/latest.sql.gz`, with no query string except the `x-id=GetObject` rclone adds. Responses are `Cache-Control: no-store`, so Cloudflare never keeps a copy to hand to someone else. `X-Forwarded-Host` is reset, because the cluster's controller uses it as the Host it sends upstream. |
+| Ingress | that one path, Exact. CI fails if any Ingress routes Garage's S3 port any other way. |
+| NetworkPolicy | the ingress controller pod, not the rest of kube-system |
+| Garage | `PROD_RO_*`: read on `eesoc-snapshots` and `eesoc-media`, no write (`deploy/garage-init/init.sh`) |
+
+So even production's own read/write key cannot upload, delete or list through
+snapshot.eesoc.com. What remains:
+
+- **Garage parses requests from the internet.** Any request with an
+  `Authorization` header reaches it and is refused there. It is an API built to
+  be internet-facing, but before this it was not.
+- **A machine on TensorHost's private network can skip the edge** and reach the
+  ingress controller directly. It gets the same one path, with any method, so
+  only Garage's key check stops it overwriting the snapshot. That takes
+  production's read/write key, and the worst it does is feed staging bad data:
+  staging restores whatever is there, and production never reads it back.
+- **The snapshot itself.** The read-only key can read the dump. Anyone who has
+  that key has broken into staging, which already holds the restored copy.
+
+Tested on 2026-10-19 before anything was deployed: Garage v1.1.0 set up by the
+real `init.sh`, the real vhost on nginx 1.18 beside `eesoc.com.conf`, a
+stand-in for the ingress, and the refresh job's fetch step lifted verbatim from
+the rendered overlay. A fresh fetch, both fallbacks, and every refusal in the
+table above behaved as described.
+
+**If the fetch fails while the route is live**, the log has rclone's error.
+A refusal whose body is a Cloudflare challenge page rather than nginx's or
+Garage's means Cloudflare's bot protection stopped rclone, which sends no
+browser headers. Turn Bot Fight Mode off for the zone (Security → Bots).
+
+### Refreshing by hand
+
+If snapshot.eesoc.com is down, copy production's `latest.sql.gz` into staging's
+`eesoc-snapshots/latest.sql.gz` from anywhere that can reach production's
+Garage, using the read-only key, then re-sync the app.
 
 ## Secrets (not in git)
 
@@ -164,8 +225,8 @@ Staging still sends real mail from the shared mailboxes, restricted by
 
 ## Rebuilding from nothing
 
-Everything here is disposable; the only state worth keeping is the kept
-snapshot, and that can be re-seeded.
+Everything here is disposable. The only state worth keeping is the kept
+snapshot, and the first refresh fetches a newer one from production.
 
 ```bash
 # 1. VM (on pve2). Refuses an existing VMID; destroy 110 first if rebuilding.
@@ -184,7 +245,8 @@ ssh eesoc-staging 'sudo install -D -m600 /tmp/rke2/config.yaml /etc/rancher/rke2
 # 3. Secrets (table above), then the Application.
 kubectl apply -f deploy/argocd/application-staging.yaml
 
-# 4. Seed eesoc-snapshots/latest.sql.gz (see "Data"), then re-sync.
+# 4. Nothing to seed: the first refresh fetches production's snapshot through
+#    snapshot.eesoc.com. Only if that is down, seed it by hand (see "Data").
 ```
 
 Three things that went wrong the first time, so they do not again:
@@ -202,16 +264,14 @@ Three things that went wrong the first time, so they do not again:
 ## Left over on TensorHost
 
 The old staging (ArgoCD app and namespace) was deleted from the TensorHost
-cluster on 2026-10-19. Two things still mention it there:
+cluster on 2026-10-19. One thing still mentions it there:
 
 - The **edge nginx vhost** for `eesoc.raphsinai.dev` on VM 110 (`tensorhost`),
   and its Let's Encrypt certificate. It gets no traffic now, and its renewal
   will fail because the name no longer points there. To remove it:
   `rm /etc/nginx/sites-enabled/eesoc.raphsinai.dev && nginx -t && systemctl reload nginx && certbot delete --cert-name eesoc.raphsinai.dev`.
-- **Production's** `garage-ingress` NetworkPolicy
-  (`overlays/production/snapshot-access.yaml`) still admits the
-  `eesoc-staging` namespace to Garage's S3 port. Nothing lives there now, but
-  a namespace of that name created on TensorHost later would inherit the
-  access. Removing the rule is a production change: a file in the production
-  overlay deploys on ArgoCD's next sync of `main`, not on promote. So it needs
-  Raph's approval like any other.
+
+Production's `garage-ingress` NetworkPolicy used to admit the `eesoc-staging`
+namespace to Garage's S3 port, so that a namespace of that name created on
+TensorHost later would have inherited the access. The change that added
+snapshot.eesoc.com removed that rule.

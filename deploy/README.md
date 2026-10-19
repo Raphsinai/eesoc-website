@@ -234,9 +234,10 @@ GET https://eesoc.com/media/ab/cd.webp
 **Two ports, deliberately.** Garage has no public-read ACL on its S3 API the way
 MinIO did. Unauthenticated reads are served by a separate *web* endpoint (3902),
 which cannot write; the S3 API (3900) always requires credentials and is
-reachable only from the api pod. That split is enforced twice — by Garage, and
-by the NetworkPolicy. Verified: an anonymous S3-API read is refused while the
-same object fetches fine over the web endpoint.
+reachable only from the api pod and the snapshot job, plus one object, read
+only, for staging (snapshot.eesoc.com, section 2c). That split is enforced
+twice — by Garage, and by the NetworkPolicy. Verified: an anonymous S3-API read
+is refused while the same object fetches fine over the web endpoint.
 
 The bucket is chosen from the `Host` header against `root_domain`, which is why
 the Ingress sets `upstream-vhost: eesoc-media.web.garage` rather than putting the
@@ -315,12 +316,15 @@ like the real site — the same events, sponsors, resources, committee and
 lockers — while anything edited in the staging dashboard is discarded on the
 next push. A staging edit can never become a production change.
 
-> **Since staging moved to its own cluster it cannot reach production's
-> Garage**, so the refresh restores the last snapshot staging kept rather than
-> a fresh one, and takes media from eesoc.com's public `/media`. Every deploy
-> still resets staging, but the data stays as of the kept snapshot
-> (2026-10-18) until production gets a read path for it. That is a production
-> change; see `deploy/homelab/README.md`, "Data".
+> **Staging is on its own cluster**, so it reads the snapshot over the
+> internet, through `https://snapshot.eesoc.com`: a hostname that passes a
+> signed GET or HEAD of `eesoc-snapshots/latest.sql.gz` and refuses everything
+> else (`deploy/nginx/snapshot.eesoc.com.conf`,
+> `overlays/production/snapshot-ingress.yaml`). Media comes from eesoc.com's
+> public `/media`. When the snapshot cannot be fetched, the refresh restores
+> the copy staging kept last time, and its log says so. How the route works,
+> what it exposes, and what has to be in place: `deploy/homelab/README.md`,
+> "Data".
 
 ```
 PRODUCTION (ns eesoc)                         STAGING (ns eesoc-staging)
@@ -369,7 +373,10 @@ it, and no single mistake defeats them:
    to a bucket and stops. It holds no staging credential.
 2. **Staging's production credential is read-only** — a Garage key with `read`
    on two buckets and nothing else, enforced by Garage.
-3. **The NetworkPolicy** only lets staging reach production's S3 port at all.
+3. **The only route in passes reads of one object.** snapshot.eesoc.com's
+   edge vhost refuses every method but `GET` and `HEAD`, and its Ingress routes
+   one exact path, so not even production's read/write key can write through
+   it. The NetworkPolicy admits only the ingress controller to the S3 port.
 4. **`restore.sh` refuses to run** unless `ENVIRONMENT=staging`, the pod's
    namespace (from the Downward API, not a manifest string) is `eesoc-staging`,
    and `PGHOST` resolves inside that namespace. Verified against all four
@@ -450,6 +457,11 @@ nginx -t && systemctl reload nginx
 
 **The vhost may not rewrite `Host`.** The cluster's Ingress matches on it, and
 a request with any other Host gets nothing.
+
+`deploy/nginx/snapshot.eesoc.com.conf` is the second vhost on the same box:
+staging's read-only path to the snapshot, sharing `eesoc.com.conf`'s
+`upstream`. It has its own certificate and its own install steps at the top of
+the file; section 2c and `deploy/homelab/README.md` ("Data") say why it exists.
 
 Two things that are easy to get wrong:
 

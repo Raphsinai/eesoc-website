@@ -78,10 +78,11 @@ why, then `git revert` the `promote:` commit, or run promote with an older SHA.
 ### Staging's data is a scrubbed copy of production
 
 Staging restores a snapshot of production after **every deploy**. From the
-homelab it cannot reach production's Garage, so it restores the last snapshot
-it kept (2026-10-18) until production gets a read path for it, which is a
-production change (`deploy/homelab/README.md`, "Data"). Two things follow, and
-both will bite you if you forget them:
+homelab it reads production's through `snapshot.eesoc.com`, a route that passes
+a signed read of that one object and nothing else; when that cannot be reached
+it restores the last copy it kept (2026-10-18 until the route is live). The
+refresh job's log says which (`deploy/homelab/README.md`, "Data"). Two things
+follow, and both will bite you if you forget them:
 
 - **Anything you change in the staging dashboard is discarded on the next
   push.** Do not use staging to stage real content — an event created there is

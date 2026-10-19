@@ -198,6 +198,29 @@ jobs:
           if "refresh-from-production" not in names(stage, "Job"):
               fail.append("staging has no refresh job; it will not track production")
 
+          # Garage's S3 API (port 3900, "s3") takes credentials and can write.
+          # The one route to it from outside a cluster is production's
+          # snapshot.eesoc.com, for the one object staging reads
+          # (overlays/production/snapshot-ingress.yaml). A Prefix path, a
+          # second host, or the same Ingress in staging would publish more of it.
+          def s3_routes(docs):
+              return {
+                  (r.get("host"), p.get("pathType"), p.get("path"))
+                  for d in docs if d["kind"] == "Ingress"
+                  for r in (d["spec"].get("rules") or [])
+                  for p in ((r.get("http") or {}).get("paths") or [])
+                  for svc in [p["backend"].get("service") or {}]
+                  if svc.get("name") == "garage"
+                  and (svc["port"].get("number") == 3900 or svc["port"].get("name") == "s3")
+              }
+
+          snapshot_route = ("snapshot.eesoc.com", "Exact", "/eesoc-snapshots/latest.sql.gz")
+          if s3_routes(prod) - {snapshot_route}:
+              fail.append("production routes Garage's S3 API beyond the one snapshot "
+                          f"object: {s3_routes(prod) - {snapshot_route}}")
+          if s3_routes(stage):
+              fail.append(f"staging routes Garage's S3 API: {s3_routes(stage)}")
+
           for f in fail:
               print(f"::error::{f}")
           sys.exit(1 if fail else 0)

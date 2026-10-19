@@ -7,6 +7,8 @@ existing email approvals. No send is authorised by these tests.
 from io import BytesIO
 from uuid import uuid4
 
+import httpx
+
 from PIL import Image
 
 
@@ -31,10 +33,15 @@ def image_bytes():
 
 def test_member_opportunity_requires_login_is_private_until_approval_and_queues_mail(api, member_client, admin_client):
     payload = submission()
-    assert api.post("/opportunities", json=payload).status_code in (401, 403)
-    assert api.post("/opportunities/images", files={
-        "file": ("poster.png", image_bytes(), "image/png"),
-    }).status_code in (401, 403)
+    # The shared `api` fixture acquires cookies when member_client signs in,
+    # so only a fresh client is genuinely anonymous. Without that isolation
+    # this assertion may accidentally exercise a signed-in session.
+    with httpx.Client(base_url=str(api.base_url), timeout=10.0) as guest:
+        assert guest.post("/opportunities", json=payload).status_code == 401
+        assert guest.post("/opportunities/images", files={
+            "file": ("poster.png", image_bytes(), "image/png"),
+        }).status_code == 401
+        assert guest.get("/me/opportunities").status_code == 401
 
     bad = member_client.post("/opportunities/images", files={
         "file": ("bad.svg", b"<svg></svg>", "image/svg+xml"),
@@ -59,7 +66,6 @@ def test_member_opportunity_requires_login_is_private_until_approval_and_queues_
 
     assert not any(r["id"] == ident for r in api.get("/opportunities").json()["opportunities"])
     assert api.get(f"/opportunities/{ident}").status_code == 404
-    assert api.get("/me/opportunities").status_code == 401
     assert any(r["id"] == ident for r in member_client.get("/me/opportunities").json()["opportunities"])
     assert admin_client.get("/admin/opportunities").status_code == 200
     assert any(r["id"] == ident for r in admin_client.get("/admin/opportunities").json()["opportunities"])

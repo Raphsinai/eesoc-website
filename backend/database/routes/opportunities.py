@@ -117,9 +117,9 @@ async def review_opportunity(opportunity_id: int, review: OpportunityReview) -> 
     async with pool.acquire() as conn, conn.transaction():
         row = await conn.fetchrow(
             """UPDATE public.opportunities
-                  SET status = $2, reviewed_by = $3, review_notes = $4,
+                  SET status = $2::varchar, reviewed_by = $3, review_notes = $4,
                       reviewed_at = NOW(),
-                      approved_at = CASE WHEN $2 = 'approved' THEN NOW() ELSE NULL END
+                      approved_at = CASE WHEN $2::varchar = 'approved' THEN NOW() ELSE NULL END
                 WHERE id = $1 AND status = 'pending'
                 RETURNING id;""",
             opportunity_id, review.decision, (review.reviewed_by),

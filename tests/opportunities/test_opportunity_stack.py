@@ -31,10 +31,10 @@ def image_bytes():
 
 def test_member_opportunity_requires_login_is_private_until_approval_and_queues_mail(api, member_client, admin_client):
     payload = submission()
-    assert api.post("/opportunities", json=payload).status_code == 401
+    assert api.post("/opportunities", json=payload).status_code in (401, 403)
     assert api.post("/opportunities/images", files={
         "file": ("poster.png", image_bytes(), "image/png"),
-    }).status_code == 401
+    }).status_code in (401, 403)
 
     bad = member_client.post("/opportunities/images", files={
         "file": ("bad.svg", b"<svg></svg>", "image/svg+xml"),

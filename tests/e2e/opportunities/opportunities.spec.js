@@ -76,7 +76,7 @@ test('approval publishes, then queues an unsent targeted email', async ({ page }
   await expect(listing).toBeVisible()
   page.once('dialog', (dialog) => dialog.accept())
   await listing.getByRole('button', { name: 'Approve & queue announcement' }).click()
-  await expect(page.getByText('Email queue', { exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /Email queue/ })).toBeVisible()
   await expect(page.getByText(`Opportunity: ${title}`).first()).toBeVisible()
   await expect(page.getByText('needs approval', { exact: true }).first()).toBeVisible()
 

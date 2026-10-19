@@ -25,6 +25,7 @@ from routes.committee import router as committee_router
 from routes.email import router as email_router
 from routes.events import router as events_router
 from routes.lockers import router as lockers_router
+from routes.opportunities import router as opportunities_router
 from routes.passkeys import admin_router as passkey_links_router
 from routes.passkeys import router as passkeys_router
 from routes.resources import import_seed
@@ -156,6 +157,7 @@ app = FastAPI(
 app.include_router(auth_router)
 app.include_router(events_router)
 app.include_router(lockers_router)
+app.include_router(opportunities_router)
 app.include_router(committee_router)
 app.include_router(email_router)
 app.include_router(resources_router)

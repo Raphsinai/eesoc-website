@@ -70,6 +70,7 @@ class Campaign(BaseModel):
     # built it — these two are how the stored row says which one to rebuild.
     kind: str = "newsletter"
     event_id: int | None = None
+    opportunity_id: int | None = None
     error: str | None = None
     created_by: int | None = None
     created_at: datetime | None = None
@@ -103,6 +104,7 @@ class CampaignCreate(BaseModel):
     status: str = "draft"
     kind: str = "newsletter"
     event_id: int | None = None
+    opportunity_id: int | None = None
     send_at: datetime | None = None
 
 

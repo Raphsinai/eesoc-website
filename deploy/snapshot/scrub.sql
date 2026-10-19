@@ -68,6 +68,19 @@ BEGIN
     END IF;
 END $$;
 
+-- Opportunities can contain a submitter's contact details in free text,
+-- image names, descriptions, phone numbers and even campaign email bodies.
+-- Unlike published events, this is arbitrary member-submitted content, and
+-- staging must not copy it at all. Guarded: production can lag migration 081.
+DO $$
+BEGIN
+    IF to_regclass('public.opportunities') IS NOT NULL THEN
+        DELETE FROM public.email_campaigns WHERE kind = 'opportunity_announcement';
+        TRUNCATE TABLE public.opportunities;
+        DELETE FROM public.uploads WHERE purpose = 'opportunity';
+    END IF;
+END $$;
+
 -- Addresses added to or taken off a draft by hand (migration 073). JSONB, so
 -- verify.sql's text-column scan cannot see them — emptied by name instead. A
 -- draft copied to staging keeps its ticked audiences, which are keys, not

@@ -76,6 +76,7 @@ export const nav = [
   { id: 'resources', label: 'Resources', to: '/resources' },
   { id: 'sponsors', label: 'Sponsors', to: '/sponsors' },
   { id: 'jobs', label: 'Open roles', to: '/jobs' },
+  { id: 'opportunities', label: 'Opportunities', to: '/opportunities' },
   { id: 'lockers', label: 'Lockers', to: '/lockers' },
   { id: 'portal', label: 'Sponsor portal', to: '/portal' },
 ]

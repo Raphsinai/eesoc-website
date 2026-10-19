@@ -33,6 +33,7 @@ const AdminView = () => import('@/views/AdminView.vue')
 const AdminEventView = () => import('@/views/AdminEventView.vue')
 const AdminSponsorView = () => import('@/views/AdminSponsorView.vue')
 const JobsView = () => import('@/views/JobsView.vue')
+const OpportunitiesView = () => import('@/views/OpportunitiesView.vue')
 const EmailView = () => import('@/views/EmailView.vue')
 const SubscribeView = () => import('@/views/SubscribeView.vue')
 const CheckinView = () => import('@/views/CheckinView.vue')
@@ -53,6 +54,10 @@ const routes = [
   { path: '/resources/:slug', name: 'resource', component: ResourcesView, meta: { title: 'Resources' } },
   { path: '/jobs', name: 'jobs', component: JobsView,
     meta: { title: 'Open roles', description: 'Graduate roles, internships and placements from the companies that sponsor EESoc at Imperial College London.' } },
+  { path: '/opportunities', name: 'opportunities', component: OpportunitiesView,
+    meta: { title: 'Opportunities', description: 'Community-submitted projects, internships, competitions, research and more, reviewed by the EESoc committee.' } },
+  { path: '/opportunities/:id(\\d+)', name: 'opportunity', component: OpportunitiesView,
+    meta: { title: 'Opportunity' } },
   { path: '/sponsors', name: 'sponsors', component: SponsorsView,
     meta: { title: 'Sponsors', description: 'The companies that support EESoc — workshops, careers events and the hackathon.' } },
   { path: '/lockers', name: 'lockers', component: LockersView,

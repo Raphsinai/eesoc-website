@@ -16,6 +16,7 @@ import StatBlock from '@/components/ds/StatBlock.vue'
 import Dialog from '@/components/ds/Dialog.vue'
 import TraceRule from '@/components/ds/TraceRule.vue'
 import PasskeyLinkMade from '@/components/PasskeyLinkMade.vue'
+import OpportunitiesAdminPanel from '@/components/OpportunitiesAdminPanel.vue'
 import WhatsAppGroupPicker from '@/components/WhatsAppGroupPicker.vue'
 import WhatsAppLink from '@/components/WhatsAppLink.vue'
 import WhatsAppPost from '@/components/WhatsAppPost.vue'
@@ -33,6 +34,7 @@ const TABS = [
   ['events', 'Events', 'eventish'],
   ['overdue', 'Unpaid bookings', 'eventish'],
   ['resources', 'Resources', 'site'],
+  ['opportunities', 'Opportunities', 'site'],
   ['files', 'Files', 'site'],
   ['committee', 'Committee', 'site'],
   ['links', 'Union products', 'site'],
@@ -631,6 +633,12 @@ watch(tab, (t) => {
   // press send a second time.
   if (t === 'email') loadEmail()
 })
+
+async function openOpportunityEmail(id) {
+  tab.value = 'email'
+  await loadEmail()
+  await openReview(id)
+}
 
 // --------------------------------------------------------------- email -----
 async function loadEmail() {
@@ -1832,6 +1840,12 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
 
       <p v-if="notice" style="font:var(--type-small); color:var(--text-muted)">{{ notice }}</p>
       <p v-if="error" style="font:var(--type-small); color:var(--danger)">{{ error }}</p>
+
+      <!-- ========================== OPPORTUNITIES ========================== -->
+      <OpportunitiesAdminPanel
+        v-if="tab === 'opportunities'"
+        @open-email="openOpportunityEmail"
+      />
 
       <!-- ============================ OVERVIEW ============================ -->
       <!-- ============================= MY CARD ============================ -->

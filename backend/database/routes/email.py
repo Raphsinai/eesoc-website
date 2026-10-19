@@ -37,7 +37,7 @@ CAMPAIGN_COLUMNS = """
     id, subject, heading, body, audiences, status, recipients, sent, failed,
     error, created_by, created_at, started_at, finished_at, kind, event_id,
     extra_recipients, excluded_recipients, reviewed_by, reviewed_at,
-    send_at, edited_at, whatsapp, whatsapp_groups
+    send_at, edited_at, whatsapp, whatsapp_groups, opportunity_id
 """
 
 # The JSONB columns, each a list of strings.
@@ -285,13 +285,14 @@ async def create_campaign(campaign: CampaignCreate) -> Campaign:
             f"""
             INSERT INTO public.email_campaigns
                 (subject, heading, body, audiences, created_by, status, kind,
-                 event_id, send_at)
-            VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9)
+                 event_id, send_at, opportunity_id)
+            VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10)
             RETURNING {CAMPAIGN_COLUMNS};
             """,
             campaign.subject, campaign.heading, campaign.body,
             json.dumps(campaign.audiences), campaign.created_by,
             campaign.status, campaign.kind, campaign.event_id, campaign.send_at,
+            campaign.opportunity_id,
         )
     return _campaign(row)
 

@@ -1,0 +1,64 @@
+"""Public API input model. Mirrored in database/models/opportunities.py.
+
+The API always overrides submitted_by using the authenticated session.
+"""
+
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, EmailStr, Field, HttpUrl, field_validator
+
+Year = Literal["1", "2", "3", "4", "msc", "phd"]
+
+
+class OpportunityCreate(BaseModel):
+    title: str = Field(min_length=3, max_length=180)
+    description: str = Field(min_length=20, max_length=10000)
+    links: list[HttpUrl] = Field(default_factory=list, max_length=10)
+    contact_email: EmailStr | None = None
+    contact_phone: str | None = Field(default=None, max_length=40)
+    target_years: list[Year] = Field(min_length=1, max_length=6)
+    image_ids: list[int] = Field(default_factory=list, max_length=5)
+    # Adapter-only, set from a verified session, never from a client request.
+    submitted_by: int | None = None
+
+    @field_validator("title", "description")
+    @classmethod
+    def nonempty(cls, value: str) -> str:
+        value = value.strip()
+        if not value or (value.count("\n") > 0 and len(value.split()) == 0):
+            raise ValueError("Cannot be blank")
+        return value
+
+    @field_validator("title")
+    @classmethod
+    def title_one_line(cls, value: str) -> str:
+        if "\r" in value or "\n" in value:
+            raise ValueError("Use one line for the title")
+        return value
+
+    @field_validator("contact_phone")
+    @classmethod
+    def valid_phone(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        import re
+
+        value = value.strip()
+        if not re.fullmatch(r"[0-9+(). \-]{6,40}", value):
+            raise ValueError("Use a phone number with digits and normal punctuation")
+        return value
+
+    @field_validator("image_ids")
+    @classmethod
+    def unique_images(cls, value: list[int]) -> list[int]:
+        if any(i < 1 for i in value) or len(set(value)) != len(value):
+            raise ValueError("Image IDs must be positive and unique")
+        return value
+
+    @field_validator("target_years")
+    @classmethod
+    def unique_years(cls, value: list[Year]) -> list[Year]:
+        if len(set(value)) != len(value):
+            raise ValueError("Choose each year only once")
+        return value

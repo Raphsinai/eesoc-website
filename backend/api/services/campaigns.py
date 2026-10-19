@@ -50,6 +50,7 @@ log = logging.getLogger("api.campaigns")
 # What each kind is called on the admin screen.
 KIND_LABELS = {
     "newsletter": "Newsletter",
+    "opportunity_announcement": "Opportunity announcement",
     "event_announcement": "Email about an event",
     "on_sale": "Tickets on sale",
 }
@@ -149,7 +150,7 @@ async def message_for(row: dict) -> Callable[[str], tuple[str, str, str]]:
     heading = (row.get("heading") or "").strip() or subject
     html, text = emailing.render_body(row.get("body") or "")
 
-    if kind == "newsletter":
+    if kind in ("newsletter", "opportunity_announcement"):
         return lambda unsubscribe: mailer.campaign_message(
             subject, heading, text, html, unsubscribe
         )

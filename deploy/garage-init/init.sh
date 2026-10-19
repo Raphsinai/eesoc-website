@@ -85,10 +85,10 @@ if [ -n "${SNAPSHOT_BUCKET:-}" ]; then
   garage bucket allow --read --write "$SNAPSHOT_BUCKET" --key "$KEY_NAME"
 
   # The key staging authenticates with. READ ONLY, on purpose and in two
-  # places: Garage enforces it, and the NetworkPolicy only lets staging reach
-  # this endpoint at all. Staging therefore cannot write to production's
-  # buckets even if its own code is wrong, which is what keeps a refresh from
-  # ever running backwards.
+  # places: Garage enforces it, and staging's only route here,
+  # snapshot.eesoc.com, passes reads of one object and nothing else. Staging
+  # therefore cannot write to production's buckets even if its own code is
+  # wrong, which is what keeps a refresh from ever running backwards.
   if [ -n "${STAGING_RO_ACCESS_KEY_ID:-}" ]; then
     if garage key list | grep -q "$STAGING_RO_ACCESS_KEY_ID"; then
       echo "staging read-only key already imported"

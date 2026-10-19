@@ -1,5 +1,6 @@
-# Let staging reach production's S3 API, and give Garage the names it needs to
-# create the snapshot bucket and the read-only key.
+# Let the ingress controller reach production's S3 API for snapshot.eesoc.com,
+# and give Garage the names it needs to create the snapshot bucket and the
+# read-only key.
 #
 # Production only. Staging has no equivalent — nothing in production ever
 # connects to staging, which is what makes the refresh one-way.
@@ -26,20 +27,28 @@ spec:
         - namespaceSelector:
             matchLabels: { kubernetes.io/metadata.name: kube-system }
       ports: [{ port: 3902 }]
-    # The staging refresh job, reading the snapshot and the media bucket.
+    # snapshot.eesoc.com (snapshot-ingress.yaml): the ingress controller,
+    # carrying staging's reads of the snapshot from the homelab. The Ingress
+    # routes one exact path here and the edge vhost passes only GET and HEAD;
+    # this rule is what lets the controller connect at all.
     #
-    # Namespace only, no podSelector — deliberately, and for the reason spelled
-    # out in the base: kustomize's commonLabels rewrites selectors too, so a
-    # podSelector here quietly gains a label the target may not carry and the
-    # rule matches nothing. A NetworkPolicy drops rather than rejects, so that
-    # failure looks like a hang, not an error.
+    # The controller pod, not all of kube-system as for 3902. 3900 takes
+    # credentials and can write, and kube-system holds plenty that has no
+    # business on it. The base's reason for namespace-only selectors does not
+    # apply here: this patch is applied after the base's commonLabels, so the
+    # podSelector is matched exactly as written, as `app: snapshot` above is.
+    # Both selectors are in one `from` entry, so they AND together. The label
+    # is RKE2's bundled controller's, checked on this cluster (v1.13.5) and on
+    # staging's.
     #
-    # The width costs little. Reachability is not permission: the only
-    # credential staging holds for this endpoint is read-only on two buckets,
-    # enforced by Garage itself. This rule is the second lock, not the first.
+    # If the label ever stops matching, the controller's connections are
+    # dropped, staging's fetch times out, and it restores its kept copy
+    # instead. Nothing on eesoc.com depends on this rule.
     - from:
         - namespaceSelector:
-            matchLabels: { kubernetes.io/metadata.name: eesoc-staging }
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { app.kubernetes.io/name: rke2-ingress-nginx }
       ports: [{ port: 3900 }]
 ---
 # Garage's init sidecar creates the snapshot bucket and imports the read-only

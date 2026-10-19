@@ -1,0 +1,39 @@
+# snapshot.eesoc.com: the one way staging reads production's snapshot.
+#
+# Staging runs on its own cluster on the homelab (deploy/homelab), so its
+# refresh job (overlays/staging/refresh-job.yaml) cannot reach Garage's S3 API
+# inside this cluster. This routes exactly one object to it, the scrubbed dump
+# that snapshot-cronjob.yaml writes, and nothing else on this host.
+#
+# Exact, not Prefix. A Prefix path would route the whole bucket, listing
+# included, and `/` would route the whole S3 API. Every other path on this host
+# goes to the controller's default 404. CI fails the build if any Ingress routes
+# Garage's S3 port any other way (.github/workflows/deploy.yml, "manifests").
+#
+# This rule alone leaves every method open. The edge vhost
+# (deploy/nginx/snapshot.eesoc.com.conf) is what allows only a signed GET or
+# HEAD, because this controller has snippets disabled and has no annotation for
+# that. Behind both, staging's key can only read: Garage enforces that itself
+# (deploy/garage-init/init.sh).
+#
+# No upstream-vhost, unlike eesoc-media. An S3 request is signed over its Host
+# header, and Garage rejects one that arrives with a different Host from the one
+# the client signed. Host is not in Garage's root_domain (.s3.garage), so Garage
+# reads the bucket from the path.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: eesoc-snapshot
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: snapshot.eesoc.com
+      http:
+        paths:
+          - path: /eesoc-snapshots/latest.sql.gz
+            pathType: Exact
+            backend:
+              service:
+                name: garage
+                port:
+                  number: 3900

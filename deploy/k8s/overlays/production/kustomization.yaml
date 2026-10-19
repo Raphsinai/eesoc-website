@@ -11,6 +11,8 @@ resources:
 - ../../base
 - snapshot-cronjob.yaml
 - ../../../snapshot
+  # snapshot.eesoc.com: staging's read path to that snapshot, one object only.
+- snapshot-ingress.yaml
 
 # The WhatsApp link (components/whatsapp): the society's number as a linked
 # device, posting into its groups. Turned on here by Raph, 2026-10-17 — the

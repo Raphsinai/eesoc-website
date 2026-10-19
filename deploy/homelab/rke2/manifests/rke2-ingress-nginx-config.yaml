@@ -1,0 +1,36 @@
+# Configures RKE2's bundled ingress-nginx (the same controller production
+# uses). Picked up from /var/lib/rancher/rke2/server/manifests/.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-ingress-nginx
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    controller:
+      # Nothing reaches this controller from the network. cloudflared, in the
+      # cluster, is the only client: it dials out to Cloudflare and forwards
+      # to the ClusterIP Service. No hostPort, so the LAN cannot reach the
+      # site over plain HTTP either (the VM's nftables fence drops it too).
+      hostPort:
+        enabled: false
+      service:
+        enabled: true
+        type: ClusterIP
+      config:
+        # Production's two settings, so X-Forwarded-For reaches the app the
+        # same way: the first hop is the visitor, which is what sign-in code
+        # rate limiting keys off.
+        use-forwarded-headers: "true"
+        compute-full-forwarded-for: "true"
+      # What the edge nginx added when staging sat behind it (the retired
+      # deploy/nginx/eesoc.raphsinai.dev.conf, in git history).
+      # Staging has no edge VM, so the controller does it. X-Robots-Tag is the
+      # one that matters: without it staging competes with eesoc.com in
+      # search results for the society's own name.
+      addHeaders:
+        X-Robots-Tag: "noindex, nofollow, noarchive"
+        Strict-Transport-Security: "max-age=604800; includeSubDomains"
+        X-Content-Type-Options: "nosniff"
+        Referrer-Policy: "strict-origin-when-cross-origin"
+        X-Frame-Options: "SAMEORIGIN"

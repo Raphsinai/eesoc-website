@@ -48,8 +48,8 @@ images:
   newName: ghcr.io/raphsinai/eesoc-whatsapp
   newTag: f08029d2c3e4971bc31f7449947516bfa2f19f16
 
-# Both environments share one node. Staging is the one that should give way, so
-# it runs one of everything.
+# Staging runs on a small VM on the homelab (deploy/homelab), sized to leave the
+# other VMs there alone, so it runs one of everything.
 replicas:
 - count: 1
   name: database

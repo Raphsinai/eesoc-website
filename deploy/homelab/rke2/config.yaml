@@ -1,0 +1,39 @@
+# /etc/rancher/rke2/config.yaml on the staging VM.
+#
+# RKE2 rather than k3s so staging runs what production runs: the same
+# distribution and minor version (v1.34), the same bundled ingress-nginx in
+# kube-system (base/networkpolicy.yaml admits it by that namespace), and the
+# same CNI — Calico, iptables dataplane — enforcing the same NetworkPolicies.
+# A policy that works here works on eesoc.com.
+#
+# Not RKE2's default Canal: production runs `cni: calico`, and Canal's felix
+# (nftables mode "Auto") segfaulted programming its tables on this kernel.
+node-name: eesoc-staging
+cni: calico
+write-kubeconfig-mode: "0600"
+tls-san:
+  - eesoc-staging
+
+# Stated, not defaulted: newer RKE2 releases change the default controller,
+# and every Ingress in the base is ingressClassName: nginx.
+ingress-controller: ingress-nginx
+
+# Volume snapshots are not used by anything here.
+disable:
+  - rke2-snapshot-controller
+  - rke2-snapshot-controller-crd
+  - rke2-snapshot-validation-webhook
+
+# The cluster is disposable — rebuilt from deploy/homelab, its data restored
+# from production's snapshot — so a few etcd snapshots are plenty.
+etcd-snapshot-retention: 2
+
+kubelet-arg:
+  # Every push to main pulls six new images. Collect old ones early: the disk
+  # is a thin volume in a pool shared with every other VM on pve2.
+  - image-gc-high-threshold=70
+  - image-gc-low-threshold=50
+  # Keep the VM itself responsive however full the node gets.
+  - system-reserved=cpu=200m,memory=384Mi
+  - kube-reserved=cpu=200m,memory=512Mi
+  - eviction-hard=memory.available<256Mi,nodefs.available<10%,imagefs.available<10%

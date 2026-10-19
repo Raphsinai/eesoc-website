@@ -1,17 +1,23 @@
 # Deployment
 
-Two environments, one cluster, one branch.
+Two environments, two clusters, one branch.
 
 | | Staging | Production |
 |---|---|---|
 | URL | <https://eesoc.raphsinai.dev> | <https://eesoc.com> |
+| Cluster | its own: one VM on the homelab ([`deploy/homelab`](homelab/README.md)) | TensorHost `rke2-server` |
 | Namespace | `eesoc-staging` | `eesoc` |
 | Overlay | `deploy/k8s/overlays/staging` | `deploy/k8s/overlays/production` |
-| ArgoCD app | `eesoc-website-staging` | `eesoc-website` |
-| Edge vhost | `deploy/nginx/eesoc.raphsinai.dev.conf` | `deploy/nginx/eesoc.com.conf` |
+| ArgoCD app | `eesoc-website-staging`, in the staging VM's own ArgoCD | `eesoc-website` |
+| In front | Cloudflare Tunnel (`deploy/homelab/rke2/manifests/cloudflared.yaml`) | edge vhost `deploy/nginx/eesoc.com.conf` |
 | Moves when | every push to `main` | somebody runs **promote** |
 | Database | its own, disposable | the real one |
-| Indexed by Google | no (`X-Robots-Tag` at the edge) | yes |
+| Indexed by Google | no (`X-Robots-Tag` from its ingress controller) | yes |
+
+Until 2026-10-19 both ran in the TensorHost cluster. Staging moved off it
+because that node is shared with customers and its disk had filled up. How the
+staging VM is built, reached and kept out of the other VMs' way is in
+[`deploy/homelab/README.md`](homelab/README.md).
 
 GitOps: GitHub Actions builds and publishes images, then commits the new tag to
 the **staging** overlay. ArgoCD watches each overlay and reconciles. **CI never
@@ -85,7 +91,8 @@ as `ghcr.io/<user>/eesoc-api:<sha>`.
 The base carries **no** `images:` block and **no** Ingress hosts: both are
 per-environment, and a shared value for either is how staging ends up on
 eesoc.com. The base also carries no `namespace:` — the overlay sets it, which is
-what lets the same manifests run twice in one cluster.
+what let the same manifests run twice in one cluster while staging shared
+production's.
 
 Everything below is per-environment. Do it once for `eesoc` and once for
 `eesoc-staging`.
@@ -174,10 +181,10 @@ kubectl -n eesoc-staging create secret generic eesoc-secrets \
 Note what is **not** there.
 
 **`ICU_API_KEY` must stay out.** eActivities rate-limits per source IP and bans
-the whole society on breach — and both environments leave the cluster from the
-same address. A staging `union` pod with a working key doubles the request rate
-against that limit, and the ban that follows takes production's membership sync
-down with it. With no key the bridge answers `503 ICU bridge is not configured`
+the whole society on breach. Staging now leaves from the homelab's address, not
+production's, but the ban is on the society, not the address: a staging
+`union` pod with a working key is a second client spending EESoc's allowance,
+and a ban it triggers takes production's membership sync down with it. With no key the bridge answers `503 ICU bridge is not configured`
 and makes no upstream calls at all, which is exactly the behaviour staging
 wants. Its own S3 keys, generated fresh, so staging cannot write into
 production's bucket.
@@ -188,7 +195,7 @@ mode*), and sign-in codes are written to the api log instead —
 `LOG_CODES_WHEN_UNCONFIGURED` is `true` in the staging overlay, so:
 
 ```bash
-kubectl -n eesoc-staging logs deploy/api | grep -i code
+kubectl -n eesoc-staging logs deploy/api | grep -i code   # on the VM: ssh eesoc-staging
 ```
 
 is how you sign in to staging. That is a working credential in a log, which is
@@ -293,12 +300,13 @@ kubectl -n eesoc-staging rollout restart deploy/api
 ```
 
 **Staging is not indexed.** `X-Robots-Tag: noindex, nofollow, noarchive` is set
-by the edge vhost rather than by the app, so it covers HTML, `sitemap.xml` and
-uploaded media alike and cannot be forgotten in a new route. Without it staging
-competes with eesoc.com in search results for the society's own name. If you
-want it closed off entirely rather than merely unindexed, add HTTP basic auth to
-`deploy/nginx/eesoc.raphsinai.dev.conf` — nothing in the app depends on being
-publicly reachable.
+by staging's ingress controller
+(`deploy/homelab/rke2/manifests/rke2-ingress-nginx-config.yaml`) rather than by
+the app, so it covers HTML, `sitemap.xml` and uploaded media alike and cannot
+be forgotten in a new route. Without it staging competes with eesoc.com in
+search results for the society's own name. If you want it closed off entirely
+rather than merely unindexed, put a Cloudflare Access policy on the hostname —
+nothing in the app depends on being publicly reachable.
 
 ### 2c. Staging's data: a scrubbed copy of production
 
@@ -306,6 +314,13 @@ Staging restores a snapshot of production after **every deploy**, so it looks
 like the real site — the same events, sponsors, resources, committee and
 lockers — while anything edited in the staging dashboard is discarded on the
 next push. A staging edit can never become a production change.
+
+> **Since staging moved to its own cluster it cannot reach production's
+> Garage**, so the refresh restores the last snapshot staging kept rather than
+> a fresh one, and takes media from eesoc.com's public `/media`. Every deploy
+> still resets staging, but the data stays as of the kept snapshot
+> (2026-10-18) until production gets a read path for it. That is a production
+> change; see `deploy/homelab/README.md`, "Data".
 
 ```
 PRODUCTION (ns eesoc)                         STAGING (ns eesoc-staging)
@@ -418,8 +433,11 @@ served anonymously from eesoc.com.
 Ingress carries no certificate and no cert-manager annotation; the hop from the
 VM into the cluster is plain HTTP.
 
-`deploy/nginx/` holds one vhost per environment, both pointing at the same
-cluster ingress and separated only by `server_name`. Point each `upstream` at
+This section is production's. Staging has no edge VM: Cloudflare terminates
+TLS and a tunnel carries requests into its cluster (`deploy/homelab`), with the
+same plain-HTTP hop at the end.
+
+`deploy/nginx/eesoc.com.conf` is production's vhost. Point its `upstream` at
 the cluster's ingress address, then:
 
 ```bash
@@ -427,17 +445,11 @@ cp deploy/nginx/eesoc.com.conf /etc/nginx/sites-available/eesoc.com
 ln -s /etc/nginx/sites-available/eesoc.com /etc/nginx/sites-enabled/
 certbot --nginx -d eesoc.com -d www.eesoc.com
 
-cp deploy/nginx/eesoc.raphsinai.dev.conf \
-   /etc/nginx/sites-available/eesoc.raphsinai.dev
-ln -s /etc/nginx/sites-available/eesoc.raphsinai.dev /etc/nginx/sites-enabled/
-certbot --nginx -d eesoc.raphsinai.dev
-
 nginx -t && systemctl reload nginx
 ```
 
-**Neither vhost may rewrite `Host`.** The cluster matches on it, and that match
-is the entire separation between the two environments at this hop — a rewritten
-Host sends staging traffic to production's Ingress.
+**The vhost may not rewrite `Host`.** The cluster's Ingress matches on it, and
+a request with any other Host gets nothing.
 
 Two things that are easy to get wrong:
 
@@ -473,9 +485,11 @@ care about.
 
 ### 4. ArgoCD
 
+Each Application goes into its own cluster's ArgoCD:
+
 ```bash
-kubectl apply -f deploy/argocd/application-production.yaml
-kubectl apply -f deploy/argocd/application-staging.yaml
+kubectl apply -f deploy/argocd/application-production.yaml   # TensorHost
+kubectl apply -f deploy/argocd/application-staging.yaml      # the staging VM
 ```
 
 ### 5. WhatsApp (optional, per environment)

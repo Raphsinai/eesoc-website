@@ -1,0 +1,13 @@
+# Calico as production configures it (iptables dataplane, VXLAN), minus
+# production's MTU 9000: this VM sits on a 1500-byte home LAN, and Calico
+# works out the VXLAN MTU from the interface when none is given.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-calico
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    installation:
+      calicoNetwork:
+        linuxDataplane: Iptables

@@ -57,8 +57,7 @@ spec:
             - |
               set -eu
               SNAP=/scratch/snapshot.sql.gz
-              # Fail fast when production is not there: from the homelab its
-              # in-cluster name does not even resolve.
+              # Fail fast when production is not there.
               QUICK="--contimeout 10s --timeout 60s --retries 1 --low-level-retries 2"
 
               # The snapshot: production's, and a copy kept in staging's own
@@ -117,12 +116,15 @@ spec:
             - { name: PUBLIC_MEDIA_URL, value: "https://eesoc.com/media/" }
 
             # Production, read-only. This key cannot write to either bucket.
-            # The endpoint is production's in-cluster name, which resolves only
-            # when staging shares production's cluster; empty skips straight to
-            # staging's kept copy.
+            #
+            # Empty: staging's cluster (deploy/homelab) has no route to
+            # production's Garage, which was "http://garage.eesoc.svc.cluster.local:3900"
+            # while both shared a cluster. Empty skips straight to staging's
+            # kept copy. deploy/homelab/README.md ("Data") says what a route
+            # would take; it is a production change.
             - { name: RCLONE_CONFIG_PROD_TYPE,     value: s3 }
             - { name: RCLONE_CONFIG_PROD_PROVIDER, value: Other }
-            - { name: RCLONE_CONFIG_PROD_ENDPOINT, value: "http://garage.eesoc.svc.cluster.local:3900" }
+            - { name: RCLONE_CONFIG_PROD_ENDPOINT, value: "" }
             - { name: RCLONE_CONFIG_PROD_REGION,   value: garage }
             - name: RCLONE_CONFIG_PROD_ACCESS_KEY_ID
               valueFrom: { secretKeyRef: { name: eesoc-secrets, key: PROD_RO_ACCESS_KEY_ID } }

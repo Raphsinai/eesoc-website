@@ -1,0 +1,80 @@
+# The only way into staging from the internet: a Cloudflare Tunnel.
+#
+# cloudflared dials OUT to Cloudflare and carries eesoc.raphsinai.dev's
+# requests back to the ingress controller's ClusterIP Service. Nothing listens
+# on the VM's network, so there is no port forward on the home router, the
+# home IP is never published, and the plain-HTTP ingress is unreachable except
+# through Cloudflare, which terminates TLS. That is the job production's edge
+# VM does for eesoc.com.
+#
+# The tunnel is locally managed: its routes are the `ingress:` list below, in
+# git, not in the Cloudflare dashboard. Its credential is the Secret
+# `tunnel-token`, created by hand and never committed (README.md, "Public
+# access").
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cloudflared
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudflared
+  namespace: cloudflared
+data:
+  config.yaml: |
+    ingress:
+      # The Host header is passed through untouched: the cluster's Ingress
+      # matches on it, exactly as behind production's edge nginx.
+      - hostname: eesoc.raphsinai.dev
+        service: http://rke2-ingress-nginx-controller.kube-system.svc.cluster.local:80
+      - service: http_status:404
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+  namespace: cloudflared
+spec:
+  # Two, so a restart or upgrade of one never drops the site.
+  replicas: 2
+  selector:
+    matchLabels: { app: cloudflared }
+  template:
+    metadata:
+      labels: { app: cloudflared }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:2026.9.3
+          args:
+            - tunnel
+            - --no-autoupdate
+            - --metrics=0.0.0.0:2000
+            - --config=/etc/cloudflared/config.yaml
+            - run
+          env:
+            - name: TUNNEL_TOKEN
+              valueFrom:
+                secretKeyRef: { name: tunnel-token, key: token }
+          livenessProbe:
+            httpGet: { path: /ready, port: 2000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: config, mountPath: /etc/cloudflared, readOnly: true }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits:   { memory: 128Mi }
+      volumes:
+        - name: config
+          configMap: { name: cloudflared }

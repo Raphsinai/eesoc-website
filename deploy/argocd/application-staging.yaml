@@ -1,14 +1,19 @@
 # ArgoCD watches the staging overlay — eesoc.raphsinai.dev, namespace
 # eesoc-staging.
 #
+# Applied in the ArgoCD that runs INSIDE the staging VM on the homelab
+# (deploy/homelab), not production's: since 2026-10-19 the two environments
+# are separate clusters. It is that cluster's only Application.
+#
 # This is the one that moves on its own: every push to main pins a new image
 # tag in deploy/k8s/overlays/staging and Argo syncs it. Production is a
 # separate Application watching a separate overlay and only moves when somebody
 # runs the promote workflow.
 #
-# Same repo, same branch, same read-only deploy key — the two environments are
-# separated by directory, not by branch. A staging branch would mean promotion
-# was a merge, and a merge can carry changes that were never on staging.
+# Same repo, same branch — the two environments are separated by directory, not
+# by branch. A staging branch would mean promotion was a merge, and a merge can
+# carry changes that were never on staging. The homelab ArgoCD reads the repo
+# with its own read-only deploy key ("argocd homelab staging").
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

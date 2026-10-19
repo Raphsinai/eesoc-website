@@ -14,6 +14,7 @@ without asking. Production is Raph's.**
 |---|---|---|
 | | <https://eesoc.raphsinai.dev> | <https://eesoc.com> |
 | Namespace | `eesoc-staging` | `eesoc` |
+| Cluster | its own, one VM on the homelab (`ssh eesoc-staging`; [`deploy/homelab`](deploy/homelab/README.md)) | TensorHost (`ssh rke2-tensorhost`) |
 | Deploys when | a push to `main` lands — push freely, no need to ask | somebody runs the promote workflow — needs Raph's approval |
 
 **Never put a change on eesoc.com that Raph has not seen on
@@ -61,7 +62,8 @@ to promote the next thing.
   the `eesoc` namespace.** The repository is the only statement of what is
   running; ArgoCD has `selfHeal: true` and will revert manual changes, so a
   direct edit is both an unapproved deploy *and* one that silently disappears.
-  `kubectl` against `eesoc-staging` for debugging is fine.
+  `kubectl` against `eesoc-staging` for debugging is fine; it lives on the
+  staging VM, not on TensorHost.
 - **Do not add hosts, image tags, or a `namespace:` to `deploy/k8s/base/`.**
   The base is shared by both overlays, so anything environment-specific there
   reaches production on the next sync. Hosts and image tags are deliberately
@@ -75,8 +77,11 @@ why, then `git revert` the `promote:` commit, or run promote with an older SHA.
 
 ### Staging's data is a scrubbed copy of production
 
-Staging restores a snapshot of production after **every deploy**. Two things
-follow, and both will bite you if you forget them:
+Staging restores a snapshot of production after **every deploy**. From the
+homelab it cannot reach production's Garage, so it restores the last snapshot
+it kept (2026-10-18) until production gets a read path for it, which is a
+production change (`deploy/homelab/README.md`, "Data"). Two things follow, and
+both will bite you if you forget them:
 
 - **Anything you change in the staging dashboard is discarded on the next
   push.** Do not use staging to stage real content — an event created there is
@@ -113,9 +118,10 @@ at. Mention it rather than promoting it.
 **eActivities bans the whole society.** The Union's API rate-limits per source
 IP and a breach bans EESoc, not just the caller. The throttle and cache live
 in-process in the `union` service, which is why it is pinned to one replica with
-`strategy: Recreate`, and why **staging has no `ICU_API_KEY`** — a second pod
-calling eActivities from the same cluster IP doubles the rate. Do not add that
-key to the staging secret, and do not scale `union` up.
+`strategy: Recreate`, and why **staging has no `ICU_API_KEY`** — a second
+client spends the same society's allowance, and the ban it can trigger takes
+production down too, whichever IP it came from. Do not add that key to the
+staging secret, and do not scale `union` up.
 
 **Outbound email is one shared Imperial mailbox** (`eesocweb@ic.ac.uk`) whose
 password Imperial force-resets annually. When it lapses, sign-in codes stop and

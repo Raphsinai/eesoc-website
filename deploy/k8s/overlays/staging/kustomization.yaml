@@ -64,6 +64,7 @@ replicas:
   # Same for the object store: test uploads, not four years of event posters.
 patches:
 - path: ingress-hosts.yaml
+- path: ingress-https.yaml
 - path: refresh-access.yaml
 - path: garage-snapshot-cache.yaml
 - path: configmap.yaml

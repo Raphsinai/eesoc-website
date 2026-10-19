@@ -1,0 +1,21 @@
+# Redirect plain HTTP to HTTPS at the ingress, for staging only.
+#
+# Production's edge nginx does this before a request reaches the cluster, which
+# is why the base turns the redirect off. Staging has no edge VM: Cloudflare
+# hands requests to cloudflared (deploy/homelab), which passes the visitor's
+# scheme on as X-Forwarded-Proto and the Host untouched, so the controller can
+# redirect to the right place itself. Without this, http://eesoc.raphsinai.dev
+# served the site unencrypted.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: eesoc
+  annotations:
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: eesoc-media
+  annotations:
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"

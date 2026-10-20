@@ -8,6 +8,9 @@ import session from '@/stores/session'
 import { available, reason } from '@/stores/status'
 import MaintenanceNotice from '@/components/MaintenanceNotice.vue'
 
+// Official Imperial College Union product for EEE locker purchases.
+const LOCKER_SHOP_URL = 'https://www-s.imperialcollegeunion.org/shop/product/2771-/'
+
 const raw = ref([])
 const entitlement = ref(null)
 const sel = ref(null)
@@ -84,6 +87,11 @@ const bookingNote = computed(() => {
   if (selected.value) return `${selected.value.place}. Yours for the academic year.`
   return `Available lockers are outlined in blue. You have ${entitlement.value?.remaining ?? 0} left to claim.`
 })
+
+const needsPurchase = computed(
+  () => session.authenticated && session.isMember
+    && entitlement.value && entitlement.value.remaining < 1,
+)
 
 const canBook = computed(
   () => Boolean(selected.value) && session.isMember && (entitlement.value?.remaining ?? 0) > 0,
@@ -167,7 +175,9 @@ async function release(locker) {
         </div>
         <div class="step">
           <span class="step__n">02</span>
-          <span style="font:var(--type-small); color:var(--text-body)">Buy a locker on the Union shop, then pick any available one on the map.</span>
+          <span style="font:var(--type-small); color:var(--text-body)">
+            Buy the <a class="union-shop-link" :href="LOCKER_SHOP_URL" target="_blank" rel="noopener noreferrer">EEE locker on the Union Shop ↗</a>, then pick any available one on the map.
+          </span>
         </div>
         <div class="step">
           <span class="step__n">03</span>
@@ -231,6 +241,7 @@ async function release(locker) {
             <span class="eyebrow" style="letter-spacing:var(--tracking-label)">{{ bookingEyebrow }}</span>
             <span style="font-family:var(--font-display); font-weight:700; font-size:var(--text-xl); letter-spacing:var(--tracking-heading); color:var(--text-strong)">{{ bookingTitle }}</span>
             <span style="font:var(--type-small); color:var(--text-muted)">{{ bookingNote }}</span>
+            <a v-if="needsPurchase" class="union-shop-link" :href="LOCKER_SHOP_URL" target="_blank" rel="noopener noreferrer">Buy a locker on the Union Shop ↗</a>
           </div>
           <Button variant="accent" size="lg" :disabled="!canBook || busy" @click="book">{{ bookLabel }}</Button>
         </div>
@@ -268,6 +279,11 @@ async function release(locker) {
   gap: var(--space-6);
   position: sticky;
   top: 96px;
+}
+.union-shop-link {
+  color: var(--text-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 .step {
   display: grid;

@@ -215,16 +215,17 @@ def test_announcement_cannot_be_submitted_by_a_different_owner(monkeypatch):
     assert error.value.status_code == 404
 
 
-def test_opportunity_admin_guard_only_allows_admin_or_superuser():
+def test_opportunity_admin_guard_uses_explicit_permission_not_role_label():
     from fastapi import HTTPException
     from utils.deps import require_opportunities_admin
 
-    for role in ("events", "industry", None):
+    for role in ("events", "industry", "admin", None):
+        session = SimpleNamespace(role=role, is_admin=True, can=lambda _: False)
         with pytest.raises(HTTPException) as error:
-            asyncio.run(require_opportunities_admin(SimpleNamespace(role=role)))
+            asyncio.run(require_opportunities_admin(session))
         assert error.value.status_code == 403
-    for role in ("admin", "superuser"):
-        session = SimpleNamespace(role=role)
+    for role in ("industry", "events", "admin", "superuser"):
+        session = SimpleNamespace(role=role, is_admin=True, can=lambda c: c == "opportunities")
         assert asyncio.run(require_opportunities_admin(session)) is session
 
 

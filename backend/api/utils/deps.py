@@ -67,7 +67,7 @@ async def require_admin(
 
 
 def require_capability(capability: str):
-    """Refuse unless the caller's role carries this capability.
+    """Refuse unless the caller's effective permissions include this capability.
 
     The message names the capability rather than the role, because the roles
     will be reshuffled and "you need the events role" ages badly the first time
@@ -107,15 +107,14 @@ def require_any_capability(*capabilities: str):
 
 
 _DENIED = {
-    "users": "Only a superuser can change who has access.",
     "events": "You do not have access to events.",
     "sponsors": "You do not have access to sponsors.",
-    "site": (
-        "That is a site-wide setting, and your role covers one part of the site. "
-        "Ask an admin."
-    ),
-    "passkey_links": "Only an admin or a superuser can make passkey links.",
-    "locker_allowances": "Only a superuser can give out free lockers.",
+    "resources": "You cannot manage resources.",
+    "files": "You cannot manage files.",
+    "email": "You cannot manage email campaigns.",
+    "users": "You cannot manage committee access.",
+    "passkey_links": "You cannot make account recovery links.",
+    "locker_allowances": "You cannot grant free locker allowances.",
 }
 
 
@@ -125,23 +124,20 @@ _DENIED = {
 require_users = require_capability("users")
 require_events = require_capability("events")
 require_sponsors = require_capability("sponsors")
-require_site = require_capability("site")
+require_resources = require_capability("resources")
+require_files = require_capability("files")
+require_committee_page = require_capability("committee")
+require_product_links = require_capability("product_links")
+require_lockers = require_capability("lockers")
+require_email = require_capability("email")
+require_whatsapp = require_capability("whatsapp")
 require_passkey_links = require_capability("passkey_links")
 require_locker_allowances = require_capability("locker_allowances")
 
 
-async def require_opportunities_admin(
-    session: AuthSession = Depends(require_session),
-) -> AuthSession:
-    """Opportunity moderation is reserved for admin and superuser roles.
-
-    Having some committee role is not enough. This intentionally checks the
-    role, not a general capability, so an events/industry officer cannot
-    access the submissions even if role capabilities later change.
-    """
-    if session.role not in ("admin", "superuser"):
-        raise HTTPException(403, "An admin or superuser must review opportunities")
-    return session
+# Opportunity submissions are private: check the dedicated permission, not a
+# role label. A custom permission grants it; explicitly unchecking it removes it.
+require_opportunities_admin = require_capability("opportunities")
 
 
 async def require_event_editor(
@@ -157,6 +153,33 @@ async def require_event_editor(
     if not (session.can("events") or session.can("industry")):
         raise HTTPException(403, "You do not have access to events.")
     return session
+
+
+async def require_event_viewer(
+    session: AuthSession = Depends(require_session),
+) -> AuthSession:
+    if not any(session.can(c) for c in ("events", "industry", "bookings", "industry_bookings")):
+        raise HTTPException(403, "You do not have access to events.")
+    return session
+
+
+async def require_booking_editor(
+    session: AuthSession = Depends(require_session),
+) -> AuthSession:
+    if not any(session.can(c) for c in ("bookings", "industry_bookings")):
+        raise HTTPException(403, "You do not have access to event bookings.")
+    return session
+
+
+def may_manage_booking(session: AuthSession, event: dict | None) -> bool:
+    return session.can("bookings") or (
+        session.can("industry_bookings") and bool((event or {}).get("industry"))
+    )
+
+
+def assert_may_manage_booking(session: AuthSession, event: dict | None) -> None:
+    if not may_manage_booking(session, event):
+        raise HTTPException(403, "You cannot manage bookings for this event.")
 
 
 def may_edit_event(session: AuthSession, event: dict | None) -> bool:

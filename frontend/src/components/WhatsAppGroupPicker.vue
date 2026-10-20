@@ -42,7 +42,7 @@ function toggle(jid) {
       <span>{{ g.name }}<span class="wgp__meta"> · {{ g.size }} people</span></span>
     </label>
     <p v-if="!groups.length" class="wgp__meta">
-      No WhatsApp groups to post into — link the society's number on the Email tab.
+      No WhatsApp groups to post into — link the society's number on the WhatsApp tab.
     </p>
     <p v-else-if="modelValue.length && data.environment === 'staging'" class="wgp__warn">
       This is staging, but WhatsApp is real: these groups get the post.

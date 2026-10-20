@@ -43,18 +43,22 @@ async def search(
             add(label, kind, to)
 
     # Only published events, and only what the caller may see.
-    is_admin = bool(session and session.is_admin)
+    can_see_all = bool(session and (session.can("events") or session.can("bookings")))
+    can_see_industry = bool(session and (session.can("industry") or session.can("industry_bookings")))
+    can_see_resources = bool(session and session.can("resources"))
     events = await database.get(
-        "/events", {"published_only": not is_admin, "limit": 200}
+        "/events", {"published_only": not (can_see_all or can_see_industry), "limit": 200}
     ) or []
     for event in events:
+        if not event["published"] and not (can_see_all or (can_see_industry and event.get("industry"))):
+            continue
         haystack = " ".join(
             filter(None, [event.get("title"), event.get("category"), event.get("venue")])
         ).lower()
         if term in haystack:
             add(event["title"], "Event", f"/events/{event['slug']}", event.get("venue"))
 
-    pages = await database.get("/resource-pages", {"published_only": not is_admin}) or []
+    pages = await database.get("/resource-pages", {"published_only": not can_see_resources}) or []
     for page in pages:
         haystack = f"{page['title']} {page.get('description') or ''}".lower()
         if term in haystack:

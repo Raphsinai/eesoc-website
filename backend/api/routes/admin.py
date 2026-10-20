@@ -39,13 +39,23 @@ from utils.present import (
 from services import sync as sync_service
 from utils.deps import (
     assert_may_edit_event,
+    assert_may_manage_booking,
+    may_manage_booking,
+    require_booking_editor,
+    require_event_viewer,
+    require_committee_page,
+    require_email,
+    require_files,
+    require_lockers,
+    require_product_links,
+    require_resources,
+    require_whatsapp,
     may_edit_event,
     require_admin,
     require_event_editor,
     require_feature,
     require_any_capability,
     require_locker_allowances,
-    require_site,
     require_sponsors,
     require_users,
     verify_csrf,
@@ -85,16 +95,18 @@ async def dashboard(session: AuthSession = Depends(require_admin)) -> dict:
     counts = stats.get("counts", {})
     # Drafts in the email approval queue. Counted here so the landing page can
     # say so: a timer wrote them, and nothing goes out until somebody acts.
-    awaiting = sum(
-        1 for c in await database.get(
-            "/email/campaigns", {"status": "awaiting_approval", "limit": 100}
-        ) or []
-        if c.get("status") == "awaiting_approval"
-    )
+    awaiting = 0
+    if session.can("email"):
+        awaiting = sum(
+            1 for c in await database.get(
+                "/email/campaigns", {"status": "awaiting_approval", "limit": 100}
+            ) or []
+            if c.get("status") == "awaiting_approval"
+        )
     # Ordinary committee roles can use parts of this dashboard, but must not
     # learn the titles, authors or number of private opportunity submissions.
     pending_opportunities = []
-    if session.role in ("admin", "superuser"):
+    if session.can("opportunities"):
         pending_opportunities = [
             {"id": row["id"], "title": row["title"],
              "submittedBy": row.get("submitter_email"),
@@ -105,13 +117,17 @@ async def dashboard(session: AuthSession = Depends(require_admin)) -> dict:
         ]
     return {
         "academicYear": academic_year(),
-        "counts": counts,
-        "needsAttention": stats.get("needsAttention", []),
-        "recentBookings": stats.get("recentBookings", []),
+        "counts": {
+            **{key: value for key, value in counts.items() if not key.startswith(("res_", "users_", "union_sales", "waitlist"))},
+            **({key: value for key, value in counts.items() if key.startswith(("res_", "waitlist"))} if session.can("bookings") else {}),
+            **({key: value for key, value in counts.items() if key.startswith(("users_", "union_sales"))} if session.can("users") or session.can("sync") else {}),
+        },
+        "needsAttention": stats.get("needsAttention", []) if session.can("bookings") else [],
+        "recentBookings": stats.get("recentBookings", []) if session.can("bookings") else [],
         "syncRuns": runs,
         "union": union_health,
         "storage": {
-            **storage.describe(),
+            **(storage.describe() if session.can("files") else {}),
             "files": counts.get("uploads", 0),
             "bytes": counts.get("upload_bytes", 0),
         },
@@ -123,7 +139,7 @@ async def dashboard(session: AuthSession = Depends(require_admin)) -> dict:
         "capabilities": sorted(session.capabilities),
         # Surfaced so the committee sees what still needs setting up, rather
         # than finding out when a booking silently fails to confirm.
-        "warnings": _warnings(counts, union_health, awaiting),
+        "warnings": _warnings(counts, union_health, awaiting) if session.can("sync") or session.can("email") else [],
         "emailsAwaitingApproval": awaiting,
         "opportunitiesAwaitingApproval": len(pending_opportunities),
         "pendingOpportunities": pending_opportunities,
@@ -172,11 +188,15 @@ def _warnings(counts: dict, union_health: dict | None, awaiting: int = 0) -> lis
 
 
 @router.get("/overview")
-async def overview() -> dict:
+async def overview(session: AuthSession = Depends(require_admin)) -> dict:
     runs = await database.get("/union/sync-runs/latest") or []
     year = academic_year()
     members = await database.get("/union/members/count", {"academic_year": year})
-    events = await database.get("/events", {"published_only": False, "limit": 500}) or []
+    full_calendar = any(session.can(c) for c in ("events", "bookings"))
+    events = await database.get("/events", {"published_only": not full_calendar, "limit": 500}) or []
+    if not full_calendar:
+        events = [event for event in events if event.get("published") or
+                  (event.get("industry") and (session.can("industry") or session.can("industry_bookings")))]
 
     union_health = None
     if union.configured():
@@ -200,7 +220,7 @@ async def overview() -> dict:
 
 @router.post(
     "/sync",
-    dependencies=[Depends(verify_csrf), Depends(require_any_capability("site", "events"))],
+    dependencies=[Depends(verify_csrf), Depends(require_any_capability("sync"))],
 )
 async def trigger_sync(force: bool = True) -> dict:
     """'Sync now'. `force=True` bypasses the bridge's response cache — which is
@@ -214,7 +234,7 @@ async def trigger_sync(force: bool = True) -> dict:
 
 @router.post(
     "/sync/committee",
-    dependencies=[Depends(verify_csrf), Depends(require_site)],
+    dependencies=[Depends(verify_csrf), Depends(require_committee_page)],
 )
 async def sync_committee() -> dict:
     """'Sync committee now'.
@@ -232,7 +252,7 @@ async def sync_committee() -> dict:
 
 @router.post(
     "/reconcile",
-    dependencies=[Depends(verify_csrf), Depends(require_any_capability("site", "events"))],
+    dependencies=[Depends(verify_csrf), Depends(require_any_capability("sync"))],
 )
 async def reconcile() -> dict:
     """Expire stale holds and match reservations against already-synced sales,
@@ -245,7 +265,7 @@ async def reconcile() -> dict:
 
 @router.get("/events")
 async def list_all_events(
-    session: AuthSession = Depends(require_event_editor),
+    session: AuthSession = Depends(require_event_viewer),
 ) -> list[dict]:
     """Every event, annotated with whether this caller may change it.
 
@@ -260,7 +280,7 @@ async def list_all_events(
     for link in await database.get("/sponsors/links/confirmed") or []:
         sponsors.setdefault(link["event_id"], []).append(link["sponsor_name"])
     return [
-        {**e, "can_edit": may_edit_event(session, e), "sponsors": sponsors.get(e["id"], [])}
+        {**e, "can_edit": may_edit_event(session, e), "can_book": may_manage_booking(session, e), "sponsors": sponsors.get(e["id"], [])}
         for e in events
     ]
 
@@ -271,6 +291,14 @@ async def _editable_event(event_id: int, session: AuthSession) -> dict:
     if event is None:
         raise HTTPException(404, "No such event")
     assert_may_edit_event(session, event)
+    return event
+
+
+async def _bookable_event(event_id: int, session: AuthSession) -> dict:
+    event = await database.get(f"/events/{event_id}")
+    if event is None:
+        raise HTTPException(404, "No such event")
+    assert_may_manage_booking(session, event)
     return event
 
 
@@ -374,11 +402,11 @@ async def delete_ticket_type(
 
 @router.get("/events/{event_id}/reservations")
 async def event_reservations(
-    event_id: int, session: AuthSession = Depends(require_event_editor)
+    event_id: int, session: AuthSession = Depends(require_booking_editor)
 ) -> dict:
     """The door list. Held and confirmed are shown separately because only
     confirmed rows have actually been paid for."""
-    await _editable_event(event_id, session)
+    await _bookable_event(event_id, session)
     rows = await database.get("/reservations", {"event_id": event_id, "limit": 1000}) or []
     return {
         "confirmed": [r for r in rows if r["status"] == "confirmed"],
@@ -389,11 +417,11 @@ async def event_reservations(
 
 @router.get("/events/{event_id}/detail")
 async def event_detail(
-    event_id: int, session: AuthSession = Depends(require_event_editor)
+    event_id: int, session: AuthSession = Depends(require_booking_editor)
 ) -> dict:
     """Everything about one event's bookings, for its admin page: a summary per
     ticket type, every reservation in every state, and the waitlist."""
-    event = await _editable_event(event_id, session)
+    event = await _bookable_event(event_id, session)
     rows = await database.get("/reservations", {"event_id": event_id, "limit": 5000}) or []
     waiting = await database.get("/waitlist", {"event_id": event_id}) or []
 
@@ -476,7 +504,7 @@ async def event_detail(
 
 @router.get("/events/{event_id}/audiences")
 async def event_email_audiences(
-    event_id: int, _: AuthSession = Depends(require_site)
+    event_id: int, _: AuthSession = Depends(require_email)
 ) -> dict:
     """The per-event audiences for the "Email about this" dialog."""
     return {"audiences": await emailing.event_audiences(event_id)}
@@ -484,7 +512,7 @@ async def event_email_audiences(
 
 @router.get("/reservations/overdue")
 async def overdue_reservations(
-    session: AuthSession = Depends(require_event_editor),
+    session: AuthSession = Depends(require_booking_editor),
 ) -> dict:
     """Holds whose purchase window has passed with no matching sale.
 
@@ -495,7 +523,7 @@ async def overdue_reservations(
     rows = await database.get("/reservations/overdue") or []
     # An industry-only role sees the unpaid bookings for its own events and
     # nothing else — these rows carry people's names and what they bought.
-    if not session.can("events"):
+    if not session.can("bookings"):
         allowed = {
             e["id"]
             for e in (await database.get("/events", {"published_only": False, "limit": 500}) or [])
@@ -532,14 +560,14 @@ async def overdue_reservations(
 
 @router.post("/reservations/{reservation_id}/remind", dependencies=[Depends(verify_csrf)])
 async def remind(
-    reservation_id: int, session: AuthSession = Depends(require_event_editor)
+    reservation_id: int, session: AuthSession = Depends(require_booking_editor)
 ) -> dict:
     """Nudge somebody who has booked but not bought."""
     reservation = await database.get(f"/reservations/{reservation_id}")
     if reservation is None:
         raise HTTPException(404, "No such reservation")
     user = await database.get(f"/auth/users/{reservation['user_id']}")
-    event = await _editable_event(reservation["event_id"], session)
+    event = await _bookable_event(reservation["event_id"], session)
     if not user:
         raise HTTPException(404, "No such reservation")
 
@@ -565,7 +593,7 @@ async def remind(
 async def confirm_manually(
     reservation_id: int,
     order_number: str | None = Body(default=None, embed=True),
-    session: AuthSession = Depends(require_event_editor),
+    session: AuthSession = Depends(require_booking_editor),
 ) -> dict:
     """Confirm a booking the matcher could not."""
     await _reservation_in_scope(reservation_id, session)
@@ -581,7 +609,7 @@ async def confirm_manually(
 async def change_ticket_type(
     reservation_id: int,
     ticket_type_id: int = Body(embed=True),
-    session: AuthSession = Depends(require_event_editor),
+    session: AuthSession = Depends(require_booking_editor),
 ) -> dict:
     """Move a booking to another ticket type of the same event.
 
@@ -626,7 +654,7 @@ async def add_ticket(
     quantity: int = Body(default=1, embed=True),
     note: str | None = Body(default=None, embed=True),
     send_confirmation: bool = Body(default=True, embed=True),
-    session: AuthSession = Depends(require_event_editor),
+    session: AuthSession = Depends(require_booking_editor),
 ) -> dict:
     """Add a ticket for somebody — paid in cash or by transfer, or a comp.
 
@@ -639,7 +667,7 @@ async def add_ticket(
     `events` or `industry` on this event, like every other change to its
     bookings. No Union calls.
     """
-    await _editable_event(event_id, session)
+    await _bookable_event(event_id, session)
     address = normalise_email(email)
     if "@" not in address:
         raise HTTPException(400, "That does not look like an email address.")
@@ -689,7 +717,7 @@ async def add_ticket(
 
 @router.post("/reservations/{reservation_id}/confirmation", dependencies=[Depends(verify_csrf)])
 async def resend_confirmation(
-    reservation_id: int, session: AuthSession = Depends(require_event_editor)
+    reservation_id: int, session: AuthSession = Depends(require_booking_editor)
 ) -> dict:
     """Send a confirmed booking's "you're confirmed" email again."""
     await _reservation_in_scope(reservation_id, session)
@@ -700,7 +728,7 @@ async def resend_confirmation(
 
 @router.post("/reservations/{reservation_id}/cancel", dependencies=[Depends(verify_csrf)])
 async def cancel_reservation(
-    reservation_id: int, session: AuthSession = Depends(require_event_editor)
+    reservation_id: int, session: AuthSession = Depends(require_booking_editor)
 ) -> dict:
     """Cancel a booking and hand the seat to the waitlist."""
     await _reservation_in_scope(reservation_id, session)
@@ -719,7 +747,7 @@ async def _reservation_in_scope(reservation_id: int, session: AuthSession) -> di
     reservation = await database.get(f"/reservations/{reservation_id}")
     if reservation is None:
         raise HTTPException(404, "No such reservation")
-    await _editable_event(reservation["event_id"], session)
+    await _bookable_event(reservation["event_id"], session)
     return reservation
 
 
@@ -735,11 +763,11 @@ async def sponsor_requests(
 @router.get("/waitlist")
 async def waitlist(
     event_id: int | None = None,
-    session: AuthSession = Depends(require_event_editor),
+    session: AuthSession = Depends(require_booking_editor),
 ) -> list[dict]:
     if event_id is not None:
-        await _editable_event(event_id, session)
-    elif not session.can("events"):
+        await _bookable_event(event_id, session)
+    elif not session.can("bookings"):
         raise HTTPException(403, "Ask for one event's waitlist at a time.")
     return await database.get("/waitlist", {"event_id": event_id}) or []
 
@@ -749,7 +777,7 @@ async def waitlist(
 
 @router.get("/union/products")
 async def union_products(
-    year: str | None = None, _: AuthSession = Depends(require_admin)
+    year: str | None = None, _: AuthSession = Depends(require_any_capability("product_links", "events", "industry"))
 ) -> list[dict]:
     """Feeds the 'link a product' dropdown. Served from the local mirror, never
     from upstream — this is a UI interaction and must not spend API quota."""
@@ -852,7 +880,7 @@ async def set_ticket_product(
 async def list_links(
     purpose: str | None = None,
     event_id: int | None = None,
-    _: AuthSession = Depends(require_admin),
+    _: AuthSession = Depends(require_any_capability("product_links", "events", "industry")),
 ) -> list[dict]:
     return await database.get(
         "/product-links", {"purpose": purpose, "event_id": event_id}
@@ -861,7 +889,7 @@ async def list_links(
 
 @router.post("/product-links", dependencies=[Depends(verify_csrf)])
 async def create_link(
-    body: dict = Body(...), session: AuthSession = Depends(require_site)
+    body: dict = Body(...), session: AuthSession = Depends(require_product_links)
 ) -> dict:
     """Map a Union product (or a specific line of it) to a ticket type, a locker,
     or membership.
@@ -879,16 +907,15 @@ async def create_link(
 
 
 @router.delete("/product-links/{link_id}", dependencies=[Depends(verify_csrf)])
-async def delete_link(link_id: int, _: AuthSession = Depends(require_site)) -> dict:
+async def delete_link(link_id: int, _: AuthSession = Depends(require_product_links)) -> dict:
     await database.delete(f"/product-links/{link_id}")
     return {"ok": True}
 
 
 # ------------------------------------------------------- people and roles
 #
-# Superuser only, which is the whole point of having a superuser: an admin runs
-# the site, and handing out the keys to it is a separate decision from running
-# it. The standing superuser address in settings cannot be demoted here, and
+# Access-manager permission only: an admin runs the site, while changes to
+# committee grants require an explicit, separately assigned permission. The standing superuser address in settings cannot be demoted here, and
 # would be re-granted on its next request even if the row were deleted by hand.
 
 
@@ -906,7 +933,12 @@ async def list_admins(session: AuthSession = Depends(require_admin)) -> dict:
     page only offers the controls when `canManage` says so.
     """
     people = await database.get("/auth/admins") or []
-    rows = [{**row, "standing": _is_standing(row.get("email"))} for row in people]
+    rows = [
+        {**row, "standing": _is_standing(row.get("email")),
+         "role": "superuser" if _is_standing(row.get("email")) else row["role"],
+         "permissions": None if _is_standing(row.get("email")) else row.get("permissions")}
+        for row in people
+    ]
 
     # The standing superuser holds the role whether or not there is a row for
     # them — they may simply never have signed in here. Showing the address
@@ -925,8 +957,11 @@ async def list_admins(session: AuthSession = Depends(require_admin)) -> dict:
         })
 
     return {
-        "admins": rows,
+        "admins": [{**row, "capabilities": sorted(role_table.effective_capabilities(
+            row.get("role"), None if row["standing"] else row.get("permissions")
+        ))} for row in rows],
         "roles": role_table.describe(),
+        "permissions": role_table.describe_permissions(),
         "canManage": session.can("users"),
         "superuserEmail": settings.superuser_email,
     }
@@ -936,6 +971,7 @@ async def list_admins(session: AuthSession = Depends(require_admin)) -> dict:
 async def add_admin(
     email: str = Body(embed=True),
     role: str = Body(default="admin", embed=True),
+    permissions: list[str] | None = Body(default=None, embed=True),
     session: AuthSession = Depends(require_users),
 ) -> dict:
     """Grant a role, or change the one somebody already holds.
@@ -950,6 +986,10 @@ async def add_admin(
     """
     if role not in role_table.ROLE_NAMES:
         raise HTTPException(400, f"'{role}' is not a role")
+    try:
+        permissions = role_table.validate_permissions(permissions)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     address = normalise_email(email)
     if "@" not in address:
@@ -962,8 +1002,14 @@ async def add_admin(
             "given a lesser role.",
         )
 
+    if _is_standing(user.get("email")) and permissions is not None:
+        raise HTTPException(400, "Standing superuser permissions cannot be overridden.")
+    if user["id"] == session.user.id and "users" not in role_table.effective_capabilities(role, permissions):
+        raise HTTPException(400, "You cannot remove your own ability to manage access.")
+
     await database.post(
         f"/auth/admins/{user['id']}",
+        json={"permissions": permissions},
         params={"role": role, "granted_by": session.user.id},
     )
     log.warning(
@@ -1355,7 +1401,8 @@ async def sponsor_detail(
             for k in agreement_service.EVENT_CLAUSES
         ],
         "audiences": agreement_service.MARKETING_AUDIENCES,
-        "canEmail": session.can("site"),
+        "canEmail": session.can("email"),
+        "canWhatsApp": session.can("whatsapp"),
     }
 
 
@@ -1633,22 +1680,26 @@ def _marketing_post(item: dict, sponsor_name: str) -> str:
 async def send_sponsor_marketing(
     marketing_id: int,
     whatsapp_groups: list[str] = Body(default=[], embed=True, alias="whatsapp"),
-    session: AuthSession = Depends(require_site),
+    session: AuthSession = Depends(require_any_capability("email", "whatsapp")),
 ) -> dict:
     """Send a sponsor's marketing: by email to the audience they chose, if they
     asked for email and it has not gone yet — and into the WhatsApp groups
     ticked, if any. Either alone is fine: a request for social media only can
     still go on WhatsApp.
 
-    `site`, not `sponsors`: this is a send to a crowd, and who may reach the
-    whole membership is decided in one place for every kind of message. Same
+    `email` and `whatsapp`, not `sponsors`: outreach permissions are
+    independent of sponsor management. Same
     guards as a newsletter — cap, empty audience, mailbox.
     """
     item = await _marketing_or_404(marketing_id)
     if item["status"] != "pending":
         raise HTTPException(409, "That request has already been dealt with.")
+    if whatsapp_groups and not session.can("whatsapp"):
+        raise HTTPException(403, "You cannot post to WhatsApp groups.")
     groups = await _whatsapp_groups(whatsapp_groups)
     by_email = "email" in item["channels"] and not item.get("emailed_at")
+    if by_email and not session.can("email"):
+        raise HTTPException(403, "You cannot send email to members.")
     if not by_email and not groups:
         if "email" not in item["channels"]:
             raise HTTPException(
@@ -1795,13 +1846,15 @@ async def roles_digest_preview(_: AuthSession = Depends(require_sponsors)) -> di
 @router.post("/sponsors/roles-digest", dependencies=[Depends(verify_csrf)])
 async def send_roles_digest(
     whatsapp_groups: list[str] = Body(default=[], embed=True, alias="whatsapp"),
-    session: AuthSession = Depends(require_site),
+    session: AuthSession = Depends(require_email),
 ) -> dict:
     """One email of every new role to the jobs subscribers — and, when ticked,
     the same list posted into WhatsApp groups."""
     listings = await database.get("/sponsors/listings/unannounced") or []
     if not listings:
         raise HTTPException(400, "There are no new roles to tell members about.")
+    if whatsapp_groups and not session.can("whatsapp"):
+        raise HTTPException(403, "You cannot post to WhatsApp groups.")
     groups = await _whatsapp_groups(whatsapp_groups)
     audiences = ["topic:roles"]
     recipients = await emailing.resolve(audiences)
@@ -1845,7 +1898,7 @@ async def send_roles_digest(
 
 
 @router.get("/lockers")
-async def admin_lockers(_: AuthSession = Depends(require_site)) -> list[dict]:
+async def admin_lockers(_: AuthSession = Depends(require_lockers)) -> list[dict]:
     return await database.get("/lockers") or []
 
 
@@ -1854,7 +1907,7 @@ async def update_locker(
     locker_id: int,
     is_active: bool | None = Body(default=None, embed=True),
     note: str | None = Body(default=None, embed=True),
-    _: AuthSession = Depends(require_site),
+    _: AuthSession = Depends(require_lockers),
 ) -> dict:
     return await database.patch(
         f"/lockers/{locker_id}", params={"is_active": is_active, "note": note}
@@ -1862,7 +1915,7 @@ async def update_locker(
 
 
 @router.get("/locker-holders")
-async def locker_holders(_: AuthSession = Depends(require_site)) -> dict:
+async def locker_holders(_: AuthSession = Depends(require_lockers)) -> dict:
     """Everyone currently holding a locker, with their year."""
     rows = await database.get("/lockers/holders") or []
     return {
@@ -1886,7 +1939,7 @@ async def locker_holders(_: AuthSession = Depends(require_site)) -> dict:
 
 @router.post("/lockers/notify-clearout", dependencies=[Depends(verify_csrf)])
 async def notify_clearout(
-    deadline: str = Body(embed=True), _: AuthSession = Depends(require_site)
+    deadline: str = Body(embed=True), _: AuthSession = Depends(require_lockers)
 ) -> dict:
     """Tell every current holder to empty their locker by a date.
 
@@ -1917,7 +1970,7 @@ async def notify_clearout(
 
 @router.post("/lockers/release-year", dependencies=[Depends(verify_csrf)])
 async def release_locker_year(
-    year: str = Body(embed=True), _: AuthSession = Depends(require_site)
+    year: str = Body(embed=True), _: AuthSession = Depends(require_lockers)
 ) -> dict:
     """Release every live booking from one academic year.
 
@@ -2042,7 +2095,7 @@ async def delete_locker_grant(
 
 
 @router.get("/locker-bookings")
-async def locker_bookings(_: AuthSession = Depends(require_site)) -> list[dict]:
+async def locker_bookings(_: AuthSession = Depends(require_lockers)) -> list[dict]:
     return await database.get("/lockers/bookings", {"active_only": True}) or []
 
 
@@ -2055,7 +2108,7 @@ async def locker_bookings(_: AuthSession = Depends(require_site)) -> list[dict]:
 
 
 @router.get("/email/audiences")
-async def email_audiences(_: AuthSession = Depends(require_site)) -> dict:
+async def email_audiences(_: AuthSession = Depends(require_email)) -> dict:
     """Who can be mailed, with live counts, plus the state of both mailboxes.
 
     The mail status is here rather than on the dashboard because this is the
@@ -2075,7 +2128,7 @@ async def email_audiences(_: AuthSession = Depends(require_site)) -> dict:
 async def preview_email(
     body: str = Body(default="", embed=True),
     audiences: list[str] = Body(default=[], embed=True),
-    _: AuthSession = Depends(require_site),
+    _: AuthSession = Depends(require_email),
 ) -> dict:
     """Render exactly what will be sent, and count exactly who will get it.
 
@@ -2169,7 +2222,7 @@ async def send_newsletter(
     body: str = Body(default="", embed=True),
     heading: str | None = Body(default=None, embed=True),
     audiences: list[str] = Body(default=[], embed=True),
-    session: AuthSession = Depends(require_site),
+    session: AuthSession = Depends(require_any_capability("email", "whatsapp")),
 ) -> dict:
     """Send a newsletter — by email, into WhatsApp groups, or both: a
     WhatsApp group is ticked in the same list as everyone else.
@@ -2182,6 +2235,10 @@ async def send_newsletter(
     mail_audiences = emailing.email_keys(audiences)
     if not mail_audiences and not emailing.whatsapp_groups_in(audiences):
         raise HTTPException(400, "Choose who it goes to.")
+    if mail_audiences and not session.can("email"):
+        raise HTTPException(403, "You cannot send email to members.")
+    if emailing.whatsapp_groups_in(audiences) and not session.can("whatsapp"):
+        raise HTTPException(403, "You cannot post to WhatsApp groups.")
     groups = await _whatsapp_targets(audiences)
     recipients = await emailing.resolve(mail_audiences) if mail_audiences else []
     if mail_audiences:
@@ -2237,7 +2294,7 @@ async def announce_event(
     body: str = Body(default="", embed=True),
     heading: str | None = Body(default=None, embed=True),
     audiences: list[str] = Body(default=[], embed=True),
-    session: AuthSession = Depends(require_site),
+    session: AuthSession = Depends(require_any_capability("email", "whatsapp")),
 ) -> dict:
     """Email people about one event — an announcement, a reminder, a room change.
 
@@ -2254,6 +2311,10 @@ async def announce_event(
     mail_audiences = emailing.email_keys(audiences)
     if not mail_audiences and not emailing.whatsapp_groups_in(audiences):
         raise HTTPException(400, "Choose who it goes to.")
+    if mail_audiences and not session.can("email"):
+        raise HTTPException(403, "You cannot send email to members.")
+    if emailing.whatsapp_groups_in(audiences) and not session.can("whatsapp"):
+        raise HTTPException(403, "You cannot post to WhatsApp groups.")
     groups = await _whatsapp_targets(audiences)
     recipients = await emailing.resolve(mail_audiences) if mail_audiences else []
     if mail_audiences:
@@ -2332,13 +2393,13 @@ async def announce_event(
 
 
 @router.get("/email/test-recipients")
-async def email_test_list(_: AuthSession = Depends(require_site)) -> dict:
+async def email_test_list(_: AuthSession = Depends(require_email)) -> dict:
     return {"recipients": await emailing.test_recipients()}
 
 
 @router.post("/email/test-recipients", dependencies=[Depends(verify_csrf)])
 async def email_test_add(
-    email: str = Body(embed=True), session: AuthSession = Depends(require_site)
+    email: str = Body(embed=True), session: AuthSession = Depends(require_email)
 ) -> dict:
     address = normalise_email(email)
     if not address or "@" not in address:
@@ -2351,7 +2412,7 @@ async def email_test_add(
 
 @router.delete("/email/test-recipients", dependencies=[Depends(verify_csrf)])
 async def email_test_remove(
-    email: str, _: AuthSession = Depends(require_site)
+    email: str, _: AuthSession = Depends(require_email)
 ) -> dict:
     await database.delete("/email/test-recipients", {"email": email})
     return {"recipients": await emailing.test_recipients()}
@@ -2359,21 +2420,21 @@ async def email_test_remove(
 
 @router.get("/email/campaigns")
 async def email_campaigns(
-    limit: int = 30, _: AuthSession = Depends(require_site)
+    limit: int = 30, _: AuthSession = Depends(require_email)
 ) -> list[dict]:
     return await database.get("/email/campaigns", {"limit": limit}) or []
 
 
 @router.get("/events/{event_id}/sale-alerts")
 async def event_sale_alerts(
-    event_id: int, session: AuthSession = Depends(require_event_editor)
+    event_id: int, session: AuthSession = Depends(require_booking_editor)
 ) -> dict:
     """Who is waiting to hear that this event is on sale.
 
     Worth seeing before publishing a sale date: a hundred people waiting is a
     different decision from three.
     """
-    await _editable_event(event_id, session)
+    await _bookable_event(event_id, session)
     rows = await database.get("/email/sale-alerts", {"event_id": event_id}) or []
     return {
         "count": len(rows),
@@ -2390,7 +2451,7 @@ async def event_sale_alerts(
 
 
 @router.get("/email/optouts")
-async def email_optouts(_: AuthSession = Depends(require_site)) -> list[dict]:
+async def email_optouts(_: AuthSession = Depends(require_email)) -> list[dict]:
     """Addresses that have unsubscribed. Read-only on purpose: an admin putting
     somebody back on a list by hand is the one thing an unsubscribe must
     prevent."""
@@ -2398,7 +2459,7 @@ async def email_optouts(_: AuthSession = Depends(require_site)) -> list[dict]:
 
 
 @router.post("/email/announce-now", dependencies=[Depends(verify_csrf)])
-async def announce_now(_: AuthSession = Depends(require_site)) -> dict:
+async def announce_now(_: AuthSession = Depends(require_email)) -> dict:
     """Run the last-chance reminder pass immediately.
 
     The loop runs every few minutes anyway; this is for when somebody does not
@@ -2417,7 +2478,7 @@ async def whatsapp_render(
     body: str = Body(default="", embed=True),
     event_id: int | None = Body(default=None, embed=True),
     kind: str | None = Body(default=None, embed=True),
-    _: AuthSession = Depends(require_site),
+    _: AuthSession = Depends(require_whatsapp),
 ) -> dict:
     """The WhatsApp version of an announcement, and a link that opens WhatsApp
     with it filled in. Sends nothing: a person posts it from their own

@@ -5,8 +5,7 @@ phone), and the groups it is in. Every group it can post in is then an
 audience like any other — ticked under "Who gets it" and sent by the same Send
 (routes/admin.py, services/campaigns.py).
 
-The same people as email — the `site` capability — because every post here is
-an announcement to a crowd. services/whatsapp.py says what the link is, and
+The separate `whatsapp` capability controls linking, groups and posting. services/whatsapp.py says what the link is, and
 why it is handled carefully.
 """
 
@@ -22,7 +21,7 @@ from clients import whatsapp as link
 from config import settings
 from models.auth import AuthSession
 from services import whatsapp
-from utils.deps import require_admin, require_feature, require_site, verify_csrf
+from utils.deps import require_admin, require_feature, require_whatsapp, verify_csrf
 
 log = logging.getLogger("api.whatsapp")
 
@@ -77,7 +76,7 @@ def _post_summary(p: dict) -> dict:
 
 
 @router.get("")
-async def overview(_: AuthSession = Depends(require_site)) -> dict:
+async def overview(_: AuthSession = Depends(require_whatsapp)) -> dict:
     """Everything the WhatsApp card shows: linked or not, the groups the
     number is in (and which it can post in), and the latest posts."""
     status, problem = await _status_or_problem()
@@ -105,7 +104,7 @@ async def overview(_: AuthSession = Depends(require_site)) -> dict:
 
 
 @router.get("/targets")
-async def targets(_: AuthSession = Depends(require_site)) -> dict:
+async def targets(_: AuthSession = Depends(require_whatsapp)) -> dict:
     """The groups a communication can be posted into — for the WhatsApp
     pickers beside the sends that have no audience list of their own (the
     roles digest, a sponsor's marketing). `environment`, so staging can say
@@ -120,7 +119,7 @@ async def targets(_: AuthSession = Depends(require_site)) -> dict:
 @router.post("/link", dependencies=[Depends(verify_csrf)])
 async def start_link(
     phone: str | None = Body(default=None, embed=True),
-    session: AuthSession = Depends(require_site),
+    session: AuthSession = Depends(require_whatsapp),
 ) -> dict:
     """Start linking the society's number. With `phone`, WhatsApp gives a code
     to type on the phone; without, a QR code to scan."""
@@ -133,7 +132,7 @@ async def start_link(
 
 
 @router.post("/unlink", dependencies=[Depends(verify_csrf)])
-async def unlink(session: AuthSession = Depends(require_site)) -> dict:
+async def unlink(session: AuthSession = Depends(require_whatsapp)) -> dict:
     try:
         status = _status(await link.unlink())
     except link.WhatsAppUnavailable as exc:

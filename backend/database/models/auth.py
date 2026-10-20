@@ -67,6 +67,7 @@ class AuthSession(BaseModel):
     # no committee role. `is_admin` is kept as the "holds some role" shorthand
     # the older call sites read.
     role: str | None = None
+    permissions: list[str] | None = None
     is_admin: bool = False
     member: Member | None = None
     sponsor_ids: list[int] = []

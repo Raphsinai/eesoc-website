@@ -277,7 +277,7 @@ function csv() {
         </Card>
       </div>
 
-      <div v-if="can('site')" class="mail-actions">
+      <div v-if="can('email')" class="mail-actions">
         <Button :disabled="!counts.unpaid" @click="emailGroup('unpaid')">
           Email everyone who hasn't bought ({{ counts.unpaid }})
         </Button>

@@ -51,6 +51,6 @@ test('paused booking does not direct students to buy a locker yet', async ({ pag
   await mockStatus(page, true)
   await page.goto('/lockers')
 
-  await expect(page.getByRole('heading', { name: 'Locker booking is not open yet' })).toBeVisible()
+  await expect(page.getByText('Locker booking is not open yet', { exact: true })).toBeVisible()
   await expect(page.locator('a[href="' + SHOP_URL + '"]')).toHaveCount(0)
 })

@@ -18,7 +18,7 @@ import pytest
 # the address can only be resolved through the members feed.
 MEMBER_EMAIL = "member1@ic.ac.uk"
 MEMBER_SHORTCODE = "ab1234"
-DENIED = "Only a superuser can give out free lockers."
+DENIED = "You cannot grant free locker allowances."
 
 
 def _mine(client, shortcode: str) -> dict | None:

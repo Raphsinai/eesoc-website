@@ -144,8 +144,17 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def session_of(user_id=3):
-    return type("S", (), {"user": type("U", (), {"id": user_id})()})()
+def session_of(user_id=3, permissions=None):
+    """An admin session with the communication grants required by each channel.
+
+    Direct-call tests skip FastAPI dependency injection, so the fake must
+    implement the same permission check as a real AuthSession.
+    """
+    grants = frozenset({"email", "whatsapp"} if permissions is None else permissions)
+    return type("S", (), {
+        "user": type("U", (), {"id": user_id})(),
+        "can": lambda self, name: name in grants,
+    })()
 
 
 # ------------------------------------------------------------ 1. staging
@@ -374,6 +383,23 @@ def test_a_newsletter_send_mails_its_audiences_and_posts_into_its_groups(monkeyp
     # Nothing ticked at all.
     with pytest.raises(HTTPException):
         run(admin.send_newsletter(subject="AGM", body="x", heading=None, audiences=[], session=session_of()))
+
+
+def test_combined_send_requires_both_communication_permissions(monkeypatch, db, wa):
+    admin = importlib.import_module("routes.admin")
+    for session, audiences, description in (
+        (session_of(permissions={"email"}), [f"whatsapp:{YEAR2['jid']}"], "WhatsApp"),
+        (session_of(permissions={"whatsapp"}), ["members"], "email"),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            run(admin.send_newsletter(
+                subject="Hello", body="Hello", heading=None,
+                audiences=audiences, session=session,
+            ))
+        assert exc.value.status_code == 403
+        assert description.lower() in exc.value.detail.lower()
+    assert not wa.sent
+    assert not db.posts
 
 
 def test_a_subject_is_the_emails_not_whatsapps(monkeypatch, db, wa):

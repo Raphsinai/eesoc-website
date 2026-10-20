@@ -13,6 +13,7 @@ from clients import database
 from models.auth import AuthSession
 from services import storage
 from utils.deps import (
+    require_action,
     committee_card,
     require_session,
     require_committee_page,
@@ -59,7 +60,7 @@ async def get_committee() -> dict:
     }
 
 
-@router.put("/committee/intro", dependencies=[Depends(verify_csrf)])
+@router.put("/committee/intro", dependencies=[Depends(require_action("committee.intro")), Depends(verify_csrf)])
 async def set_intro(
     value: str = Body(embed=True), session: AuthSession = Depends(require_committee_page)
 ) -> dict:
@@ -71,7 +72,7 @@ async def set_intro(
     return {"ok": True}
 
 
-@router.put("/committee/{login}/profile", dependencies=[Depends(verify_csrf)])
+@router.put("/committee/{login}/profile", dependencies=[Depends(require_action("committee.profiles")), Depends(verify_csrf)])
 async def set_profile(
     login: str,
     intro: str = Body(default="", embed=True),
@@ -214,7 +215,7 @@ def _own(entry: dict) -> dict:
     }
 
 
-@router.get("/admin/committee")
+@router.get("/admin/committee", dependencies=[Depends(require_action("committee.view"))])
 async def admin_committee(session: AuthSession = Depends(require_committee_page)) -> dict:
     """Roster plus overlay, for the admin editor."""
     year = academic_year()

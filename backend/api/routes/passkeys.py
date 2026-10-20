@@ -63,6 +63,7 @@ from services.identity import refresh_membership, resolve_or_create_user
 from utils import roles as role_table
 from utils.auth import generate_token, hash_token, normalise_email
 from utils.deps import (
+    require_action,
     require_admin,
     require_feature,
     require_passkey_links,
@@ -464,11 +465,11 @@ def _link_refusal(
         admin could link a superuser's account and open it themselves.
     """
     caps = role_table.effective_capabilities(maker_role, maker_permissions)
-    if "passkey_links" not in caps:
+    if "passkeys.create" not in caps:
         return "You do not have permission to make passkey links."
     if _is_standing(target_email):
         return "The standing superuser sets up their own passkeys."
-    if target_role and "users" not in caps:
+    if target_role and "access.grant" not in caps:
         return (
             "That account has committee access, so permission to manage access is required to make "
             "a passkey link for it."
@@ -606,7 +607,7 @@ def _present_link(row: dict) -> dict:
     }
 
 
-@admin_router.get("")
+@admin_router.get("", dependencies=[Depends(require_action("passkeys.view"))])
 async def list_links(_: AuthSession = Depends(require_passkey_links)) -> dict:
     """Live links, and anything made, used or revoked in the last month."""
     rows = await database.get("/passkeys/links") or []
@@ -616,7 +617,7 @@ async def list_links(_: AuthSession = Depends(require_passkey_links)) -> dict:
     }
 
 
-@admin_router.post("", dependencies=[Depends(verify_csrf)])
+@admin_router.post("", dependencies=[Depends(require_action("passkeys.create")), Depends(verify_csrf)])
 async def create_link(
     email: str = Body(embed=True),
     session: AuthSession = Depends(require_passkey_links),
@@ -679,7 +680,7 @@ async def create_link(
     }
 
 
-@admin_router.delete("/{link_id}", dependencies=[Depends(verify_csrf)])
+@admin_router.delete("/{link_id}", dependencies=[Depends(require_action("passkeys.revoke")), Depends(verify_csrf)])
 async def revoke_link(
     link_id: int, session: AuthSession = Depends(require_passkey_links)
 ) -> dict:

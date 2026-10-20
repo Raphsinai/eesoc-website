@@ -19,7 +19,7 @@ from config import settings
 from models.auth import AuthSession
 from models.opportunities import AnnouncementDraft, OpportunityCreate
 from services import campaigns, opportunity_notifications, storage
-from utils.deps import require_opportunities_admin, require_session, verify_csrf
+from utils.deps import require_any_action, require_action, require_opportunities_admin, require_session, verify_csrf
 
 log = logging.getLogger("api.opportunities")
 router = APIRouter()
@@ -240,7 +240,7 @@ async def submit_announcement(
     return {"emailCampaignId": campaign_id, "status": "awaiting_committee"}
 
 
-@router.get("/admin/opportunities")
+@router.get("/admin/opportunities", dependencies=[Depends(require_action("opportunities.view"))])
 async def moderation_queue(_: AuthSession = Depends(require_opportunities_admin)) -> dict:
     rows = await database.get("/opportunities", {"limit": 500}) or []
     return {"opportunities": [_view(r, committee=True) for r in rows]}
@@ -248,13 +248,16 @@ async def moderation_queue(_: AuthSession = Depends(require_opportunities_admin)
 
 @router.post(
     "/admin/opportunities/{opportunity_id}/review",
-    dependencies=[Depends(verify_csrf)],
+    dependencies=[Depends(require_any_action("opportunities.approve", "opportunities.reject")), Depends(verify_csrf)],
 )
 async def moderate_opportunity(
     opportunity_id: int,
     request: ReviewRequest,
     session: AuthSession = Depends(require_opportunities_admin),
 ) -> dict:
+    needed = "opportunities.approve" if request.decision == "approved" else "opportunities.reject"
+    if not session.can(needed):
+        raise HTTPException(403, f"Permission required: {needed}")
     row = await database.get(f"/opportunities/{opportunity_id}")
     if row is None:
         raise HTTPException(404, "No such submission")

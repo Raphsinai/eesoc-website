@@ -56,9 +56,34 @@ function apply(data) {
   state.loaded = true
 }
 
-/** Does this person's role carry a capability? */
-export function can(capability) {
-  return state.capabilities.includes(capability)
+/** Exact action permission; an old group name is a compatibility alias only. */
+export function can(permission) {
+  if (state.capabilities.includes(permission)) return true
+  const scope = state.capabilities.includes('events.scope.all')
+  const industry = state.capabilities.includes('events.scope.industry')
+  if (permission === 'events' || permission === 'industry') {
+    const requestedScope = permission === 'events' ? scope : industry
+    return requestedScope && state.capabilities.some((p) => p.startsWith('events.') &&
+      !['events.bookings.', 'events.checkin.', 'events.sync.', 'events.scope.'].some((prefix) => p.startsWith(prefix)))
+  }
+  if (permission === 'bookings' || permission === 'industry_bookings') {
+    return (permission === 'bookings' ? scope : industry) &&
+      state.capabilities.some((p) => p.startsWith('events.bookings.'))
+  }
+  const legacyPrefixes = {
+    users: 'access.', passkey_links: 'passkeys.', sync: 'events.sync.',
+    sponsors: 'sponsors.', resources: 'resources.', files: 'files.',
+    committee: 'committee.', product_links: 'products.', lockers: 'lockers.',
+    locker_allowances: 'lockers.allowances.', email: 'email.',
+    whatsapp: 'whatsapp.', opportunities: 'opportunities.',
+  }
+  return Boolean(legacyPrefixes[permission] &&
+    state.capabilities.some((p) => p.startsWith(legacyPrefixes[permission])))
+}
+
+/** UI visibility for a read-only category tab, not a grant of a category. */
+export function anyPermission(prefix) {
+  return state.capabilities.some((p) => p.startsWith(prefix))
 }
 
 /** Anything to do in the admin area at all — a role, or a card of their own. */

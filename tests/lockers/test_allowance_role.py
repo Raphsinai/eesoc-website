@@ -16,4 +16,4 @@ from utils.roles import ROLES, capabilities  # noqa: E402
 
 
 def test_only_a_superuser_may_give_free_lockers():
-    assert [r for r in ROLES if "locker_allowances" in capabilities(r)] == ["superuser"]
+    assert [r for r in ROLES if "lockers.allowances.grant" in capabilities(r)] == ["superuser"]

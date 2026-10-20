@@ -81,7 +81,29 @@ class AuthSession(BaseModel):
         return roles.effective_capabilities(self.role, self.permissions)
 
     def can(self, capability: str) -> bool:
-        return capability in self.capabilities
+        if capability in self.capabilities:
+            return True
+        # Compatibility for pre-action-level guards during the incremental
+        # migration. Never grant a broad key from a single unrelated action.
+        # New routes MUST use named granular actions instead of these aliases.
+        if capability in ("events", "industry", "bookings", "industry_bookings"):
+            from utils.roles import BOOKING_ACTIONS, EVENT_EDIT_ACTIONS
+            scope = "events.scope.industry" if capability.startswith("industry") else "events.scope.all"
+            actions = BOOKING_ACTIONS if "bookings" in capability else EVENT_EDIT_ACTIONS
+            return scope in self.capabilities and bool(self.capabilities & actions)
+        prefixes = {
+            "users": "access.", "passkey_links": "passkeys.",
+            "sync": "events.sync.", "sponsors": "sponsors.",
+            "resources": "resources.", "files": "files.",
+            "committee": "committee.", "product_links": "products.",
+            "lockers": "lockers.", "locker_allowances": "lockers.allowances.",
+            "email": "email.", "whatsapp": "whatsapp.",
+            "opportunities": "opportunities.",
+        }
+        prefix = prefixes.get(capability)
+        if prefix:
+            return any(p.startswith(prefix) for p in self.capabilities)
+        return False
 
     @property
     def is_impersonating(self) -> bool:

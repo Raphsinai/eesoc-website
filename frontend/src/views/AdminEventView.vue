@@ -257,7 +257,7 @@ function csv() {
           · capacity {{ data.event.capacity ?? '∞' }}
           <Badge :tone="data.event.published ? 'success' : 'neutral'">{{ data.event.published ? 'Live' : 'Draft' }}</Badge>
         </span>
-        <div><Button size="sm" variant="secondary" @click="router.push(`/checkin/${data.event.id}`)">Open door check-in</Button></div>
+        <div><Button v-if="can('events.checkin.view')" size="sm" variant="secondary" @click="router.push(`/checkin/${data.event.id}`)">Open door check-in</Button></div>
       </header>
 
       <div class="summary">
@@ -278,16 +278,16 @@ function csv() {
       </div>
 
       <div v-if="can('email')" class="mail-actions">
-        <Button :disabled="!counts.unpaid" @click="emailGroup('unpaid')">
+        <Button v-if="can('email.announce_event')" :disabled="!counts.unpaid" @click="emailGroup('unpaid')">
           Email everyone who hasn't bought ({{ counts.unpaid }})
         </Button>
-        <Button variant="secondary" :disabled="!counts.bought" @click="emailGroup('confirmed')">Email everyone who bought</Button>
-        <Button variant="secondary" :disabled="!counts.booked" @click="emailGroup('booked')">Email everyone booked</Button>
-        <Button variant="ghost" :disabled="!counts.waitlist" @click="emailGroup('waitlist')">Email the waitlist</Button>
+        <Button v-if="can('email.announce_event')" variant="secondary" :disabled="!counts.bought" @click="emailGroup('confirmed')">Email everyone who bought</Button>
+        <Button v-if="can('email.announce_event')" variant="secondary" :disabled="!counts.booked" @click="emailGroup('booked')">Email everyone booked</Button>
+        <Button v-if="can('email.announce_event')" variant="ghost" :disabled="!counts.waitlist" @click="emailGroup('waitlist')">Email the waitlist</Button>
       </div>
 
       <div class="add-ticket">
-        <Button v-if="!adding" variant="secondary" :disabled="!data.summary.length" @click="openAdd">Add a ticket for someone</Button>
+        <Button v-if="(!adding) && (can('events.bookings.add'))" variant="secondary" :disabled="!data.summary.length" @click="openAdd">Add a ticket for someone</Button>
         <Card v-else variant="offset">
           <form style="display:grid; gap:var(--space-4)" @submit.prevent="addTicket">
             <strong style="font:var(--type-h5)">Add a ticket</strong>
@@ -319,7 +319,7 @@ function csv() {
               Email them a confirmation
             </label>
             <div style="display:flex; gap:var(--space-3)">
-              <Button type="submit" :disabled="busy">{{ busy ? 'Adding…' : 'Add ticket' }}</Button>
+              <Button v-if="can('events.bookings.add')" type="submit" :disabled="busy">{{ busy ? 'Adding…' : 'Add ticket' }}</Button>
               <Button variant="ghost" type="button" @click="adding = false">Cancel</Button>
             </div>
           </form>
@@ -340,7 +340,7 @@ function csv() {
           {{ f.label }} <span>{{ counts[f.id] }}</span>
         </button>
         <Input v-model="query" placeholder="Search name, email, shortcode, order…" style="max-width:320px" />
-        <Button size="sm" variant="ghost" :disabled="!rows.length" @click="csv">Download CSV</Button>
+        <Button v-if="can('events.bookings.export')" size="sm" variant="ghost" :disabled="!rows.length" @click="csv">Download CSV</Button>
       </div>
 
       <p v-if="notice" style="font:var(--type-small); color:var(--text-strong)">{{ notice }}</p>
@@ -380,16 +380,16 @@ function csv() {
               <td class="muted">{{ r.status === 'held' ? when(r.holdUntil) : '—' }}</td>
               <td class="actions">
                 <template v-if="r.status === 'held'">
-                  <Button size="sm" variant="secondary" :disabled="busy" @click="act(r, 'remind')">Remind</Button>
-                  <Button size="sm" variant="secondary" :disabled="busy" @click="act(r, 'confirm')">Mark bought</Button>
+                  <Button v-if="can('events.bookings.remind')" size="sm" variant="secondary" :disabled="busy" @click="act(r, 'remind')">Remind</Button>
+                  <Button v-if="can('events.bookings.confirm')" size="sm" variant="secondary" :disabled="busy" @click="act(r, 'confirm')">Mark bought</Button>
                 </template>
                 <Button
-                  v-if="r.status === 'confirmed' && ['sent', 'failed', 'skipped', 'suppressed'].includes(r.confirmationEmail)"
+                  v-if="(r.status === 'confirmed' && ['sent', 'failed', 'skipped', 'suppressed'].includes(r.confirmationEmail)) && (can('events.bookings.resend'))"
                   size="sm" variant="ghost" :disabled="busy"
                   @click="resend(r)"
                 >{{ r.confirmationEmail === 'sent' ? 'Resend email' : 'Send email' }}</Button>
                 <select
-                  v-if="(r.status === 'held' || r.status === 'confirmed') && data.summary.length > 1"
+                  v-if="(r.status === 'held' || r.status === 'confirmed') && data.summary.length > 1 && can('events.bookings.change_ticket')"
                   class="ticket-switch"
                   :disabled="busy"
                   :aria-label="`Change ${r.name || r.email}'s ticket type`"
@@ -403,7 +403,7 @@ function csv() {
                   >{{ t.name }}</option>
                 </select>
                 <Button
-                  v-if="r.status === 'held' || r.status === 'confirmed'"
+                  v-if="(r.status === 'held' || r.status === 'confirmed') && (can('events.bookings.cancel'))"
                   size="sm" variant="ghost" :disabled="busy"
                   @click="act(r, 'cancel')"
                 >Cancel</Button>

@@ -6,6 +6,7 @@ import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
 import api from '@/api'
+import { can } from '@/stores/session'
 import Badge from '@/components/ds/Badge.vue'
 import Button from '@/components/ds/Button.vue'
 import Card from '@/components/ds/Card.vue'
@@ -327,14 +328,14 @@ async function startThread() {
               <p>{{ n.body }}</p>
             </div>
             <textarea v-model="replies[t.topic]" rows="2" class="ees-textarea" placeholder="Reply" />
-            <div><Button size="sm" :disabled="busy || !(replies[t.topic] || '').trim()" @click="sendReply(t)">Reply</Button></div>
+            <div><Button v-if="can('sponsors.notes.reply')" size="sm" :disabled="busy || !(replies[t.topic] || '').trim()" @click="sendReply(t)">Reply</Button></div>
           </div>
         </Card>
         <details>
           <summary style="font:var(--type-small); cursor:pointer">Write to {{ data.sponsor.name }} about something new</summary>
           <div style="display:grid; gap:var(--space-2); margin-top:var(--space-3)">
             <textarea v-model="newThread.body" rows="3" class="ees-textarea" placeholder="Filed under General" />
-            <div><Button size="sm" :disabled="busy || !newThread.body.trim()" @click="startThread">Send</Button></div>
+            <div><Button v-if="can('sponsors.notes.reply')" size="sm" :disabled="busy || !newThread.body.trim()" @click="startThread">Send</Button></div>
           </div>
         </details>
       </section>
@@ -381,7 +382,7 @@ async function startThread() {
             </div>
             <Input v-model="termEdits[t.key].note" placeholder="Note — shown to the sponsor too" />
             <div class="term__save">
-              <Button size="sm" :disabled="busy" @click="saveTerm(t)">Save</Button>
+              <Button v-if="can('sponsors.terms.edit')" size="sm" :disabled="busy" @click="saveTerm(t)">Save</Button>
               <span v-if="!t.customised" style="font:var(--type-2xs); color:var(--text-faint)">Standard</span>
             </div>
             <div v-if="t.countable" class="term__used">
@@ -390,7 +391,7 @@ async function startThread() {
               <div v-for="u in data.counted?.[t.key] ?? []" :key="`${u.kind}-${u.id}`" class="term__use">
                 <span>{{ u.title }}<template v-if="u.date"> · {{ u.date }}</template></span>
                 <span class="term__use-kind">{{ u.kindLabel }}<template v-if="u.pending"> · waiting</template></span>
-                <Button v-if="u.kind === 'record'" size="sm" variant="ghost" :disabled="busy" @click="removeUse(u)">Remove</Button>
+                <Button v-if="(u.kind === 'record') && (can('sponsors.usage.delete'))" size="sm" variant="ghost" :disabled="busy" @click="removeUse(u)">Remove</Button>
               </div>
               <form class="term__record" @submit.prevent="recordUse(t)">
                 <Input
@@ -424,7 +425,7 @@ async function startThread() {
             </label>
             <span class="term__usage">{{ t.doneAt ? `Received ${fmt(t.doneAt)}` : 'Outstanding' }}</span>
             <Input v-model="termEdits[t.key].note" placeholder="Note" />
-            <div class="term__save"><Button size="sm" :disabled="busy" @click="saveTerm(t)">Save</Button></div>
+            <div class="term__save"><Button v-if="can('sponsors.terms.edit')" size="sm" :disabled="busy" @click="saveTerm(t)">Save</Button></div>
             <details class="term__text"><summary>Agreement wording</summary>{{ t.text }}</details>
           </div>
         </Card>
@@ -452,7 +453,7 @@ async function startThread() {
                   <option v-for="c in data.eventClauses" :key="c.key" :value="c.key">{{ c.label }}</option>
                 </select>
               </Field>
-              <Button :disabled="busy || !link.eventId" @click="linkEvent">Link</Button>
+              <Button v-if="can('sponsors.events.link')" :disabled="busy || !link.eventId" @click="linkEvent">Link</Button>
             </div>
             <span style="font:var(--type-2xs); color:var(--text-faint)">
               A linked event counts against the clause it delivers, shows on the sponsor's
@@ -475,8 +476,8 @@ async function startThread() {
                   <option :value="undefined">Outside the package</option>
                   <option v-for="cl in data.eventClauses" :key="cl.key" :value="cl.key">{{ cl.label }}</option>
                 </select>
-                <Button size="sm" :disabled="busy" @click="confirmInterest(c)">Confirm</Button>
-                <Button size="sm" variant="ghost" :disabled="busy" @click="declineInterest(c)">Decline</Button>
+                <Button v-if="can('sponsors.events.link')" size="sm" :disabled="busy" @click="confirmInterest(c)">Confirm</Button>
+                <Button v-if="can('sponsors.events.decline')" size="sm" variant="ghost" :disabled="busy" @click="declineInterest(c)">Decline</Button>
               </div>
             </div>
           </Card>
@@ -498,7 +499,7 @@ async function startThread() {
                 <option value="">Outside the package</option>
                 <option v-for="cl in data.eventClauses" :key="cl.key" :value="cl.key">{{ cl.label }}</option>
               </select>
-              <Button size="sm" variant="ghost" :disabled="busy" @click="unlink(c)">Unlink</Button>
+              <Button v-if="can('sponsors.events.unlink')" size="sm" variant="ghost" :disabled="busy" @click="unlink(c)">Unlink</Button>
             </div>
           </div>
         </Card>
@@ -530,7 +531,7 @@ async function startThread() {
                 <textarea v-model="requestEdits[r.id].response" rows="2" class="ees-textarea" />
               </Field>
             </div>
-            <div><Button size="sm" :disabled="busy" @click="saveRequest(r)">Save</Button></div>
+            <div><Button v-if="can('sponsors.requests.edit')" size="sm" :disabled="busy" @click="saveRequest(r)">Save</Button></div>
           </div>
         </Card>
       </section>
@@ -574,17 +575,17 @@ async function startThread() {
 
             <template v-if="m.status === 'pending'">
               <div class="row__actions" style="justify-content:flex-start">
-                <Button size="sm" variant="ghost" :disabled="busy" @click="saveMarketing(m)">Save edits</Button>
-                <Button size="sm" variant="secondary" :disabled="busy" @click="previewMarketing(m)">Preview email</Button>
+                <Button v-if="can('sponsors.marketing.edit')" size="sm" variant="ghost" :disabled="busy" @click="saveMarketing(m)">Save edits</Button>
+                <Button v-if="can('sponsors.marketing.preview')" size="sm" variant="secondary" :disabled="busy" @click="previewMarketing(m)">Preview email</Button>
                 <Button
-                  v-if="emailPending(m) || waFor(m).length"
+                  v-if="(emailPending(m) || waFor(m).length) && (can('sponsors.marketing.send'))"
                   size="sm"
                   :disabled="busy || !data.canEmail"
                   :title="data.canEmail ? '' : 'Sending needs a committee member with email access'"
                   @click="sendMarketing(m)"
                 >{{ sendLabel(m) }}</Button>
                 <Button
-                  v-if="m.channels.includes('social') && !m.posted_at"
+                  v-if="(m.channels.includes('social') && !m.posted_at) && (can('sponsors.marketing.posted'))"
                   size="sm"
                   variant="secondary"
                   :disabled="busy"
@@ -613,8 +614,8 @@ async function startThread() {
                 <textarea v-model="marketingEdits[m.id].response" rows="2" class="ees-textarea" />
               </Field>
               <div class="row__actions" style="justify-content:flex-start">
-                <Button size="sm" variant="ghost" :disabled="busy" @click="completeMarketing(m)">Mark shared</Button>
-                <Button v-if="!m.emailed_at" size="sm" variant="danger" :disabled="busy" @click="declineMarketing(m)">Decline</Button>
+                <Button v-if="can('sponsors.marketing.complete')" size="sm" variant="ghost" :disabled="busy" @click="completeMarketing(m)">Mark shared</Button>
+                <Button v-if="(!m.emailed_at) && (can('sponsors.marketing.decline'))" size="sm" variant="danger" :disabled="busy" @click="declineMarketing(m)">Decline</Button>
               </div>
             </template>
           </div>

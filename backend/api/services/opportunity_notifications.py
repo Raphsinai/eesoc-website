@@ -34,7 +34,7 @@ async def admin_recipients() -> list[str]:
     recipients = {
         str(row["email"]).strip().lower()
         for row in rows
-        if "opportunities" in roles.effective_capabilities(row.get("role"), row.get("permissions")) and row.get("email")
+        if "opportunities.view" in roles.effective_capabilities(row.get("role"), row.get("permissions")) and row.get("email")
     }
     if settings.superuser_email:
         recipients.add(settings.superuser_email.strip().lower())

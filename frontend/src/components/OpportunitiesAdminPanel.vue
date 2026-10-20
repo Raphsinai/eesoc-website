@@ -3,6 +3,7 @@
 // editor. All writes are capability-checked in the API.
 import { computed, onMounted, ref } from 'vue'
 import api from '@/api'
+import { can } from '@/stores/session'
 import Badge from '@/components/ds/Badge.vue'
 import Button from '@/components/ds/Button.vue'
 import Card from '@/components/ds/Card.vue'
@@ -75,7 +76,7 @@ onMounted(refresh)
     <header class="opp-admin__header">
       <div>
         <h2>Opportunity submissions</h2>
-        <p>Admins and superusers review these submissions. Approval publishes the listing and invites the submitter to draft an email. Only after their sign-off does the announcement enter the separate committee Email queue.</p>
+        <p>Accounts with opportunity-review permissions can act on these submissions. Approval publishes the listing and invites the submitter to draft an email. Only after their sign-off does the announcement enter the separate committee Email queue.</p>
       </div>
       <div class="opp-admin__controls">
         <Badge :tone="pending.length ? 'danger' : 'neutral'">{{ pending.length }} pending</Badge>
@@ -111,8 +112,8 @@ onMounted(refresh)
           Let the submitter edit and resubmit this opportunity after rejection
         </label>
         <div class="opp-admin__controls">
-          <Button size="sm" :disabled="busyId !== null" @click="review(item, 'approved')">Approve & publish</Button>
-          <Button size="sm" variant="danger" :disabled="busyId !== null" @click="review(item, 'rejected')">Reject</Button>
+          <Button v-if="can('opportunities.approve')" size="sm" :disabled="busyId !== null" @click="review(item, 'approved')">Approve & publish</Button>
+          <Button v-if="can('opportunities.reject')" size="sm" variant="danger" :disabled="busyId !== null" @click="review(item, 'rejected')">Reject</Button>
         </div>
       </template>
       <template v-else>
@@ -121,7 +122,7 @@ onMounted(refresh)
         <p v-if="item.status === 'approved' && !item.emailCampaignId" class="opp-admin__meta">Awaiting submitter's announcement draft and sign-off.</p>
         <div v-if="item.status === 'approved'" class="opp-admin__controls">
           <router-link :to="`/opportunities/${item.id}`">View published listing ↗</router-link>
-          <Button v-if="item.emailCampaignId" variant="secondary" size="sm" @click="emit('open-email', item.emailCampaignId)">Open email announcement</Button>
+          <Button v-if="item.emailCampaignId && can('email.queue.view')" variant="secondary" size="sm" @click="emit('open-email', item.emailCampaignId)">Open email announcement</Button>
         </div>
       </template>
     </Card>

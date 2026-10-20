@@ -39,10 +39,11 @@ def make_session(role='events', permissions=None, email='test-access@example.org
 def test_role_presets_preserve_existing_access_with_distinct_actions():
     assert set(roles.ROLES) == {'superuser', 'admin', 'events', 'industry'}
     assert roles.capabilities('superuser') == set(roles.PERMISSIONS)
-    assert 'users' not in roles.capabilities('admin')
-    assert 'locker_allowances' not in roles.capabilities('admin')
-    assert {'events', 'bookings', 'sync'} <= roles.capabilities('events')
-    assert {'sponsors', 'industry', 'industry_bookings'} <= roles.capabilities('industry')
+    assert 'access.grant' not in roles.capabilities('admin')
+    assert 'access.view' in roles.capabilities('admin')
+    assert 'lockers.allowances.grant' not in roles.capabilities('admin')
+    assert {'events.create', 'events.bookings.confirm', 'events.checkin.scan', 'events.sync.union'} <= roles.capabilities('events')
+    assert {'sponsors.edit', 'events.scope.industry', 'events.bookings.cancel'} <= roles.capabilities('industry')
     assert not roles.capabilities(None)
     assert not roles.capabilities('unknown')
     assert all(len(spec['label']) and len(spec['description']) for spec in roles.PERMISSIONS.values())
@@ -52,13 +53,13 @@ def test_role_presets_preserve_existing_access_with_distinct_actions():
 def test_custom_permissions_replace_not_augment_role_and_empty_means_empty():
     assert roles.effective_capabilities('events', None) == roles.capabilities('events')
     assert roles.effective_capabilities('events', []) == frozenset()
-    assert roles.effective_capabilities('events', ['resources', 'email']) == {'resources', 'email'}
+    assert roles.effective_capabilities('events', ['resources', 'email']) == roles.LEGACY_GRANTS['resources'] | roles.LEGACY_GRANTS['email']
     assert roles.effective_capabilities(None, ['users']) == frozenset()
     assert roles.effective_capabilities('admin', ['not-a-permission']) == frozenset()
-    assert roles.validate_permissions(['email', 'events']) == ['email', 'events']
+    assert roles.validate_permissions(['email.send', 'events.create']) == ['email.send', 'events.create']
     assert roles.validate_permissions([]) == []
     assert roles.validate_permissions(None) is None
-    for bad in (['whatever'], ['users', 'users'], [17], 'email'):
+    for bad in (['whatever'], ['access.grant', 'access.grant'], [17], 'email'):
         with pytest.raises(ValueError):
             roles.validate_permissions(bad)
 
@@ -126,9 +127,9 @@ def test_api_saves_custom_permissions_and_refuses_self_lockout(monkeypatch):
         asyncio.run(admin.add_admin('test-access@example.org', 'admin', [], owner))
     assert err.value.status_code == 400
     assert not recorded
-    result = asyncio.run(admin.add_admin('test-access@example.org', 'events', ['users', 'email'], owner))
+    result = asyncio.run(admin.add_admin('test-access@example.org', 'events', ['access.grant', 'email.send'], owner))
     assert result['ok']
-    assert recorded[0][1] == {'permissions': ['email', 'users']}
+    assert recorded[0][1] == {'permissions': ['access.grant', 'email.send']}
     assert recorded[0][2]['role'] == 'events'
 
 
@@ -153,5 +154,5 @@ def test_admin_listing_exposes_defaults_and_overrides(monkeypatch):
     monkeypatch.setattr(admin.database, 'get', fake_get)
     response = asyncio.run(admin.list_admins(make_session('superuser')))
     assert response['admins'][0]['capabilities'] == sorted(roles.capabilities('events'))
-    assert response['admins'][1]['capabilities'] == ['email']
+    assert response['admins'][1]['capabilities'] == sorted(roles.LEGACY_GRANTS['email'])
     assert len(response['permissions']) == len(roles.PERMISSIONS)

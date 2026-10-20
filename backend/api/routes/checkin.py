@@ -23,7 +23,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Response
 from clients import database
 from models.auth import AuthSession
 from services import tickets
-from utils.deps import committee_card, current_session, require_committee, verify_csrf
+from utils.deps import require_action, assert_event_scope, current_session, require_committee, verify_csrf
 from utils.present import format_date, format_time_range
 
 log = logging.getLogger("api.checkin")
@@ -96,6 +96,13 @@ async def _booking(reservation_id: int) -> dict:
     return row
 
 
+async def _check_scope(session: AuthSession, event_id: int) -> None:
+    event = await database.get(f"/events/{event_id}")
+    if event is None:
+        raise HTTPException(404, "No such event")
+    assert_event_scope(session, event)
+
+
 def _count(attendees: list[dict]) -> dict:
     live = [a for a in attendees if a["status"] in ("confirmed", "held")]
     return {
@@ -107,10 +114,12 @@ def _count(attendees: list[dict]) -> dict:
 # ------------------------------------------------------------ the door
 
 
-@router.get("/checkin/events")
+@router.get("/checkin/events", dependencies=[Depends(require_action("events.checkin.view"))])
 async def checkin_events(_: AuthSession = Depends(require_committee)) -> dict:
     """Events from yesterday onward, soonest first, with live counts."""
     rows = await database.get("/checkin/events", {"days_back": 1, "days_ahead": 60}) or []
+    if not _.can("events.scope.all"):
+        rows = [event for event in rows if event.get("industry") and _.can("events.scope.industry")]
     today = datetime.now(timezone.utc).date()
     return {
         "events": [
@@ -130,12 +139,14 @@ async def checkin_events(_: AuthSession = Depends(require_committee)) -> dict:
     }
 
 
-@router.get("/checkin/events/{event_id}")
+@router.get("/checkin/events/{event_id}", dependencies=[Depends(require_action("events.checkin.view"))])
 async def checkin_event(event_id: int, _: AuthSession = Depends(require_committee)) -> dict:
     event = await database.get(f"/events/{event_id}")
     if event is None:
         raise HTTPException(404, "No such event")
+    assert_event_scope(_, event)
     attendees = [_attendee(a) for a in await database.get(f"/checkin/events/{event_id}/attendees") or []]
+    await _check_scope(_, event_id)
     state = await database.get(f"/checkin/events/{event_id}/state") or {}
     return {
         "event": {
@@ -151,7 +162,7 @@ async def checkin_event(event_id: int, _: AuthSession = Depends(require_committe
     }
 
 
-@router.get("/checkin/events/{event_id}/state")
+@router.get("/checkin/events/{event_id}/state", dependencies=[Depends(require_action("events.checkin.view"))])
 async def checkin_state(event_id: int, _: AuthSession = Depends(require_committee)) -> dict:
     """What every door screen polls. `bookings` changes when somebody books,
     cancels or is confirmed, which is the screen's cue to refetch the list."""
@@ -175,7 +186,7 @@ def _result(row: dict, outcome: str, message: str) -> dict:
     return {"outcome": outcome, "message": message, "attendee": _attendee(row)}
 
 
-@router.post("/checkin/scan", dependencies=[Depends(verify_csrf)])
+@router.post("/checkin/scan", dependencies=[Depends(require_action("events.checkin.scan")), Depends(verify_csrf)])
 async def scan(
     token: str = Body(embed=True),
     event_id: int | None = Body(default=None, embed=True),
@@ -188,6 +199,7 @@ async def scan(
     `wrong_event` (red, no override — it is somebody else's event).
     """
     row = await _booking(tickets.parse(token))
+    await _check_scope(session, row["event_id"])
     verdict, message = _verdict(row, event_id)
     if verdict != "ok":
         return _result(row, verdict, message)
@@ -210,7 +222,7 @@ def _already(row: dict) -> str:
     return f"Already checked in at {when}" + (f" by {by}." if by else ".")
 
 
-@router.post("/checkin/reservations/{reservation_id}", dependencies=[Depends(verify_csrf)])
+@router.post("/checkin/reservations/{reservation_id}", dependencies=[Depends(require_action("events.checkin.manual")), Depends(verify_csrf)])
 async def check_in(
     reservation_id: int,
     event_id: int | None = Body(default=None, embed=True),
@@ -223,6 +235,9 @@ async def check_in(
     and is recorded as such. A ticket for another event is never let in here.
     """
     row = await _booking(reservation_id)
+    await _check_scope(session, row["event_id"])
+    if override and not session.can("events.checkin.override"):
+        raise HTTPException(403, "Permission required: events.checkin.override")
     verdict, message = _verdict(row, event_id)
     if verdict == "wrong_event":
         raise HTTPException(409, message)
@@ -244,11 +259,12 @@ async def check_in(
     return _result(done, "checked_in", "")
 
 
-@router.delete("/checkin/reservations/{reservation_id}", dependencies=[Depends(verify_csrf)])
+@router.delete("/checkin/reservations/{reservation_id}", dependencies=[Depends(require_action("events.checkin.undo")), Depends(verify_csrf)])
 async def undo_check_in(
     reservation_id: int, session: AuthSession = Depends(require_committee)
 ) -> dict:
-    await _booking(reservation_id)
+    row = await _booking(reservation_id)
+    await _check_scope(session, row["event_id"])
     await database.delete(f"/checkin/reservations/{reservation_id}")
     log.info("Check-in for booking %s undone by %s", reservation_id, session.user.email)
     return {"ok": True}
@@ -275,7 +291,11 @@ async def ticket(
     free_hold = row["status"] == "held" and row.get("paid")
     may_check_in = False
     if session is not None:
-        may_check_in = session.is_admin or await committee_card(session) is not None
+        if session.can("events.checkin.manual"):
+            event = await database.get(f"/events/{row['event_id']}")
+            may_check_in = session.can("events.scope.all") or (
+                session.can("events.scope.industry") and bool((event or {}).get("industry"))
+            )
     return {
         "token": token,
         "event": {

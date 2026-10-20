@@ -10,6 +10,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import api from '@/api'
+import { can } from '@/stores/session'
 import Badge from '@/components/ds/Badge.vue'
 import Button from '@/components/ds/Button.vue'
 import Card from '@/components/ds/Card.vue'
@@ -144,6 +145,10 @@ function upsert(attendee) {
 
 async function checkIn(a, override = false) {
   if (!override && !a.paid) {
+    if (!can('events.checkin.override')) {
+      error.value = 'Your access does not include overriding unpaid tickets.'
+      return
+    }
     if (!confirm(`${a.name}'s ${a.ticketType} booking is not paid. Let them in anyway?`)) return
     override = true
   }
@@ -420,7 +425,7 @@ onBeforeUnmount(() => {
 
       <!-- Scanner -->
       <div class="scan">
-        <Button v-if="!scanning" block size="lg" @click="startScan">Scan tickets</Button>
+        <Button v-if="(!scanning) && (can('events.checkin.scan'))" block size="lg" @click="startScan">Scan tickets</Button>
         <template v-else>
           <div class="scan__frame">
             <video ref="video" class="scan__video" playsinline muted />
@@ -454,7 +459,7 @@ onBeforeUnmount(() => {
           </template>
           <span v-if="result.message" class="scan__msg">{{ result.message }}</span>
           <div v-if="result.outcome === 'unpaid' || result.outcome === 'invalid'" class="scan__actions" @click.stop>
-            <Button size="sm" variant="secondary" :disabled="busy" @click="letInAnyway">Let in anyway</Button>
+            <Button v-if="can('events.checkin.override')" size="sm" variant="secondary" :disabled="busy" @click="letInAnyway">Let in anyway</Button>
             <Button size="sm" variant="ghost" @click="dismissResult">Don't</Button>
           </div>
           <span v-else class="scan__hint">Tap to scan the next one</span>
@@ -492,9 +497,9 @@ onBeforeUnmount(() => {
           <div class="person__act">
             <template v-if="a.checkedInAt">
               <span class="person__in">In {{ time(a.checkedInAt) }}<template v-if="a.checkedInBy"> · {{ a.checkedInBy }}</template></span>
-              <Button size="sm" variant="ghost" :disabled="busy" @click="undo(a)">Undo</Button>
+              <Button v-if="can('events.checkin.undo')" size="sm" variant="ghost" :disabled="busy" @click="undo(a)">Undo</Button>
             </template>
-            <Button v-else size="sm" :variant="a.paid ? 'primary' : 'secondary'" :disabled="busy" @click="checkIn(a)">Check in</Button>
+            <Button v-else-if="can('events.checkin.manual')" size="sm" :variant="a.paid ? 'primary' : 'secondary'" :disabled="busy || (!a.paid && !can('events.checkin.override'))" @click="checkIn(a)">Check in</Button>
           </div>
         </li>
         <li v-if="!loading && !visible.length" class="muted" style="padding:var(--space-5) 0">

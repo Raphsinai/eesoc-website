@@ -39,8 +39,8 @@ def cleanup(superuser_client):
 
 
 def test_only_a_superuser_holds_the_capability(superuser_client, admin_client):
-    assert "locker_allowances" in superuser_client.get("/auth/session").json()["capabilities"]
-    assert "locker_allowances" not in admin_client.get("/auth/session").json()["capabilities"]
+    assert "lockers.allowances.grant" in superuser_client.get("/auth/session").json()["capabilities"]
+    assert "lockers.allowances.grant" not in admin_client.get("/auth/session").json()["capabilities"]
 
 
 def test_an_admin_is_refused(admin_client):

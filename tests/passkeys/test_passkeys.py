@@ -296,9 +296,9 @@ def test_only_admins_and_superusers_make_links(new_browser):
     assert member.post("/admin/passkey-links", {"email": _address("y")}).status_code == 403
 
     session = officer.session()
-    assert "passkey_links" not in session["capabilities"]
+    assert "passkeys.create" not in session["capabilities"]
     admin = _signed_in(new_browser, _address("admin"), make_admin=True)
-    assert "passkey_links" in admin.session()["capabilities"]
+    assert "passkeys.create" in admin.session()["capabilities"]
 
 
 def test_committee_accounts_need_a_superuser(new_browser):

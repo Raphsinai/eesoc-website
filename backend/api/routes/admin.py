@@ -38,6 +38,7 @@ from utils.present import (
 )
 from services import sync as sync_service
 from utils.deps import (
+    require_action,
     assert_may_edit_event,
     assert_may_manage_booking,
     may_manage_booking,
@@ -52,6 +53,7 @@ from utils.deps import (
     require_whatsapp,
     may_edit_event,
     require_admin,
+    require_any_action,
     require_event_editor,
     require_feature,
     require_any_capability,
@@ -96,7 +98,7 @@ async def dashboard(session: AuthSession = Depends(require_admin)) -> dict:
     # Drafts in the email approval queue. Counted here so the landing page can
     # say so: a timer wrote them, and nothing goes out until somebody acts.
     awaiting = 0
-    if session.can("email"):
+    if session.can("email.queue.view"):
         awaiting = sum(
             1 for c in await database.get(
                 "/email/campaigns", {"status": "awaiting_approval", "limit": 100}
@@ -106,7 +108,7 @@ async def dashboard(session: AuthSession = Depends(require_admin)) -> dict:
     # Ordinary committee roles can use parts of this dashboard, but must not
     # learn the titles, authors or number of private opportunity submissions.
     pending_opportunities = []
-    if session.can("opportunities"):
+    if session.can("opportunities.view"):
         pending_opportunities = [
             {"id": row["id"], "title": row["title"],
              "submittedBy": row.get("submitter_email"),
@@ -122,8 +124,8 @@ async def dashboard(session: AuthSession = Depends(require_admin)) -> dict:
             **({key: value for key, value in counts.items() if key.startswith(("res_", "waitlist"))} if session.can("bookings") else {}),
             **({key: value for key, value in counts.items() if key.startswith(("users_", "union_sales"))} if session.can("users") or session.can("sync") else {}),
         },
-        "needsAttention": stats.get("needsAttention", []) if session.can("bookings") else [],
-        "recentBookings": stats.get("recentBookings", []) if session.can("bookings") else [],
+        "needsAttention": stats.get("needsAttention", []) if session.can("events.bookings.view") and session.can("events.scope.all") else [],
+        "recentBookings": stats.get("recentBookings", []) if session.can("events.bookings.view") and session.can("events.scope.all") else [],
         "syncRuns": runs,
         "union": union_health,
         "storage": {
@@ -220,7 +222,7 @@ async def overview(session: AuthSession = Depends(require_admin)) -> dict:
 
 @router.post(
     "/sync",
-    dependencies=[Depends(verify_csrf), Depends(require_any_capability("sync"))],
+    dependencies=[Depends(require_action("events.sync.union")), Depends(verify_csrf), Depends(require_any_capability("sync"))],
 )
 async def trigger_sync(force: bool = True) -> dict:
     """'Sync now'. `force=True` bypasses the bridge's response cache — which is
@@ -234,7 +236,7 @@ async def trigger_sync(force: bool = True) -> dict:
 
 @router.post(
     "/sync/committee",
-    dependencies=[Depends(verify_csrf), Depends(require_committee_page)],
+    dependencies=[Depends(require_action("committee.sync")), Depends(verify_csrf), Depends(require_committee_page)],
 )
 async def sync_committee() -> dict:
     """'Sync committee now'.
@@ -252,7 +254,7 @@ async def sync_committee() -> dict:
 
 @router.post(
     "/reconcile",
-    dependencies=[Depends(verify_csrf), Depends(require_any_capability("sync"))],
+    dependencies=[Depends(require_action("events.sync.reconcile")), Depends(verify_csrf), Depends(require_any_capability("sync"))],
 )
 async def reconcile() -> dict:
     """Expire stale holds and match reservations against already-synced sales,
@@ -263,7 +265,7 @@ async def reconcile() -> dict:
 # -------------------------------------------------------------------- events
 
 
-@router.get("/events")
+@router.get("/events", dependencies=[Depends(require_action("events.view"))])
 async def list_all_events(
     session: AuthSession = Depends(require_event_viewer),
 ) -> list[dict]:
@@ -275,12 +277,21 @@ async def list_all_events(
     says so.
     """
     events = await database.get("/events", {"published_only": False, "limit": 500}) or []
+    # Read-only published events can appear for planning; private drafts must
+    # stay inside the caller's explicitly selected event scope.
+    events = [e for e in events if e.get("published") or
+              (session.can("events.view") and (
+                  session.can("events.scope.all") or
+                  (session.can("events.scope.industry") and e.get("industry"))))]
     # Which sponsors each event is linked to, for the badge in the list.
     sponsors: dict[int, list[str]] = {}
     for link in await database.get("/sponsors/links/confirmed") or []:
         sponsors.setdefault(link["event_id"], []).append(link["sponsor_name"])
     return [
-        {**e, "can_edit": may_edit_event(session, e), "can_book": may_manage_booking(session, e), "sponsors": sponsors.get(e["id"], [])}
+        {**e, "can_edit": session.can("events.edit") and may_edit_event(session, e),
+         "can_delete": session.can("events.delete") and may_edit_event(session, e),
+         "can_publish": session.can("events.publish") and may_edit_event(session, e),
+         "can_book": session.can("events.bookings.view") and may_manage_booking(session, e), "sponsors": sponsors.get(e["id"], [])}
         for e in events
     ]
 
@@ -310,11 +321,54 @@ async def _editable_ticket(ticket_type_id: int, session: AuthSession) -> dict:
     return ticket
 
 
-@router.post("/events", dependencies=[Depends(verify_csrf)])
+def _assert_ticket_type_changes(session: AuthSession, previous: dict, body: dict) -> None:
+    """The event form embeds ticket CRUD; prevent bypassing its independent grants.
+
+    Comparison only examines fields the client actually sends. Do not mistake
+    computed ticket availability, client local display fields, or ISO 8601
+    date-format differences for edits to actual ticket values.
+    """
+    if "ticket_types" not in body:
+        raise HTTPException(400, "Event edits must include existing ticket types")
+    previous_by_id = {t["id"]: t for t in previous.get("ticket_types", [])}
+    submitted_ids = set()
+    fields = ("name", "description", "price_pence", "capacity", "requires_purchase",
+              "members_only", "max_per_user", "sort_order", "purchase_url",
+              "sales_open_at", "sales_close_at")
+    for ticket in body["ticket_types"]:
+        ticket_id = ticket.get("id")
+        if ticket_id is None:
+            if not session.can("events.ticket_types.create"):
+                raise HTTPException(403, "Permission required: events.ticket_types.create")
+            continue
+        if ticket_id not in previous_by_id or ticket_id in submitted_ids:
+            raise HTTPException(400, "Invalid or duplicate ticket type ID")
+        submitted_ids.add(ticket_id)
+        prior = previous_by_id[ticket_id]
+        def canonical(field, value):
+            if field in ("sales_open_at", "sales_close_at") and value:
+                try:
+                    return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+                except ValueError:
+                    pass
+            return value
+        if any(canonical(field, ticket[field]) != canonical(field, prior.get(field))
+               for field in fields if field in ticket):
+            if not session.can("events.ticket_types.edit"):
+                raise HTTPException(403, "Permission required: events.ticket_types.edit")
+    if set(previous_by_id) - submitted_ids and not session.can("events.ticket_types.delete"):
+        raise HTTPException(403, "Permission required: events.ticket_types.delete")
+
+
+@router.post("/events", dependencies=[Depends(require_action("events.create")), Depends(verify_csrf)])
 async def create_event(
     body: dict = Body(...), session: AuthSession = Depends(require_event_editor)
 ) -> dict:
     body.setdefault("academic_year", academic_year())
+    if body.get("ticket_types") and not session.can("events.ticket_types.create"):
+        raise HTTPException(403, "Permission required: events.ticket_types.create")
+    if body.get("published") and not session.can("events.publish"):
+        raise HTTPException(403, "Permission required: events.publish")
     if not (body.get("slug") or "").strip():
         raise HTTPException(400, "An event needs a slug")
     # Somebody who may only edit industry events can only create one, or they
@@ -328,13 +382,16 @@ async def create_event(
     return created
 
 
-@router.put("/events/{event_id}", dependencies=[Depends(verify_csrf)])
+@router.put("/events/{event_id}", dependencies=[Depends(require_action("events.edit")), Depends(verify_csrf)])
 async def update_event(
     event_id: int,
     body: dict = Body(...),
     session: AuthSession = Depends(require_event_editor),
 ) -> dict:
     existing = await _editable_event(event_id, session)
+    _assert_ticket_type_changes(session, existing, body)
+    if "published" in body and bool(body["published"]) != bool(existing.get("published")) and not session.can("events.publish"):
+        raise HTTPException(403, "Permission required: events.publish")
     if not session.can("events"):
         # Clearing the flag would hand the event to the events officers and
         # lock its own author out of it, which is never what the save button
@@ -347,7 +404,21 @@ async def update_event(
     return updated
 
 
-@router.delete("/events/{event_id}", dependencies=[Depends(verify_csrf)])
+@router.patch("/events/{event_id}/published", dependencies=[Depends(require_action("events.publish")), Depends(verify_csrf)])
+async def set_event_publication(
+    event_id: int, published: bool = Body(embed=True),
+    session: AuthSession = Depends(require_event_editor),
+) -> dict:
+    existing = await _editable_event(event_id, session)
+    payload = {**existing, "published": published}
+    if "ticket_types" not in payload:
+        raise HTTPException(409, "Ticket types unavailable — publication refused")
+    updated = await database.put(f"/events/{event_id}", payload)
+    await _sync_on_sale_email(event_id)
+    return updated
+
+
+@router.delete("/events/{event_id}", dependencies=[Depends(require_action("events.delete")), Depends(verify_csrf)])
 async def delete_event(
     event_id: int, session: AuthSession = Depends(require_event_editor)
 ) -> dict:
@@ -371,7 +442,7 @@ async def _sync_on_sale_email(event_id: int) -> None:
         log.exception("Could not update the on-sale email for event %s", event_id)
 
 
-@router.post("/events/{event_id}/ticket-types", dependencies=[Depends(verify_csrf)])
+@router.post("/events/{event_id}/ticket-types", dependencies=[Depends(require_action("events.ticket_types.create")), Depends(verify_csrf)])
 async def add_ticket_type(
     event_id: int,
     body: dict = Body(...),
@@ -381,7 +452,7 @@ async def add_ticket_type(
     return await database.post(f"/events/{event_id}/ticket-types", body)
 
 
-@router.put("/ticket-types/{ticket_type_id}", dependencies=[Depends(verify_csrf)])
+@router.put("/ticket-types/{ticket_type_id}", dependencies=[Depends(require_action("events.ticket_types.edit")), Depends(verify_csrf)])
 async def update_ticket_type(
     ticket_type_id: int,
     body: dict = Body(...),
@@ -391,7 +462,7 @@ async def update_ticket_type(
     return await database.put(f"/ticket-types/{ticket_type_id}", body)
 
 
-@router.delete("/ticket-types/{ticket_type_id}", dependencies=[Depends(verify_csrf)])
+@router.delete("/ticket-types/{ticket_type_id}", dependencies=[Depends(require_action("events.ticket_types.delete")), Depends(verify_csrf)])
 async def delete_ticket_type(
     ticket_type_id: int, session: AuthSession = Depends(require_event_editor)
 ) -> dict:
@@ -400,7 +471,7 @@ async def delete_ticket_type(
     return {"ok": True}
 
 
-@router.get("/events/{event_id}/reservations")
+@router.get("/events/{event_id}/reservations", dependencies=[Depends(require_action("events.bookings.view"))])
 async def event_reservations(
     event_id: int, session: AuthSession = Depends(require_booking_editor)
 ) -> dict:
@@ -415,7 +486,7 @@ async def event_reservations(
     }
 
 
-@router.get("/events/{event_id}/detail")
+@router.get("/events/{event_id}/detail", dependencies=[Depends(require_action("events.bookings.view"))])
 async def event_detail(
     event_id: int, session: AuthSession = Depends(require_booking_editor)
 ) -> dict:
@@ -423,7 +494,7 @@ async def event_detail(
     ticket type, every reservation in every state, and the waitlist."""
     event = await _bookable_event(event_id, session)
     rows = await database.get("/reservations", {"event_id": event_id, "limit": 5000}) or []
-    waiting = await database.get("/waitlist", {"event_id": event_id}) or []
+    waiting = await database.get("/waitlist", {"event_id": event_id}) or [] if session.can("events.bookings.waitlist") else []
 
     summary = []
     for t in event.get("ticket_types", []):
@@ -502,7 +573,7 @@ async def event_detail(
     }
 
 
-@router.get("/events/{event_id}/audiences")
+@router.get("/events/{event_id}/audiences", dependencies=[Depends(require_action("email.audiences"))])
 async def event_email_audiences(
     event_id: int, _: AuthSession = Depends(require_email)
 ) -> dict:
@@ -510,7 +581,7 @@ async def event_email_audiences(
     return {"audiences": await emailing.event_audiences(event_id)}
 
 
-@router.get("/reservations/overdue")
+@router.get("/reservations/overdue", dependencies=[Depends(require_action("events.bookings.view"))])
 async def overdue_reservations(
     session: AuthSession = Depends(require_booking_editor),
 ) -> dict:
@@ -558,7 +629,7 @@ async def overdue_reservations(
     }
 
 
-@router.post("/reservations/{reservation_id}/remind", dependencies=[Depends(verify_csrf)])
+@router.post("/reservations/{reservation_id}/remind", dependencies=[Depends(require_action("events.bookings.remind")), Depends(verify_csrf)])
 async def remind(
     reservation_id: int, session: AuthSession = Depends(require_booking_editor)
 ) -> dict:
@@ -589,7 +660,7 @@ async def remind(
     }
 
 
-@router.post("/reservations/{reservation_id}/confirm", dependencies=[Depends(verify_csrf)])
+@router.post("/reservations/{reservation_id}/confirm", dependencies=[Depends(require_action("events.bookings.confirm")), Depends(verify_csrf)])
 async def confirm_manually(
     reservation_id: int,
     order_number: str | None = Body(default=None, embed=True),
@@ -605,7 +676,7 @@ async def confirm_manually(
     return {"ok": True, "reservation": row}
 
 
-@router.post("/reservations/{reservation_id}/ticket-type", dependencies=[Depends(verify_csrf)])
+@router.post("/reservations/{reservation_id}/ticket-type", dependencies=[Depends(require_action("events.bookings.change_ticket")), Depends(verify_csrf)])
 async def change_ticket_type(
     reservation_id: int,
     ticket_type_id: int = Body(embed=True),
@@ -644,7 +715,7 @@ async def change_ticket_type(
     }
 
 
-@router.post("/events/{event_id}/tickets", dependencies=[Depends(verify_csrf)])
+@router.post("/events/{event_id}/tickets", dependencies=[Depends(require_action("events.bookings.add")), Depends(verify_csrf)])
 async def add_ticket(
     event_id: int,
     ticket_type_id: int = Body(embed=True),
@@ -715,7 +786,7 @@ async def add_ticket(
     }
 
 
-@router.post("/reservations/{reservation_id}/confirmation", dependencies=[Depends(verify_csrf)])
+@router.post("/reservations/{reservation_id}/confirmation", dependencies=[Depends(require_action("events.bookings.resend")), Depends(verify_csrf)])
 async def resend_confirmation(
     reservation_id: int, session: AuthSession = Depends(require_booking_editor)
 ) -> dict:
@@ -726,7 +797,7 @@ async def resend_confirmation(
     return {"ok": True, "message": "Confirmation email queued."}
 
 
-@router.post("/reservations/{reservation_id}/cancel", dependencies=[Depends(verify_csrf)])
+@router.post("/reservations/{reservation_id}/cancel", dependencies=[Depends(require_action("events.bookings.cancel")), Depends(verify_csrf)])
 async def cancel_reservation(
     reservation_id: int, session: AuthSession = Depends(require_booking_editor)
 ) -> dict:
@@ -751,7 +822,7 @@ async def _reservation_in_scope(reservation_id: int, session: AuthSession) -> di
     return reservation
 
 
-@router.get("/sponsor-requests")
+@router.get("/sponsor-requests", dependencies=[Depends(require_action("sponsors.requests.view"))])
 async def sponsor_requests(
     _: AuthSession = Depends(require_sponsors),
 ) -> list[dict]:
@@ -760,7 +831,7 @@ async def sponsor_requests(
     return await database.get("/sponsors/requests/all") or []
 
 
-@router.get("/waitlist")
+@router.get("/waitlist", dependencies=[Depends(require_action("events.bookings.waitlist"))])
 async def waitlist(
     event_id: int | None = None,
     session: AuthSession = Depends(require_booking_editor),
@@ -775,7 +846,7 @@ async def waitlist(
 # ------------------------------------------------------------- product linking
 
 
-@router.get("/union/products")
+@router.get("/union/products", dependencies=[Depends(require_action("products.view"))])
 async def union_products(
     year: str | None = None, _: AuthSession = Depends(require_any_capability("product_links", "events", "industry"))
 ) -> list[dict]:
@@ -786,7 +857,7 @@ async def union_products(
     ) or []
 
 
-@router.put("/events/{event_id}/product", dependencies=[Depends(verify_csrf)])
+@router.put("/events/{event_id}/product", dependencies=[Depends(require_action("events.ticket_types.product")), Depends(verify_csrf)])
 async def set_event_product(
     event_id: int,
     union_product_id: int | None = Body(default=None, embed=True),
@@ -823,7 +894,7 @@ async def set_event_product(
     return {"ok": True, "linked": row}
 
 
-@router.put("/ticket-types/{ticket_type_id}/product", dependencies=[Depends(verify_csrf)])
+@router.put("/ticket-types/{ticket_type_id}/product", dependencies=[Depends(require_action("events.ticket_types.product")), Depends(verify_csrf)])
 async def set_ticket_product(
     ticket_type_id: int,
     union_product_id: int | None = Body(default=None, embed=True),
@@ -876,7 +947,7 @@ async def set_ticket_product(
     return {"ok": True, "linked": row}
 
 
-@router.get("/product-links")
+@router.get("/product-links", dependencies=[Depends(require_action("products.view"))])
 async def list_links(
     purpose: str | None = None,
     event_id: int | None = None,
@@ -887,7 +958,7 @@ async def list_links(
     ) or []
 
 
-@router.post("/product-links", dependencies=[Depends(verify_csrf)])
+@router.post("/product-links", dependencies=[Depends(require_action("products.link")), Depends(verify_csrf)])
 async def create_link(
     body: dict = Body(...), session: AuthSession = Depends(require_product_links)
 ) -> dict:
@@ -906,7 +977,7 @@ async def create_link(
     return await database.post("/product-links", body)
 
 
-@router.delete("/product-links/{link_id}", dependencies=[Depends(verify_csrf)])
+@router.delete("/product-links/{link_id}", dependencies=[Depends(require_action("products.unlink")), Depends(verify_csrf)])
 async def delete_link(link_id: int, _: AuthSession = Depends(require_product_links)) -> dict:
     await database.delete(f"/product-links/{link_id}")
     return {"ok": True}
@@ -924,7 +995,7 @@ def _is_standing(email: str | None) -> bool:
     return bool(configured) and str(email or "").strip().lower() == configured
 
 
-@router.get("/admins")
+@router.get("/admins", dependencies=[Depends(require_action("access.view"))])
 async def list_admins(session: AuthSession = Depends(require_admin)) -> dict:
     """Who holds what.
 
@@ -962,12 +1033,12 @@ async def list_admins(session: AuthSession = Depends(require_admin)) -> dict:
         ))} for row in rows],
         "roles": role_table.describe(),
         "permissions": role_table.describe_permissions(),
-        "canManage": session.can("users"),
+        "canManage": session.can("access.grant"),
         "superuserEmail": settings.superuser_email,
     }
 
 
-@router.post("/admins", dependencies=[Depends(verify_csrf)])
+@router.post("/admins", dependencies=[Depends(require_action("access.grant")), Depends(verify_csrf)])
 async def add_admin(
     email: str = Body(embed=True),
     role: str = Body(default="admin", embed=True),
@@ -1004,7 +1075,7 @@ async def add_admin(
 
     if _is_standing(user.get("email")) and permissions is not None:
         raise HTTPException(400, "Standing superuser permissions cannot be overridden.")
-    if user["id"] == session.user.id and "users" not in role_table.effective_capabilities(role, permissions):
+    if user["id"] == session.user.id and "access.grant" not in role_table.effective_capabilities(role, permissions):
         raise HTTPException(400, "You cannot remove your own ability to manage access.")
 
     await database.post(
@@ -1026,7 +1097,7 @@ async def add_admin(
     }
 
 
-@router.delete("/admins/{user_id}", dependencies=[Depends(verify_csrf)])
+@router.delete("/admins/{user_id}", dependencies=[Depends(require_action("access.revoke")), Depends(verify_csrf)])
 async def remove_admin(
     user_id: int, session: AuthSession = Depends(require_users)
 ) -> dict:
@@ -1056,7 +1127,7 @@ async def remove_admin(
 # ------------------------------------------------------------ impersonation
 
 
-@router.post("/impersonate", dependencies=[Depends(verify_csrf)])
+@router.post("/impersonate", dependencies=[Depends(require_action("access.impersonate")), Depends(verify_csrf)])
 async def impersonate(
     response: Response,
     email: str = Body(embed=True),
@@ -1125,7 +1196,7 @@ async def impersonate(
 # ------------------------------------------------------------------ sponsors
 
 
-@router.get("/sponsors")
+@router.get("/sponsors", dependencies=[Depends(require_action("sponsors.view"))])
 async def list_sponsors(_: AuthSession = Depends(require_sponsors)) -> dict:
     """Full sponsor list with the committee-only fields and portal access.
 
@@ -1152,7 +1223,7 @@ async def list_sponsors(_: AuthSession = Depends(require_sponsors)) -> dict:
     }
 
 
-@router.put("/sponsor-package/{clause}", dependencies=[Depends(verify_csrf)])
+@router.put("/sponsor-package/{clause}", dependencies=[Depends(require_action("sponsors.package")), Depends(verify_csrf)])
 async def set_package_allowance(
     clause: str,
     allowance: int = Body(embed=True),
@@ -1183,7 +1254,7 @@ async def set_package_allowance(
     }
 
 
-@router.delete("/sponsors/{sponsor_id}", dependencies=[Depends(verify_csrf)])
+@router.delete("/sponsors/{sponsor_id}", dependencies=[Depends(require_action("sponsors.delete")), Depends(verify_csrf)])
 async def delete_sponsor(
     sponsor_id: int, _: AuthSession = Depends(require_sponsors)
 ) -> dict:
@@ -1192,14 +1263,14 @@ async def delete_sponsor(
     return {"ok": True}
 
 
-@router.post("/sponsors", dependencies=[Depends(verify_csrf)])
+@router.post("/sponsors", dependencies=[Depends(require_action("sponsors.create")), Depends(verify_csrf)])
 async def create_sponsor(
     body: dict = Body(...), _: AuthSession = Depends(require_sponsors)
 ) -> dict:
     return await database.post("/sponsors", body)
 
 
-@router.put("/sponsors/{sponsor_id}", dependencies=[Depends(verify_csrf)])
+@router.put("/sponsors/{sponsor_id}", dependencies=[Depends(require_action("sponsors.edit")), Depends(verify_csrf)])
 async def update_sponsor(
     sponsor_id: int,
     body: dict = Body(...),
@@ -1208,7 +1279,7 @@ async def update_sponsor(
     return await database.put(f"/sponsors/{sponsor_id}", body)
 
 
-@router.post("/sponsors/reorder", dependencies=[Depends(verify_csrf)])
+@router.post("/sponsors/reorder", dependencies=[Depends(require_action("sponsors.reorder")), Depends(verify_csrf)])
 async def reorder_sponsors(
     order: list[int] = Body(embed=True),
     _: AuthSession = Depends(require_sponsors),
@@ -1228,7 +1299,7 @@ async def reorder_sponsors(
     return {"ok": True, "ordered": len(order)}
 
 
-@router.post("/sponsors/{sponsor_id}/users", dependencies=[Depends(verify_csrf)])
+@router.post("/sponsors/{sponsor_id}/users", dependencies=[Depends(require_action("sponsors.users.grant")), Depends(verify_csrf)])
 async def link_sponsor_user(
     sponsor_id: int,
     email: str = Body(embed=True),
@@ -1266,7 +1337,7 @@ async def link_sponsor_user(
     }
 
 
-@router.delete("/sponsors/{sponsor_id}/users/{user_id}", dependencies=[Depends(verify_csrf)])
+@router.delete("/sponsors/{sponsor_id}/users/{user_id}", dependencies=[Depends(require_action("sponsors.users.revoke")), Depends(verify_csrf)])
 async def unlink_sponsor_user(
     sponsor_id: int, user_id: int, _: AuthSession = Depends(require_sponsors)
 ) -> dict:
@@ -1274,7 +1345,7 @@ async def unlink_sponsor_user(
     return {"ok": True}
 
 
-@router.get("/sponsors/{sponsor_id}/users")
+@router.get("/sponsors/{sponsor_id}/users", dependencies=[Depends(require_action("sponsors.users.view"))])
 async def sponsor_users(
     sponsor_id: int, _: AuthSession = Depends(require_sponsors)
 ) -> list[dict]:
@@ -1289,12 +1360,14 @@ async def sponsor_users(
 # on `site` like every other send.
 
 
-@router.get("/sponsors/inbox")
+@router.get("/sponsors/inbox", dependencies=[Depends(require_action("sponsors.inbox"))])
 async def sponsor_inbox(_: AuthSession = Depends(require_sponsors)) -> dict:
     """Everything across all sponsors that is waiting on the committee."""
     marketing = await database.get("/sponsors/marketing/all", {"status": "pending"}) or []
     requests = await database.get("/sponsors/requests/all", {"open_only": True}) or []
     interest = await database.get("/sponsors/interest/open") or []
+    if not session.can("email.send"):
+        raise HTTPException(403, "Permission required: email.send")
     listings = await database.get("/sponsors/listings/unannounced") or []
     notes = await database.get("/sponsors/notes/unread") or []
     # One line per thread, not per note: three notes about one event are one
@@ -1341,7 +1414,7 @@ async def _sponsor_or_404(sponsor_id: int) -> dict:
     return sponsor
 
 
-@router.get("/sponsors/{sponsor_id}/detail")
+@router.get("/sponsors/{sponsor_id}/detail", dependencies=[Depends(require_action("sponsors.view"))])
 async def sponsor_detail(
     sponsor_id: int, session: AuthSession = Depends(require_sponsors)
 ) -> dict:
@@ -1401,12 +1474,12 @@ async def sponsor_detail(
             for k in agreement_service.EVENT_CLAUSES
         ],
         "audiences": agreement_service.MARKETING_AUDIENCES,
-        "canEmail": session.can("email"),
-        "canWhatsApp": session.can("whatsapp"),
+        "canEmail": session.can("email.send"),
+        "canWhatsApp": session.can("whatsapp.post"),
     }
 
 
-@router.post("/sponsors/{sponsor_id}/notes", dependencies=[Depends(verify_csrf)])
+@router.post("/sponsors/{sponsor_id}/notes", dependencies=[Depends(require_action("sponsors.notes.reply")), Depends(verify_csrf)])
 async def reply_to_sponsor(
     sponsor_id: int,
     topic: str = Body(default="general", embed=True),
@@ -1431,7 +1504,7 @@ async def reply_to_sponsor(
     return {"ok": True, "message": "Reply sent. The sponsor has been emailed to say so."}
 
 
-@router.put("/sponsors/{sponsor_id}/terms/{clause}", dependencies=[Depends(verify_csrf)])
+@router.put("/sponsors/{sponsor_id}/terms/{clause}", dependencies=[Depends(require_action("sponsors.terms.edit")), Depends(verify_csrf)])
 async def set_sponsor_term(
     sponsor_id: int,
     clause: str,
@@ -1470,7 +1543,7 @@ async def set_sponsor_term(
     return {"ok": True, "terms": await agreement_service.terms(sponsor_id)}
 
 
-@router.post("/sponsors/{sponsor_id}/usage", dependencies=[Depends(verify_csrf)])
+@router.post("/sponsors/{sponsor_id}/usage", dependencies=[Depends(require_action("sponsors.usage.add")), Depends(verify_csrf)])
 async def record_sponsor_usage(
     sponsor_id: int,
     clause: str = Body(embed=True),
@@ -1524,7 +1597,7 @@ async def record_sponsor_usage(
     }
 
 
-@router.delete("/sponsors/{sponsor_id}/usage/{record_id}", dependencies=[Depends(verify_csrf)])
+@router.delete("/sponsors/{sponsor_id}/usage/{record_id}", dependencies=[Depends(require_action("sponsors.usage.delete")), Depends(verify_csrf)])
 async def remove_sponsor_usage(
     sponsor_id: int, record_id: int, _: AuthSession = Depends(require_sponsors)
 ) -> dict:
@@ -1541,7 +1614,7 @@ async def remove_sponsor_usage(
     }
 
 
-@router.put("/sponsors/{sponsor_id}/events/{event_id}", dependencies=[Depends(verify_csrf)])
+@router.put("/sponsors/{sponsor_id}/events/{event_id}", dependencies=[Depends(require_action("sponsors.events.link")), Depends(verify_csrf)])
 async def link_sponsor_event(
     sponsor_id: int,
     event_id: int,
@@ -1567,7 +1640,7 @@ async def link_sponsor_event(
     return {"ok": True, "message": "Linked."}
 
 
-@router.delete("/sponsors/{sponsor_id}/events/{event_id}", dependencies=[Depends(verify_csrf)])
+@router.delete("/sponsors/{sponsor_id}/events/{event_id}", dependencies=[Depends(require_action("sponsors.events.unlink")), Depends(verify_csrf)])
 async def unlink_sponsor_event(
     sponsor_id: int, event_id: int, _: AuthSession = Depends(require_sponsors)
 ) -> dict:
@@ -1575,7 +1648,7 @@ async def unlink_sponsor_event(
     return {"ok": True}
 
 
-@router.post("/sponsors/{sponsor_id}/events/{event_id}/decline", dependencies=[Depends(verify_csrf)])
+@router.post("/sponsors/{sponsor_id}/events/{event_id}/decline", dependencies=[Depends(require_action("sponsors.events.decline")), Depends(verify_csrf)])
 async def decline_sponsor_interest(
     sponsor_id: int, event_id: int, _: AuthSession = Depends(require_sponsors)
 ) -> dict:
@@ -1592,7 +1665,7 @@ async def decline_sponsor_interest(
 REQUEST_STATUSES = {"open", "in_progress", "closed"}
 
 
-@router.patch("/sponsor-requests/{request_id}", dependencies=[Depends(verify_csrf)])
+@router.patch("/sponsor-requests/{request_id}", dependencies=[Depends(require_action("sponsors.requests.edit")), Depends(verify_csrf)])
 async def update_sponsor_request(
     request_id: int,
     status: str | None = Body(default=None, embed=True),
@@ -1629,7 +1702,7 @@ async def _finish_marketing(item: dict, session: AuthSession) -> dict:
     return item
 
 
-@router.patch("/sponsor-marketing/{marketing_id}", dependencies=[Depends(verify_csrf)])
+@router.patch("/sponsor-marketing/{marketing_id}", dependencies=[Depends(require_action("sponsors.marketing.edit")), Depends(verify_csrf)])
 async def edit_sponsor_marketing(
     marketing_id: int,
     subject: str | None = Body(default=None, embed=True),
@@ -1649,7 +1722,7 @@ async def edit_sponsor_marketing(
     return {"ok": True, "item": row}
 
 
-@router.post("/sponsor-marketing/{marketing_id}/preview", dependencies=[Depends(verify_csrf)])
+@router.post("/sponsor-marketing/{marketing_id}/preview", dependencies=[Depends(require_action("sponsors.marketing.preview")), Depends(verify_csrf)])
 async def preview_sponsor_marketing(
     marketing_id: int, _: AuthSession = Depends(require_sponsors)
 ) -> dict:
@@ -1676,7 +1749,7 @@ def _marketing_post(item: dict, sponsor_name: str) -> str:
     return "\n\n".join(line for line in lines if line.strip())
 
 
-@router.post("/sponsor-marketing/{marketing_id}/send", dependencies=[Depends(verify_csrf)])
+@router.post("/sponsor-marketing/{marketing_id}/send", dependencies=[Depends(require_action("sponsors.marketing.send")), Depends(verify_csrf)])
 async def send_sponsor_marketing(
     marketing_id: int,
     whatsapp_groups: list[str] = Body(default=[], embed=True, alias="whatsapp"),
@@ -1694,11 +1767,11 @@ async def send_sponsor_marketing(
     item = await _marketing_or_404(marketing_id)
     if item["status"] != "pending":
         raise HTTPException(409, "That request has already been dealt with.")
-    if whatsapp_groups and not session.can("whatsapp"):
+    if whatsapp_groups and not session.can("whatsapp.post"):
         raise HTTPException(403, "You cannot post to WhatsApp groups.")
     groups = await _whatsapp_groups(whatsapp_groups)
     by_email = "email" in item["channels"] and not item.get("emailed_at")
-    if by_email and not session.can("email"):
+    if by_email and not session.can("email.send"):
         raise HTTPException(403, "You cannot send email to members.")
     if not by_email and not groups:
         if "email" not in item["channels"]:
@@ -1756,7 +1829,7 @@ async def send_sponsor_marketing(
     }
 
 
-@router.post("/sponsor-marketing/{marketing_id}/posted", dependencies=[Depends(verify_csrf)])
+@router.post("/sponsor-marketing/{marketing_id}/posted", dependencies=[Depends(require_action("sponsors.marketing.posted")), Depends(verify_csrf)])
 async def mark_sponsor_marketing_posted(
     marketing_id: int, session: AuthSession = Depends(require_sponsors)
 ) -> dict:
@@ -1771,7 +1844,7 @@ async def mark_sponsor_marketing_posted(
     return {"ok": True, "status": item["status"]}
 
 
-@router.post("/sponsor-marketing/{marketing_id}/complete", dependencies=[Depends(verify_csrf)])
+@router.post("/sponsor-marketing/{marketing_id}/complete", dependencies=[Depends(require_action("sponsors.marketing.complete")), Depends(verify_csrf)])
 async def complete_sponsor_marketing(
     marketing_id: int,
     response: str = Body(default="", embed=True),
@@ -1789,7 +1862,7 @@ async def complete_sponsor_marketing(
     return {"ok": True}
 
 
-@router.post("/sponsor-marketing/{marketing_id}/decline", dependencies=[Depends(verify_csrf)])
+@router.post("/sponsor-marketing/{marketing_id}/decline", dependencies=[Depends(require_action("sponsors.marketing.decline")), Depends(verify_csrf)])
 async def decline_sponsor_marketing(
     marketing_id: int,
     response: str = Body(default="", embed=True),
@@ -1835,7 +1908,7 @@ def _roles_digest(listings: list[dict]) -> str:
     return "\n".join(lines)
 
 
-@router.get("/sponsors/roles-digest")
+@router.get("/sponsors/roles-digest", dependencies=[Depends(require_action("sponsors.digest.view"))])
 async def roles_digest_preview(_: AuthSession = Depends(require_sponsors)) -> dict:
     listings = await database.get("/sponsors/listings/unannounced") or []
     recipients = await emailing.resolve(["topic:roles"]) if listings else []
@@ -1843,7 +1916,7 @@ async def roles_digest_preview(_: AuthSession = Depends(require_sponsors)) -> di
     return {"count": len(listings), "recipients": len(recipients), "html": html}
 
 
-@router.post("/sponsors/roles-digest", dependencies=[Depends(verify_csrf)])
+@router.post("/sponsors/roles-digest", dependencies=[Depends(require_action("sponsors.digest.send")), Depends(verify_csrf)])
 async def send_roles_digest(
     whatsapp_groups: list[str] = Body(default=[], embed=True, alias="whatsapp"),
     session: AuthSession = Depends(require_email),
@@ -1853,7 +1926,7 @@ async def send_roles_digest(
     listings = await database.get("/sponsors/listings/unannounced") or []
     if not listings:
         raise HTTPException(400, "There are no new roles to tell members about.")
-    if whatsapp_groups and not session.can("whatsapp"):
+    if whatsapp_groups and not session.can("whatsapp.post"):
         raise HTTPException(403, "You cannot post to WhatsApp groups.")
     groups = await _whatsapp_groups(whatsapp_groups)
     audiences = ["topic:roles"]
@@ -1897,12 +1970,12 @@ async def send_roles_digest(
 # ------------------------------------------------------------------- lockers
 
 
-@router.get("/lockers")
+@router.get("/lockers", dependencies=[Depends(require_action("lockers.inventory.view"))])
 async def admin_lockers(_: AuthSession = Depends(require_lockers)) -> list[dict]:
     return await database.get("/lockers") or []
 
 
-@router.patch("/lockers/{locker_id}", dependencies=[Depends(verify_csrf)])
+@router.patch("/lockers/{locker_id}", dependencies=[Depends(require_action("lockers.inventory.edit")), Depends(verify_csrf)])
 async def update_locker(
     locker_id: int,
     is_active: bool | None = Body(default=None, embed=True),
@@ -1914,7 +1987,7 @@ async def update_locker(
     )
 
 
-@router.get("/locker-holders")
+@router.get("/locker-holders", dependencies=[Depends(require_action("lockers.holders.view"))])
 async def locker_holders(_: AuthSession = Depends(require_lockers)) -> dict:
     """Everyone currently holding a locker, with their year."""
     rows = await database.get("/lockers/holders") or []
@@ -1937,7 +2010,7 @@ async def locker_holders(_: AuthSession = Depends(require_lockers)) -> dict:
     }
 
 
-@router.post("/lockers/notify-clearout", dependencies=[Depends(verify_csrf)])
+@router.post("/lockers/notify-clearout", dependencies=[Depends(require_action("lockers.clearout.notify")), Depends(verify_csrf)])
 async def notify_clearout(
     deadline: str = Body(embed=True), _: AuthSession = Depends(require_lockers)
 ) -> dict:
@@ -1968,7 +2041,7 @@ async def notify_clearout(
     }
 
 
-@router.post("/lockers/release-year", dependencies=[Depends(verify_csrf)])
+@router.post("/lockers/release-year", dependencies=[Depends(require_action("lockers.year.release")), Depends(verify_csrf)])
 async def release_locker_year(
     year: str = Body(embed=True), _: AuthSession = Depends(require_lockers)
 ) -> dict:
@@ -2018,7 +2091,7 @@ async def _allowance_shortcode(who: str) -> str:
     return shortcode
 
 
-@router.get("/locker-grants")
+@router.get("/locker-grants", dependencies=[Depends(require_action("lockers.allowances.view"))])
 async def locker_grants(
     year: str | None = None, _: AuthSession = Depends(require_locker_allowances)
 ) -> dict:
@@ -2047,7 +2120,7 @@ async def locker_grants(
     }
 
 
-@router.put("/locker-grants/{shortcode}", dependencies=[Depends(verify_csrf)])
+@router.put("/locker-grants/{shortcode}", dependencies=[Depends(require_action("lockers.allowances.grant")), Depends(verify_csrf)])
 async def set_locker_grant(
     shortcode: str,
     free_count: int = Body(default=1, embed=True),
@@ -2079,7 +2152,7 @@ async def set_locker_grant(
     )
 
 
-@router.delete("/locker-grants/{shortcode}", dependencies=[Depends(verify_csrf)])
+@router.delete("/locker-grants/{shortcode}", dependencies=[Depends(require_action("lockers.allowances.revoke")), Depends(verify_csrf)])
 async def delete_locker_grant(
     shortcode: str,
     year: str | None = None,
@@ -2094,7 +2167,7 @@ async def delete_locker_grant(
     return {"ok": True}
 
 
-@router.get("/locker-bookings")
+@router.get("/locker-bookings", dependencies=[Depends(require_action("lockers.bookings.view"))])
 async def locker_bookings(_: AuthSession = Depends(require_lockers)) -> list[dict]:
     return await database.get("/lockers/bookings", {"active_only": True}) or []
 
@@ -2107,7 +2180,7 @@ async def locker_bookings(_: AuthSession = Depends(require_lockers)) -> list[dic
 # campaigns, both go from the publicity mailbox with a working unsubscribe.
 
 
-@router.get("/email/audiences")
+@router.get("/email/audiences", dependencies=[Depends(require_action("email.audiences"))])
 async def email_audiences(_: AuthSession = Depends(require_email)) -> dict:
     """Who can be mailed, with live counts, plus the state of both mailboxes.
 
@@ -2124,7 +2197,7 @@ async def email_audiences(_: AuthSession = Depends(require_email)) -> dict:
     }
 
 
-@router.post("/email/preview", dependencies=[Depends(verify_csrf)])
+@router.post("/email/preview", dependencies=[Depends(require_action("email.preview")), Depends(verify_csrf)])
 async def preview_email(
     body: str = Body(default="", embed=True),
     audiences: list[str] = Body(default=[], embed=True),
@@ -2216,7 +2289,7 @@ def _sending_message(recipients: int, groups: list[dict], about: str = "") -> st
     return " ".join(parts)
 
 
-@router.post("/email/send", dependencies=[Depends(verify_csrf)])
+@router.post("/email/send", dependencies=[Depends(require_any_action("email.send", "whatsapp.post")), Depends(verify_csrf)])
 async def send_newsletter(
     subject: str = Body(default="", embed=True),
     body: str = Body(default="", embed=True),
@@ -2235,9 +2308,9 @@ async def send_newsletter(
     mail_audiences = emailing.email_keys(audiences)
     if not mail_audiences and not emailing.whatsapp_groups_in(audiences):
         raise HTTPException(400, "Choose who it goes to.")
-    if mail_audiences and not session.can("email"):
+    if mail_audiences and not session.can("email.send"):
         raise HTTPException(403, "You cannot send email to members.")
-    if emailing.whatsapp_groups_in(audiences) and not session.can("whatsapp"):
+    if emailing.whatsapp_groups_in(audiences) and not session.can("whatsapp.post"):
         raise HTTPException(403, "You cannot post to WhatsApp groups.")
     groups = await _whatsapp_targets(audiences)
     recipients = await emailing.resolve(mail_audiences) if mail_audiences else []
@@ -2287,7 +2360,7 @@ async def send_newsletter(
     }
 
 
-@router.post("/events/{event_id}/announce", dependencies=[Depends(verify_csrf)])
+@router.post("/events/{event_id}/announce", dependencies=[Depends(require_any_action("email.announce_event", "whatsapp.post")), Depends(verify_csrf)])
 async def announce_event(
     event_id: int,
     subject: str = Body(default="", embed=True),
@@ -2311,9 +2384,9 @@ async def announce_event(
     mail_audiences = emailing.email_keys(audiences)
     if not mail_audiences and not emailing.whatsapp_groups_in(audiences):
         raise HTTPException(400, "Choose who it goes to.")
-    if mail_audiences and not session.can("email"):
-        raise HTTPException(403, "You cannot send email to members.")
-    if emailing.whatsapp_groups_in(audiences) and not session.can("whatsapp"):
+    if mail_audiences and not session.can("email.announce_event"):
+        raise HTTPException(403, "You cannot announce events by email.")
+    if emailing.whatsapp_groups_in(audiences) and not session.can("whatsapp.post"):
         raise HTTPException(403, "You cannot post to WhatsApp groups.")
     groups = await _whatsapp_targets(audiences)
     recipients = await emailing.resolve(mail_audiences) if mail_audiences else []
@@ -2392,12 +2465,12 @@ async def announce_event(
     }
 
 
-@router.get("/email/test-recipients")
+@router.get("/email/test-recipients", dependencies=[Depends(require_action("email.test_recipients.view"))])
 async def email_test_list(_: AuthSession = Depends(require_email)) -> dict:
     return {"recipients": await emailing.test_recipients()}
 
 
-@router.post("/email/test-recipients", dependencies=[Depends(verify_csrf)])
+@router.post("/email/test-recipients", dependencies=[Depends(require_action("email.test_recipients.add")), Depends(verify_csrf)])
 async def email_test_add(
     email: str = Body(embed=True), session: AuthSession = Depends(require_email)
 ) -> dict:
@@ -2410,7 +2483,7 @@ async def email_test_add(
     return {"recipients": await emailing.test_recipients()}
 
 
-@router.delete("/email/test-recipients", dependencies=[Depends(verify_csrf)])
+@router.delete("/email/test-recipients", dependencies=[Depends(require_action("email.test_recipients.remove")), Depends(verify_csrf)])
 async def email_test_remove(
     email: str, _: AuthSession = Depends(require_email)
 ) -> dict:
@@ -2418,14 +2491,14 @@ async def email_test_remove(
     return {"recipients": await emailing.test_recipients()}
 
 
-@router.get("/email/campaigns")
+@router.get("/email/campaigns", dependencies=[Depends(require_action("email.campaigns.view"))])
 async def email_campaigns(
     limit: int = 30, _: AuthSession = Depends(require_email)
 ) -> list[dict]:
     return await database.get("/email/campaigns", {"limit": limit}) or []
 
 
-@router.get("/events/{event_id}/sale-alerts")
+@router.get("/events/{event_id}/sale-alerts", dependencies=[Depends(require_action("events.bookings.sale_alerts"))])
 async def event_sale_alerts(
     event_id: int, session: AuthSession = Depends(require_booking_editor)
 ) -> dict:
@@ -2450,7 +2523,7 @@ async def event_sale_alerts(
     }
 
 
-@router.get("/email/optouts")
+@router.get("/email/optouts", dependencies=[Depends(require_action("email.optouts.view"))])
 async def email_optouts(_: AuthSession = Depends(require_email)) -> list[dict]:
     """Addresses that have unsubscribed. Read-only on purpose: an admin putting
     somebody back on a list by hand is the one thing an unsubscribe must
@@ -2458,7 +2531,7 @@ async def email_optouts(_: AuthSession = Depends(require_email)) -> list[dict]:
     return await database.get("/email/optouts") or []
 
 
-@router.post("/email/announce-now", dependencies=[Depends(verify_csrf)])
+@router.post("/email/announce-now", dependencies=[Depends(require_action("email.announce_now")), Depends(verify_csrf)])
 async def announce_now(_: AuthSession = Depends(require_email)) -> dict:
     """Run the last-chance reminder pass immediately.
 
@@ -2472,7 +2545,7 @@ async def announce_now(_: AuthSession = Depends(require_email)) -> dict:
 # ------------------------------------------------------------------ whatsapp
 
 
-@router.post("/whatsapp/render", dependencies=[Depends(verify_csrf)])
+@router.post("/whatsapp/render", dependencies=[Depends(require_action("whatsapp.render")), Depends(verify_csrf)])
 async def whatsapp_render(
     heading: str = Body(default="", embed=True),
     body: str = Body(default="", embed=True),

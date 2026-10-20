@@ -148,14 +148,17 @@ def _dt(value):
         return None
 
 
-async def _scoped_sponsor(session: AuthSession, sponsor_id: int | None) -> int:
+async def _scoped_sponsor(session: AuthSession, sponsor_id: int | None, permission: str = 'sponsors.portal.view') -> int:
     """Resolve which sponsor this request acts for.
 
     A sponsor user normally has exactly one, so the id can be omitted. Admins
     must name one, since they belong to none.
     """
     if sponsor_id is not None:
-        sponsor_scope(session, sponsor_id)
+        # Sponsor users retain their own self-service rights. Committee can
+        # act for another company ONLY with the named operation's permission.
+        if sponsor_id not in session.sponsor_ids and not session.can(permission):
+            raise HTTPException(403, f"Permission required: {permission}")
         return sponsor_id
     if session.sponsor_ids:
         return session.sponsor_ids[0]
@@ -191,7 +194,7 @@ async def _require_clause(sid: int, key: str) -> dict:
 async def dashboard(
     sponsor_id: int | None = None, session: AuthSession = Depends(require_sponsor)
 ) -> dict:
-    sid = await _scoped_sponsor(session, sponsor_id)
+    sid = await _scoped_sponsor(session, sponsor_id, permission="sponsors.portal.view")
     # Who the page is acting for. The view used to guess this from the public
     # list and picked whichever sponsor happened to come back first, so the
     # heading named the wrong company.
@@ -480,7 +483,7 @@ async def panel(
     sponsor_id: int | None = None,
     session: AuthSession = Depends(require_sponsor),
 ) -> dict:
-    sid = await _scoped_sponsor(session, sponsor_id)
+    sid = await _scoped_sponsor(session, sponsor_id, permission="sponsors.portal.view")
 
     if panel == "jobs":
         listings = await database.get(f"/sponsors/{sid}/listings") or []
@@ -718,7 +721,7 @@ async def post_job(
     sponsor_id: int | None = None,
     session: AuthSession = Depends(require_sponsor),
 ) -> dict:
-    sid = await _scoped_sponsor(session, sponsor_id)
+    sid = await _scoped_sponsor(session, sponsor_id, permission="sponsors.portal.jobs.create")
     payload = _listing_payload(body)
     row = await database.post(f"/sponsors/{sid}/listings", payload)
     state = "is live" if payload["status"] == "live" else f"is saved as {payload['status']}"
@@ -738,7 +741,7 @@ async def edit_job(
 
 async def _own_listing(listing_id: int, session: AuthSession) -> None:
     """A listing id alone says nothing about who owns it, so check before write."""
-    if session.can("sponsors"):
+    if session.can("sponsors.portal.jobs.edit"):
         return
     for sid in session.sponsor_ids:
         listings = await database.get(f"/sponsors/{sid}/listings") or []
@@ -772,7 +775,7 @@ async def register_interest(
     that list may be minutes stale, and a button the UI chose not to render is
     not a control.
     """
-    sid = await _scoped_sponsor(session, sponsor_id)
+    sid = await _scoped_sponsor(session, sponsor_id, permission="sponsors.portal.events.claim")
 
     state = await database.get(
         f"/sponsors/claims/is-claimable/{event_id}", {"sponsor_id": sid}
@@ -805,7 +808,7 @@ async def withdraw_interest(
 ) -> dict:
     """Take back an expression of interest. Never undoes a confirmed link —
     that is an arrangement with the committee, not a button."""
-    sid = await _scoped_sponsor(session, sponsor_id)
+    sid = await _scoped_sponsor(session, sponsor_id, permission="sponsors.portal.events.withdraw")
     await database.delete(
         f"/sponsors/{sid}/claims/{event_id}", {"only_interest": True}
     )
@@ -824,7 +827,7 @@ async def create_request(
     they link that event to this sponsor, which takes it off every other
     sponsor's list.
     """
-    sid = await _scoped_sponsor(session, sponsor_id)
+    sid = await _scoped_sponsor(session, sponsor_id, permission="sponsors.portal.requests.create")
     text = (body.get("body") or "").strip()
     if not text:
         raise HTTPException(400, "Tell us what you have in mind.")
@@ -865,7 +868,7 @@ async def upload_marketing_media(
     Uploaded on its own so the form can show it before the request is sent.
     Same allow-list as every other upload — no SVG.
     """
-    sid = await _scoped_sponsor(session, sponsor_id)
+    sid = await _scoped_sponsor(session, sponsor_id, permission="sponsors.portal.marketing.upload")
     await _require_clause(sid, "marketing")
     meta = await storage.save(file, f"sponsor-{sid}")
     row = await database.post("/uploads", {**meta, "uploaded_by": session.user.id})
@@ -896,7 +899,7 @@ async def create_marketing(
     same instant could both pass with one share left; the committee approves
     every one by hand, which is where that would be caught.
     """
-    sid = await _scoped_sponsor(session, sponsor_id)
+    sid = await _scoped_sponsor(session, sponsor_id, permission="sponsors.portal.marketing.create")
     term = await _require_clause(sid, "marketing")
     if term["remaining"] <= 0:
         raise HTTPException(
@@ -962,7 +965,7 @@ async def withdraw_marketing(
     sponsor_id: int | None = None,
     session: AuthSession = Depends(require_sponsor),
 ) -> dict:
-    sid = await _scoped_sponsor(session, sponsor_id)
+    sid = await _scoped_sponsor(session, sponsor_id, permission="sponsors.portal.marketing.withdraw")
     item = await database.get(f"/sponsors/marketing/{marketing_id}")
     # Somebody else's request is reported as missing, not forbidden: whether
     # an id exists is itself information about a competitor.
@@ -984,7 +987,7 @@ async def get_thread(
     session: AuthSession = Depends(require_sponsor),
 ) -> dict:
     """One thread, for the "ask a question" dialog on an item."""
-    sid = await _scoped_sponsor(session, sponsor_id)
+    sid = await _scoped_sponsor(session, sponsor_id, permission="sponsors.portal.notes.view")
     label = await sponsor_notes.resolve_topic(sid, topic)
     notes = await database.get(f"/sponsors/{sid}/notes", {"topic": topic}) or []
     view = sponsor_notes.threads(notes, "sponsor")
@@ -1009,7 +1012,7 @@ async def add_note(
     committee, so a note typed while checking a sponsor's view is never filed
     as though the sponsor said it.
     """
-    sid = await _scoped_sponsor(session, sponsor_id)
+    sid = await _scoped_sponsor(session, sponsor_id, permission="sponsors.portal.notes.send")
     sponsor = await database.get(f"/sponsors/{sid}")
     if sponsor is None:
         raise HTTPException(404, "No such sponsor")
@@ -1097,7 +1100,7 @@ async def save_contacts(
     sponsor_id: int | None = None,
     session: AuthSession = Depends(require_sponsor),
 ) -> dict:
-    sid = await _scoped_sponsor(session, sponsor_id)
+    sid = await _scoped_sponsor(session, sponsor_id, permission="sponsors.portal.contacts.edit")
     await _require_clause(sid, "contact")
     saved = await database.put(f"/sponsors/{sid}/contacts", clean_contacts(contacts))
     return {
@@ -1126,7 +1129,7 @@ async def upload_asset(
     Filed under purpose='sponsor' with the uploader recorded, so an unwanted file
     can be traced to whoever put it there.
     """
-    sid = await _scoped_sponsor(session, sponsor_id)
+    sid = await _scoped_sponsor(session, sponsor_id, permission="sponsors.portal.merch.upload")
 
     meta = await storage.save(file, f"sponsor-{sid}")
     row = await database.post("/uploads", {**meta, "uploaded_by": session.user.id})
@@ -1150,7 +1153,7 @@ async def delete_asset(
     Scoped: the asset must belong to a sponsor this account represents, or an
     id in the URL would let one sponsor delete another's artwork.
     """
-    sid = await _scoped_sponsor(session, sponsor_id)
+    sid = await _scoped_sponsor(session, sponsor_id, permission="sponsors.portal.merch.delete")
     assets = await database.get(f"/sponsors/{sid}/assets") or []
     if not any(a["id"] == asset_id for a in assets):
         raise HTTPException(404, "No such asset")
@@ -1179,7 +1182,7 @@ def _card(sponsor: dict) -> dict:
 async def get_profile(
     sponsor_id: int | None = None, session: AuthSession = Depends(require_sponsor)
 ) -> dict:
-    sid = await _scoped_sponsor(session, sponsor_id)
+    sid = await _scoped_sponsor(session, sponsor_id, permission="sponsors.portal.view")
     sponsor = await database.get(f"/sponsors/{sid}")
     if sponsor is None:
         raise HTTPException(404, "No such sponsor")
@@ -1203,7 +1206,7 @@ async def upload_logo(
     """
     if not (file.content_type or "").startswith("image/"):
         raise HTTPException(400, "The logo must be a JPEG, PNG, WebP or GIF image.")
-    sid = await _scoped_sponsor(session, sponsor_id)
+    sid = await _scoped_sponsor(session, sponsor_id, permission="sponsors.portal.profile.logo")
     current = await database.get(f"/sponsors/{sid}")
     if current is None:
         raise HTTPException(404, "No such sponsor")
@@ -1227,7 +1230,7 @@ async def update_profile(
     crafted payload cannot change `sort_order`, `active` or `slug` — the fields
     that decide prominence and identity.
     """
-    sid = await _scoped_sponsor(session, sponsor_id)
+    sid = await _scoped_sponsor(session, sponsor_id, permission="sponsors.portal.profile.edit")
     current = await database.get(f"/sponsors/{sid}")
     if current is None:
         raise HTTPException(404, "No such sponsor")

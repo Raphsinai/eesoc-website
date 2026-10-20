@@ -15,7 +15,7 @@ from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadF
 from clients import database
 from models.auth import AuthSession
 from services import storage
-from utils.deps import current_session, require_resources, require_files, verify_csrf
+from utils.deps import require_action, current_session, require_resources, require_files, verify_csrf
 
 log = logging.getLogger("api.resources")
 
@@ -27,7 +27,7 @@ SEED_PATH = Path(__file__).resolve().parent.parent / "seed" / "resources_seed.js
 @router.get("/resources")
 async def list_pages(session: AuthSession | None = Depends(current_session)) -> dict:
     """Sidebar. Admins additionally see unpublished pages."""
-    is_admin = bool(session and session.can("resources"))
+    is_admin = bool(session and session.can("resources.drafts"))
     pages = await database.get(
         "/resource-pages", {"published_only": not is_admin}
     ) or []
@@ -55,7 +55,7 @@ async def get_page(
     if page is None:
         raise HTTPException(404, "No such resource page")
 
-    is_admin = bool(session and session.can("resources"))
+    is_admin = bool(session and session.can("resources.drafts"))
     if not page["published"] and not is_admin:
         raise HTTPException(404, "No such resource page")
 
@@ -88,7 +88,7 @@ async def get_page(
 # ------------------------------------------------------------- admin: pages
 
 
-@router.post("/admin/resources", dependencies=[Depends(verify_csrf)])
+@router.post("/admin/resources", dependencies=[Depends(require_action("resources.pages.create")), Depends(verify_csrf)])
 async def create_page(
     body: dict = Body(...), session: AuthSession = Depends(require_resources)
 ) -> dict:
@@ -99,7 +99,7 @@ async def create_page(
     )
 
 
-@router.put("/admin/resources/{page_id}", dependencies=[Depends(verify_csrf)])
+@router.put("/admin/resources/{page_id}", dependencies=[Depends(require_action("resources.pages.edit")), Depends(verify_csrf)])
 async def update_page(
     page_id: int, body: dict = Body(...), session: AuthSession = Depends(require_resources)
 ) -> dict:
@@ -108,7 +108,7 @@ async def update_page(
     )
 
 
-@router.delete("/admin/resources/{page_id}", dependencies=[Depends(verify_csrf)])
+@router.delete("/admin/resources/{page_id}", dependencies=[Depends(require_action("resources.pages.delete")), Depends(verify_csrf)])
 async def delete_page(page_id: int, _: AuthSession = Depends(require_resources)) -> dict:
     await database.delete(f"/resource-pages/{page_id}")
     return {"ok": True}
@@ -117,7 +117,7 @@ async def delete_page(page_id: int, _: AuthSession = Depends(require_resources))
 # ----------------------------------------------------------- admin: entries
 
 
-@router.post("/admin/resource-entries", dependencies=[Depends(verify_csrf)])
+@router.post("/admin/resource-entries", dependencies=[Depends(require_action("resources.entries.create")), Depends(verify_csrf)])
 async def create_entry(
     body: dict = Body(...), _: AuthSession = Depends(require_resources)
 ) -> dict:
@@ -126,20 +126,20 @@ async def create_entry(
     return await database.post("/resource-entries", body)
 
 
-@router.put("/admin/resource-entries/{entry_id}", dependencies=[Depends(verify_csrf)])
+@router.put("/admin/resource-entries/{entry_id}", dependencies=[Depends(require_action("resources.entries.edit")), Depends(verify_csrf)])
 async def update_entry(
     entry_id: int, body: dict = Body(...), _: AuthSession = Depends(require_resources)
 ) -> dict:
     return await database.put(f"/resource-entries/{entry_id}", body)
 
 
-@router.delete("/admin/resource-entries/{entry_id}", dependencies=[Depends(verify_csrf)])
+@router.delete("/admin/resource-entries/{entry_id}", dependencies=[Depends(require_action("resources.entries.delete")), Depends(verify_csrf)])
 async def delete_entry(entry_id: int, _: AuthSession = Depends(require_resources)) -> dict:
     await database.delete(f"/resource-entries/{entry_id}")
     return {"ok": True}
 
 
-@router.post("/admin/resource-entries/{entry_id}/move", dependencies=[Depends(verify_csrf)])
+@router.post("/admin/resource-entries/{entry_id}/move", dependencies=[Depends(require_action("resources.entries.move")), Depends(verify_csrf)])
 async def move_entry(
     entry_id: int,
     direction: int = Body(embed=True, default=-1),
@@ -176,7 +176,7 @@ async def import_seed(force: bool = False) -> dict:
     return {"ok": True, "pages": results}
 
 
-@router.post("/admin/resources/import", dependencies=[Depends(verify_csrf)])
+@router.post("/admin/resources/import", dependencies=[Depends(require_action("resources.import")), Depends(verify_csrf)])
 async def trigger_import(
     force: bool = False, _: AuthSession = Depends(require_resources)
 ) -> dict:
@@ -190,7 +190,7 @@ async def trigger_import(
 # ------------------------------------------------------------------ uploads
 
 
-@router.post("/admin/uploads", dependencies=[Depends(verify_csrf)])
+@router.post("/admin/uploads", dependencies=[Depends(require_action("files.upload")), Depends(verify_csrf)])
 async def upload_file(
     file: UploadFile = File(...),
     purpose: str = Form("general"),
@@ -208,7 +208,7 @@ async def upload_file(
     return {**row, "url": storage.public_url(row["stored_name"])}
 
 
-@router.get("/admin/uploads")
+@router.get("/admin/uploads", dependencies=[Depends(require_action("files.view"))])
 async def list_uploads(
     purpose: str | None = None, _: AuthSession = Depends(require_files)
 ) -> dict:
@@ -227,7 +227,7 @@ async def list_uploads(
     }
 
 
-@router.delete("/admin/uploads/{upload_id}", dependencies=[Depends(verify_csrf)])
+@router.delete("/admin/uploads/{upload_id}", dependencies=[Depends(require_action("files.delete")), Depends(verify_csrf)])
 async def delete_upload(upload_id: int, _: AuthSession = Depends(require_files)) -> dict:
     """Remove the row first, then the bytes.
 

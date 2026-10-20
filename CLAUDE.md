@@ -5,6 +5,21 @@ Full deployment documentation: [`deploy/README.md`](deploy/README.md).
 
 ---
 
+## Mandatory: granular permissions for every action
+
+**Read and follow [`AGENTS.md`](AGENTS.md) whenever you add or change an
+admin endpoint, button, form action or authorisation check.** Each actionable
+operation (including reads of private data, event create/edit/publish/delete,
+ticket CRUD, booking confirmation/cancellation, check-in/override/undo) requires
+a separately revocable permission defined in `backend/api/utils/roles.py`,
+checked server-side with `require_action`, and reflected in UI gating.
+Role names and category checkboxes are convenience presets only, never security
+boundaries. Add/update permission regression tests. A group or wildcard grant
+must never be saved as a permission. The permanent standard is not optional for
+future agents.
+
+---
+
 ## Deploying: staging first, production only when Raph says so
 
 There are two environments. **Staging is yours — deploy to it freely and

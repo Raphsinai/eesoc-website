@@ -55,10 +55,15 @@ function makeAttendee(overrides = {}) {
 // optional because not every test exercises both.
 async function stubApi(page, { attendees, scan, reservation }) {
   // Boot: the guard's refresh() and App's refreshStatus() run once on load.
-  // is_admin: true is what lets the committee-only /checkin route render in the
-  // `public` project too, so the spec makes no project check of its own.
+  // The guard is action-based. Supply the exact check-in grants, as a real
+  // committee session does; is_admin alone does NOT authorise any button.
   await page.route('**/api/auth/session', (route) =>
-    route.fulfill({ json: { authenticated: true, is_admin: true } }))
+    route.fulfill({ json: {
+      authenticated: true, is_admin: true,
+      capabilities: ['events.scope.all', 'events.checkin.view',
+        'events.checkin.scan', 'events.checkin.manual',
+        'events.checkin.override', 'events.checkin.undo'],
+    } }))
   await page.route('**/api/status', (route) =>
     route.fulfill({ json: { features: {}, unavailable: [], notice: null } }))
 

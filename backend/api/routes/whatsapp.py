@@ -21,7 +21,7 @@ from clients import whatsapp as link
 from config import settings
 from models.auth import AuthSession
 from services import whatsapp
-from utils.deps import require_admin, require_feature, require_whatsapp, verify_csrf
+from utils.deps import require_action, require_admin, require_feature, require_whatsapp, verify_csrf
 
 log = logging.getLogger("api.whatsapp")
 
@@ -75,7 +75,7 @@ def _post_summary(p: dict) -> dict:
     }
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_action("whatsapp.view"))])
 async def overview(_: AuthSession = Depends(require_whatsapp)) -> dict:
     """Everything the WhatsApp card shows: linked or not, the groups the
     number is in (and which it can post in), and the latest posts."""
@@ -103,7 +103,7 @@ async def overview(_: AuthSession = Depends(require_whatsapp)) -> dict:
     }
 
 
-@router.get("/targets")
+@router.get("/targets", dependencies=[Depends(require_action("whatsapp.groups"))])
 async def targets(_: AuthSession = Depends(require_whatsapp)) -> dict:
     """The groups a communication can be posted into — for the WhatsApp
     pickers beside the sends that have no audience list of their own (the
@@ -116,7 +116,7 @@ async def targets(_: AuthSession = Depends(require_whatsapp)) -> dict:
     }
 
 
-@router.post("/link", dependencies=[Depends(verify_csrf)])
+@router.post("/link", dependencies=[Depends(require_action("whatsapp.link")), Depends(verify_csrf)])
 async def start_link(
     phone: str | None = Body(default=None, embed=True),
     session: AuthSession = Depends(require_whatsapp),
@@ -131,7 +131,7 @@ async def start_link(
     return status
 
 
-@router.post("/unlink", dependencies=[Depends(verify_csrf)])
+@router.post("/unlink", dependencies=[Depends(require_action("whatsapp.unlink")), Depends(verify_csrf)])
 async def unlink(session: AuthSession = Depends(require_whatsapp)) -> dict:
     try:
         status = _status(await link.unlink())

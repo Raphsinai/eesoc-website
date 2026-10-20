@@ -1,61 +1,278 @@
-"""Committee role presets and the fine-grained permission catalogue.
+"""Action-level committee permissions; roles are editable presets, not security boundaries.
 
-A role is a convenient starting selection, *not* an authorization boundary.
-`admins.permissions IS NULL` follows its role's preset (backwards compatible).
-A saved array, including [], is the user's exact effective permission set.
-Authorization always uses the effective set resolved from the database on each
-request, not a cached browser selection.
+Every action has a stable key, group and subgroup. Group selection is UI-only;
+no group/wildcard grants are stored. NULL admin permissions use the current role
+preset; explicit lists are exact permissions. Pre-2026 broad keys in existing
+explicit lists are expanded *only while loading* for backwards compatibility.
+Never create new broad permission grants.
 """
-
 from __future__ import annotations
 
-# Single source of truth for validation, backend guards, and checkbox labels.
-# Grouping is presentation only; permissions are independent of one another.
-PERMISSIONS: dict[str, dict[str, str]] = {
-    "users": {"group": "Security", "label": "Manage access & impersonate", "description": "Grant and revoke committee access and sign in as other users."},
-    "passkey_links": {"group": "Security", "label": "Recovery passkey links", "description": "Issue and revoke one-time account access links. Committee accounts also require Manage access."},
-    "events": {"group": "Events", "label": "Edit all events", "description": "Create, publish and edit any event and its ticket types and product mappings."},
-    "industry": {"group": "Events", "label": "Edit industry events", "description": "Create and edit industry-marked events and their ticket types only."},
-    "bookings": {"group": "Events", "label": "Manage all bookings", "description": "See attendee details, confirm/cancel bookings, issue tickets and handle waitlists for any event."},
-    "industry_bookings": {"group": "Events", "label": "Manage industry bookings", "description": "Manage bookings and waitlists for industry-marked events only."},
-    "sync": {"group": "Events", "label": "Sync sales & members", "description": "Trigger upstream sales/member sync and reconcile booking holds."},
-    "sponsors": {"group": "Sponsors", "label": "Manage sponsors", "description": "Edit sponsors, agreements, requests, portal members and company listings."},
-    "resources": {"group": "Website", "label": "Edit resources", "description": "Edit, publish and import teaching resources and feedback."},
-    "files": {"group": "Website", "label": "Manage files", "description": "Upload, browse and delete shared files."},
-    "committee": {"group": "Website", "label": "Manage committee page", "description": "Change committee page content, ordering and other members' cards."},
-    "product_links": {"group": "Website", "label": "Manage Union product links", "description": "Link eActivities products to lockers, membership and other purposes."},
-    "lockers": {"group": "Website", "label": "Manage lockers", "description": "See and change locker assignments, releases and reminders."},
-    "locker_allowances": {"group": "Website", "label": "Give free locker allowances", "description": "Grant or remove paid-equivalent locker allowances."},
-    "email": {"group": "Communications", "label": "Email & approval queue", "description": "Manage recipients, review campaigns and send mail to members."},
-    "whatsapp": {"group": "Communications", "label": "WhatsApp administration", "description": "Link the account, manage groups and post messages to the community."},
-    "opportunities": {"group": "Communications", "label": "Review opportunities", "description": "Access private submissions and approve or reject opportunities."},
+# group -> subgroup -> permission-key suffix and human-readable label.
+# Keep names stable: they are persisted by user ID and checked by API routes.
+GROUPS = {
+    'Access & security': {
+        'Committee access': {
+            'access.view': 'View committee access',
+            'access.grant': 'Grant or change permissions',
+            'access.revoke': 'Remove committee access',
+            'access.impersonate': 'Sign in as another account',
+        },
+        'Recovery links': {
+            'passkeys.view': 'View recovery links',
+            'passkeys.create': 'Create recovery links',
+            'passkeys.revoke': 'Revoke recovery links',
+        },
+    },
+    'Events': {
+        'Event visibility & scope': {
+            'events.view': 'View the event administration calendar',
+            'events.scope.all': 'All events (scope)',
+            'events.scope.industry': 'Industry events only (scope)',
+        },
+        'Event management': {
+            'events.create': 'Create events',
+            'events.edit': 'Edit event details',
+            'events.publish': 'Publish or unpublish events',
+            'events.delete': 'Delete events',
+        },
+        'Ticket types & prices': {
+            'events.ticket_types.create': 'Add ticket types',
+            'events.ticket_types.edit': 'Edit ticket types and prices',
+            'events.ticket_types.delete': 'Delete ticket types',
+            'events.ticket_types.product': 'Link Union products to event tickets',
+        },
+        'Bookings': {
+            'events.bookings.view': 'View attendee bookings',
+            'events.bookings.export': 'Export attendee CSV',
+            'events.bookings.add': 'Add complimentary or manual tickets',
+            'events.bookings.confirm': 'Confirm a booking as paid',
+            'events.bookings.cancel': 'Cancel another person’s booking',
+            'events.bookings.remind': 'Send purchase reminders',
+            'events.bookings.change_ticket': 'Change an attendee’s ticket type',
+            'events.bookings.resend': 'Resend ticket confirmation emails',
+            'events.bookings.waitlist': 'View booking waitlists',
+            'events.bookings.sale_alerts': 'View ticket sale-alert subscribers',
+        },
+        'Door check-in': {
+            'events.checkin.view': 'View door attendee lists',
+            'events.checkin.scan': 'Check in via QR scan',
+            'events.checkin.manual': 'Manually check in attendees',
+            'events.checkin.override': 'Override invalid or unpaid tickets',
+            'events.checkin.undo': 'Undo a check-in',
+        },
+        'Union sync': {
+            'events.sync.union': 'Synchronise Union sales and members',
+            'events.sync.reconcile': 'Reconcile booking payments',
+        },
+    },
+    'Sponsors': {
+        'Directory': {
+            'sponsors.view': 'View sponsor administration',
+            'sponsors.create': 'Add sponsors',
+            'sponsors.edit': 'Edit sponsor details',
+            'sponsors.delete': 'Delete sponsors',
+            'sponsors.reorder': 'Reorder sponsors',
+            'sponsors.package': 'Edit default sponsor packages',
+        },
+        'People & correspondence': {
+            'sponsors.users.view': 'View sponsor contacts',
+            'sponsors.users.grant': 'Link sponsor portal users',
+            'sponsors.users.revoke': 'Remove sponsor portal users',
+            'sponsors.inbox': 'View sponsor inbox',
+            'sponsors.notes.reply': 'Reply to sponsor messages',
+            'sponsors.requests.view': 'View sponsor requests',
+            'sponsors.requests.edit': 'Approve or edit sponsor requests',
+        },
+        'Agreements & events': {
+            'sponsors.terms.edit': 'Edit sponsor agreements',
+            'sponsors.usage.add': 'Record sponsor allowance usage',
+            'sponsors.usage.delete': 'Undo sponsor allowance usage',
+            'sponsors.events.link': 'Link sponsors to events',
+            'sponsors.events.unlink': 'Remove sponsor-event links',
+            'sponsors.events.decline': 'Decline sponsor event interest',
+        },
+        'Sponsor portal on behalf of a sponsor': {
+            'sponsors.portal.view': 'View sponsor portal',
+            'sponsors.portal.jobs.create': 'Post sponsor job listings',
+            'sponsors.portal.jobs.edit': 'Edit sponsor job listings',
+            'sponsors.portal.events.claim': 'Claim sponsor event opportunities',
+            'sponsors.portal.events.withdraw': 'Withdraw sponsor event interest',
+            'sponsors.portal.requests.create': 'Submit sponsor requests',
+            'sponsors.portal.marketing.upload': 'Upload sponsor marketing media',
+            'sponsors.portal.marketing.create': 'Submit sponsor marketing requests',
+            'sponsors.portal.marketing.withdraw': 'Withdraw sponsor marketing requests',
+            'sponsors.portal.notes.view': 'View sponsor-side conversations',
+            'sponsors.portal.notes.send': 'Send sponsor-side messages',
+            'sponsors.portal.contacts.edit': 'Update sponsor contacts',
+            'sponsors.portal.merch.upload': 'Upload sponsor merchandise',
+            'sponsors.portal.merch.delete': 'Remove sponsor merchandise',
+            'sponsors.portal.profile.logo': 'Change sponsor logo',
+            'sponsors.portal.profile.edit': 'Edit sponsor portal profile',
+        },
+        'Sponsor portal on behalf of a sponsor': {
+            'sponsors.portal.view': 'View sponsor portal',
+            'sponsors.portal.jobs.create': 'Post sponsor job listings',
+            'sponsors.portal.jobs.edit': 'Edit sponsor job listings',
+            'sponsors.portal.events.claim': 'Claim sponsor event opportunities',
+            'sponsors.portal.events.withdraw': 'Withdraw sponsor event interest',
+            'sponsors.portal.requests.create': 'Submit sponsor requests',
+            'sponsors.portal.marketing.upload': 'Upload sponsor marketing media',
+            'sponsors.portal.marketing.create': 'Submit sponsor marketing requests',
+            'sponsors.portal.marketing.withdraw': 'Withdraw sponsor marketing requests',
+            'sponsors.portal.notes.view': 'View sponsor-side conversations',
+            'sponsors.portal.notes.send': 'Send sponsor-side messages',
+            'sponsors.portal.contacts.edit': 'Update sponsor contacts',
+            'sponsors.portal.merch.upload': 'Upload sponsor merchandise',
+            'sponsors.portal.merch.delete': 'Remove sponsor merchandise',
+            'sponsors.portal.profile.logo': 'Change sponsor logo',
+            'sponsors.portal.profile.edit': 'Edit sponsor portal profile',
+        },
+        'Marketing & outreach': {
+            'sponsors.marketing.edit': 'Edit marketing requests',
+            'sponsors.marketing.preview': 'Preview sponsor messages',
+            'sponsors.marketing.send': 'Send sponsor marketing',
+            'sponsors.marketing.posted': 'Mark sponsor marketing as posted',
+            'sponsors.marketing.complete': 'Mark sponsor marketing complete',
+            'sponsors.marketing.decline': 'Decline sponsor marketing',
+            'sponsors.digest.view': 'Preview roles digest',
+            'sponsors.digest.send': 'Send roles digest',
+        },
+    },
+    'Website': {
+        'Resources': {
+            'resources.drafts': 'View unpublished resources',
+            'resources.pages.create': 'Create resource pages',
+            'resources.pages.edit': 'Edit resource pages',
+            'resources.pages.delete': 'Delete resource pages',
+            'resources.entries.create': 'Add resource entries',
+            'resources.entries.edit': 'Edit resource entries',
+            'resources.entries.delete': 'Delete resource entries',
+            'resources.entries.move': 'Reorder resource entries',
+            'resources.import': 'Import resources',
+        },
+        'Shared uploads': {
+            'files.view': 'Browse uploaded files',
+            'files.upload': 'Upload files',
+            'files.delete': 'Delete uploaded files',
+        },
+        'Committee page': {
+            'committee.view': 'View committee administration',
+            'committee.intro': 'Edit committee page introduction',
+            'committee.profiles': 'Edit other committee cards',
+            'committee.sync': 'Synchronise committee roster',
+        },
+        'Union products': {
+            'products.view': 'Browse Union product mappings',
+            'products.link': 'Create Union product links',
+            'products.unlink': 'Delete Union product links',
+        },
+    },
+    'Lockers': {
+        'Inventory & holders': {
+            'lockers.inventory.view': 'View locker inventory',
+            'lockers.inventory.edit': 'Enable or disable lockers',
+            'lockers.holders.view': 'View locker holders',
+            'lockers.bookings.view': 'View locker bookings',
+        },
+        'Year-end management': {
+            'lockers.clearout.notify': 'Send locker clear-out reminders',
+            'lockers.year.release': 'Release lockers for a new year',
+        },
+        'Free allowances': {
+            'lockers.allowances.view': 'View free locker allowances',
+            'lockers.allowances.grant': 'Give or change free locker allowances',
+            'lockers.allowances.revoke': 'Remove free locker allowances',
+        },
+    },
+    'Communications': {
+        'Email composition': {
+            'email.audiences': 'View email audiences',
+            'email.preview': 'Preview email',
+            'email.send': 'Send member email',
+            'email.announce_event': 'Announce an event',
+            'email.announce_now': 'Trigger ticket sale announcements',
+            'email.test_recipients.view': 'View test email recipients',
+            'email.test_recipients.add': 'Add test email recipients',
+            'email.test_recipients.remove': 'Remove test email recipients',
+            'email.campaigns.view': 'View sent email campaigns',
+            'email.optouts.view': 'View email opt-outs',
+        },
+        'Approval queue': {
+            'email.queue.view': 'View pending email approvals',
+            'email.queue.edit': 'Edit pending campaigns',
+            'email.queue.test': 'Send test campaign emails',
+            'email.queue.send': 'Approve and send queued emails',
+            'email.queue.schedule': 'Approve and schedule queued emails',
+            'email.queue.unschedule': 'Unschedule queued emails',
+            'email.queue.dismiss': 'Reject queued emails',
+        },
+        'WhatsApp': {
+            'whatsapp.view': 'View WhatsApp dashboard',
+            'whatsapp.groups': 'View available WhatsApp groups',
+            'whatsapp.link': 'Link society WhatsApp account',
+            'whatsapp.unlink': 'Unlink society WhatsApp account',
+            'whatsapp.post': 'Post messages to WhatsApp groups',
+            'whatsapp.render': 'Preview WhatsApp messages',
+        },
+        'Opportunities': {
+            'opportunities.view': 'View private opportunity submissions',
+            'opportunities.approve': 'Approve opportunities',
+            'opportunities.reject': 'Reject opportunities',
+        },
+    },
 }
 
-_ADMIN = set(PERMISSIONS) - {"users", "locker_allowances"}
-ROLES: dict[str, dict] = {
-    "superuser": {
-        "label": "Superuser", "blurb": "All permissions selected by default.",
-        "capabilities": set(PERMISSIONS),
-    },
-    "admin": {
-        "label": "Admin", "blurb": "All except access management and free locker grants.",
-        "capabilities": _ADMIN,
-    },
-    "events": {
-        "label": "Events", "blurb": "Manage events, bookings and sales sync.",
-        "capabilities": {"events", "bookings", "sync"},
-    },
-    "industry": {
-        "label": "Industry", "blurb": "Manage sponsors and industry events and bookings.",
-        "capabilities": {"sponsors", "industry", "industry_bookings"},
-    },
+PERMISSIONS: dict[str, dict[str, str]] = {
+    name: {'group': group, 'subgroup': subgroup, 'label': label,
+           'description': f'{label}.'}
+    for group, children in GROUPS.items()
+    for subgroup, actions in children.items()
+    for name, label in actions.items()
+}
+
+EVENT_EDIT_ACTIONS = {p for p in PERMISSIONS if p.startswith('events.') and not
+                      (p.startswith(('events.bookings.', 'events.checkin.', 'events.sync.')) or p.startswith('events.scope.'))}
+BOOKING_ACTIONS = {p for p in PERMISSIONS if p.startswith('events.bookings.')}
+CHECKIN_ACTIONS = {p for p in PERMISSIONS if p.startswith('events.checkin.')}
+EVENT_ACTIONS = EVENT_EDIT_ACTIONS | BOOKING_ACTIONS | CHECKIN_ACTIONS
+
+# Existing explicit overrides can contain these pre-upgrade keys. Translate
+# every key into individual grants and the necessary event scope. This map is
+# ONLY for decoding old saved overrides; it is never offered in the UI.
+LEGACY_GRANTS = {
+    'users': {p for p in PERMISSIONS if p.startswith('access.')},
+    'passkey_links': {p for p in PERMISSIONS if p.startswith('passkeys.')},
+    'events': EVENT_EDIT_ACTIONS | {'events.scope.all'},
+    'industry': EVENT_EDIT_ACTIONS | {'events.scope.industry'},
+    'bookings': BOOKING_ACTIONS | {'events.scope.all'},
+    'industry_bookings': BOOKING_ACTIONS | {'events.scope.industry'},
+    'sync': {p for p in PERMISSIONS if p.startswith('events.sync.')},
+    'sponsors': {p for p in PERMISSIONS if p.startswith('sponsors.')},
+    'resources': {p for p in PERMISSIONS if p.startswith('resources.')},
+    'files': {p for p in PERMISSIONS if p.startswith('files.')},
+    'committee': {p for p in PERMISSIONS if p.startswith('committee.')},
+    'product_links': {p for p in PERMISSIONS if p.startswith('products.')},
+    'lockers': {p for p in PERMISSIONS if p.startswith('lockers.') and not p.startswith('lockers.allowances.')},
+    'locker_allowances': {p for p in PERMISSIONS if p.startswith('lockers.allowances.')},
+    'email': {p for p in PERMISSIONS if p.startswith('email.')},
+    'whatsapp': {p for p in PERMISSIONS if p.startswith('whatsapp.')},
+    'opportunities': {p for p in PERMISSIONS if p.startswith('opportunities.')},
+}
+# Old committee-only check-in did not need a role. Existing roles receive door
+# access by default; custom permission holders can explicitly revoke it.
+_ADMIN = set(PERMISSIONS) - {'access.grant', 'access.revoke', 'access.impersonate'} - LEGACY_GRANTS['locker_allowances']
+ROLES = {
+    'superuser': {'label': 'Superuser', 'blurb': 'All actions selected by default.', 'capabilities': set(PERMISSIONS)},
+    'admin': {'label': 'Admin', 'blurb': 'Read-only access list, with all other actions except access management and complimentary locker allowances.', 'capabilities': _ADMIN},
+    'events': {'label': 'Events', 'blurb': 'All event and booking actions, including check-in and sales sync.', 'capabilities': EVENT_ACTIONS | {'events.scope.all'} | LEGACY_GRANTS['sync']},
+    'industry': {'label': 'Industry', 'blurb': 'All sponsor actions and industry-scoped event, booking and check-in actions.', 'capabilities': LEGACY_GRANTS['sponsors'] | EVENT_ACTIONS | {'events.scope.industry'}},
 }
 ROLE_NAMES = tuple(ROLES)
 
 
 def capabilities(role: str | None) -> frozenset[str]:
-    """Default selection for a role; never infer custom grants from the label."""
-    return frozenset(ROLES.get(role, {}).get("capabilities", ()))
+    return frozenset(ROLES.get(role, {}).get('capabilities', ()))
 
 
 def effective_capabilities(role: str | None, permissions: list[str] | None = None) -> frozenset[str]:
@@ -63,31 +280,36 @@ def effective_capabilities(role: str | None, permissions: list[str] | None = Non
         return frozenset()
     if permissions is None:
         return capabilities(role)
-    # Fail closed for entries no longer recognised by the permission catalogue.
-    return frozenset(p for p in permissions if p in PERMISSIONS)
+    result: set[str] = set()
+    for p in permissions:
+        if p in PERMISSIONS:
+            result.add(p)
+        elif p in LEGACY_GRANTS:
+            result.update(LEGACY_GRANTS[p])
+    return frozenset(result)
 
 
 def validate_permissions(permissions: list[str] | None) -> list[str] | None:
-    """Validate *before* any account is created or changed."""
     if permissions is None:
         return None
     if not isinstance(permissions, list) or any(not isinstance(p, str) for p in permissions):
-        raise ValueError("Permissions must be an array of permission names")
+        raise ValueError('Permissions must be an array of permission names')
     invalid = set(permissions) - PERMISSIONS.keys()
     if invalid:
         raise ValueError(f"Unknown permissions: {', '.join(sorted(invalid))}")
     if len(permissions) != len(set(permissions)):
-        raise ValueError("Duplicate permissions are not allowed")
+        raise ValueError('Duplicate permissions are not allowed')
     return sorted(permissions)
 
 
 def describe() -> list[dict]:
-    return [
-        {"id": name, "label": spec["label"], "blurb": spec["blurb"],
-         "capabilities": sorted(spec["capabilities"])}
-        for name, spec in ROLES.items()
-    ]
+    return [{'id': name, 'label': spec['label'], 'blurb': spec['blurb'],
+             'capabilities': sorted(spec['capabilities'])} for name, spec in ROLES.items()]
 
 
 def describe_permissions() -> list[dict]:
-    return [{"id": name, **spec} for name, spec in PERMISSIONS.items()]
+    return [{'id': name, **spec} for name, spec in PERMISSIONS.items()]
+
+
+def matches_category(permissions: frozenset[str] | set[str], prefix: str) -> bool:
+    return any(p.startswith(prefix + '.') for p in permissions)

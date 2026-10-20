@@ -118,6 +118,51 @@ _DENIED = {
 }
 
 
+def require_action(permission: str):
+    """Per-route permission, independent of role and UI visibility.
+
+    Must guard EVERY non-self-service admin action, including GETs exposing
+    private information. No category names or wildcards are accepted here.
+    """
+    from utils.roles import PERMISSIONS
+    if permission not in PERMISSIONS:
+        raise ValueError(f"Unregistered action permission: {permission}")
+
+    async def guard(session: AuthSession = Depends(require_admin)) -> AuthSession:
+        if not session.can(permission):
+            raise HTTPException(403, f"Permission required: {permission}")
+        return session
+    return guard
+
+
+def require_any_action(*permissions: str):
+    """Mixed-channel actions are allowed if the caller can use one channel.
+
+    The handler must then recheck the specific channels selected in its body.
+    """
+    from utils.roles import PERMISSIONS
+    if any(p not in PERMISSIONS for p in permissions):
+        raise ValueError(f"Unregistered action permission in {permissions!r}")
+
+    async def guard(session: AuthSession = Depends(require_admin)) -> AuthSession:
+        if not any(session.can(p) for p in permissions):
+            raise HTTPException(403, f"One of these permissions is required: {', '.join(permissions)}")
+        return session
+    return guard
+
+
+def may_access_event(session: AuthSession, event: dict | None) -> bool:
+    """Action permissions alone never bypass the full/industry scope constraint."""
+    return session.can('events.scope.all') or (
+        session.can('events.scope.industry') and bool((event or {}).get('industry'))
+    )
+
+
+def assert_event_scope(session: AuthSession, event: dict | None) -> None:
+    if not may_access_event(session, event):
+        raise HTTPException(403, 'Permission required for this event scope.')
+
+
 # `require_capability` returns a function, so these are the Depends-ready
 # versions the route decorators use. Named rather than inlined so the call sites
 # read as a sentence.
@@ -137,7 +182,7 @@ require_locker_allowances = require_capability("locker_allowances")
 
 # Opportunity submissions are private: check the dedicated permission, not a
 # role label. A custom permission grants it; explicitly unchecking it removes it.
-require_opportunities_admin = require_capability("opportunities")
+require_opportunities_admin = require_action("opportunities.view")
 
 
 async def require_event_editor(

@@ -150,7 +150,7 @@ def session_of(user_id=3, permissions=None):
     Direct-call tests skip FastAPI dependency injection, so the fake must
     implement the same permission check as a real AuthSession.
     """
-    grants = frozenset({"email", "whatsapp"} if permissions is None else permissions)
+    grants = frozenset({"email.send", "whatsapp.post"} if permissions is None else permissions)
     return type("S", (), {
         "user": type("U", (), {"id": user_id})(),
         "can": lambda self, name: name in grants,

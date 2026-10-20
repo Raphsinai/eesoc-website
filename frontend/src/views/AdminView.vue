@@ -21,7 +21,7 @@ import OpportunitiesAdminPanel from '@/components/OpportunitiesAdminPanel.vue'
 import WhatsAppGroupPicker from '@/components/WhatsAppGroupPicker.vue'
 import WhatsAppLink from '@/components/WhatsAppLink.vue'
 import WhatsAppPost from '@/components/WhatsAppPost.vue'
-import session, { can, hasAdminArea } from '@/stores/session'
+import session, { can, anyPermission, hasAdminArea } from '@/stores/session'
 
 const route = useRoute()
 const router = useRouter()
@@ -35,15 +35,15 @@ const TABS = [
   ['events', 'Events', 'eventview'],
   ['overdue', 'Unpaid bookings', 'bookingish'],
   ['resources', 'Resources', 'resources'],
-  ['opportunities', 'Opportunities', 'opportunities'],
-  ['files', 'Files', 'files'],
-  ['committee', 'Committee', 'committee'],
-  ['links', 'Union products', 'product_links'],
+  ['opportunities', 'Opportunities', 'opportunities.view'],
+  ['files', 'Files', 'files.view'],
+  ['committee', 'Committee', 'committee.view'],
+  ['links', 'Union products', 'products.view'],
   ['lockers', 'Lockers', 'lockerish'],
-  ['email', 'Email', 'email'],
-  ['whatsapp', 'WhatsApp', 'whatsapp'],
-  ['people', 'People', 'any'],
-  ['sponsors', 'Sponsors', 'sponsors'],
+  ['email', 'Email', 'emailish'],
+  ['whatsapp', 'WhatsApp', 'whatsappish'],
+  ['people', 'People', 'access.view'],
+  ['sponsors', 'Sponsors', 'sponsors.view'],
 ]
 
 function allowed(need) {
@@ -51,9 +51,11 @@ function allowed(need) {
   if (need === 'card') return Boolean(session.committeeLogin)
   // Events and the bookings that go with them: the events officers see all of
   // it, the industry officers see it for their own events.
-  if (need === 'eventview') return can('events') || can('industry') || can('bookings') || can('industry_bookings')
-  if (need === 'bookingish') return can('bookings') || can('industry_bookings')
-  if (need === 'lockerish') return can('lockers') || can('locker_allowances')
+  if (need === 'eventview') return can('events.view') || can('events.bookings.view')
+  if (need === 'bookingish') return can('events.bookings.view')
+  if (need === 'lockerish') return can('lockers.inventory.view') || can('lockers.allowances.view') || can('lockers.holders.view')
+  if (need === 'emailish') return anyPermission('email.')
+  if (need === 'whatsappish') return anyPermission('whatsapp.')
   return can(need)
 }
 
@@ -205,17 +207,17 @@ function maybe(allow, request) {
 
 async function load() {
   error.value = ''
-  const eventish = can('events') || can('industry') || can('bookings') || can('industry_bookings')
+  const eventish = can('events.view')
   try {
     const [d, ev, pr, ln, pg, ad, sp, cm, mine] = await Promise.all([
       maybe(session.isAdmin, () => api.get('/admin/dashboard')),
       maybe(eventish, () => api.get('/admin/events')),
-      maybe(can('events') || can('industry') || can('product_links'), () => api.get('/admin/union/products')),
-      maybe(can('events') || can('industry') || can('product_links'), () => api.get('/admin/product-links')),
+      maybe(can('products.view'), () => api.get('/admin/union/products')),
+      maybe(can('products.view'), () => api.get('/admin/product-links')),
       maybe(can('resources'), () => api.get('/resources')),
-      maybe(session.isAdmin, () => api.get('/admin/admins')),
-      maybe(can('sponsors'), () => api.get('/admin/sponsors')),
-      maybe(can('committee'), () => api.get('/admin/committee')),
+      maybe(can('access.view'), () => api.get('/admin/admins')),
+      maybe(can('sponsors.view'), () => api.get('/admin/sponsors')),
+      maybe(can('committee.view'), () => api.get('/admin/committee')),
       maybe(Boolean(session.committeeLogin), () => api.get('/committee/me')),
     ])
     dash.value = d
@@ -258,11 +260,11 @@ onMounted(async () => {
   // Landing straight on the Email tab (a bookmark, or the link in the
   // "waiting for approval" notice). The tab watcher only loads it on a
   // *change* of tab, so without this the queue would read empty.
-  if (can('email') && tab.value === 'email') {
+  if (anyPermission('email.') && tab.value === 'email') {
     await loadEmail().catch((e) => (error.value = e.message))
   }
   const review = Number(route.query.review)
-  if (review && can('email')) {
+  if (review && can('email.queue.view')) {
     tab.value = 'email'
     router.replace({ query: { tab: 'email' } })
     openReview(review)
@@ -347,7 +349,7 @@ const blank = () => ({
   // decides whether the industry officers can edit it, so it is ticked
   // deliberately rather than guessed from the category. Somebody who may only
   // edit industry events gets it set for them, server-side.
-  industry: !can('events'),
+  industry: !can('events.scope.all'),
   // Empty by default. An event with no ticket types is a drop-in event: no
   // booking, no "on sale" state, just a listing. Adding a type is the
   // deliberate act, not removing the one that was there.
@@ -501,11 +503,7 @@ async function saveEvent() {
 }
 
 async function togglePublished(e) {
-  await api.put(`/admin/events/${e.id}`, {
-    ...e,
-    published: !e.published,
-    ticket_types: e.ticket_types || [],
-  })
+  await api.patch(`/admin/events/${e.id}/published`, { published: !e.published })
   await load()
 }
 
@@ -708,16 +706,16 @@ async function openOpportunityEmail(id) {
 // --------------------------------------------------------------- email -----
 async function loadEmail() {
   const [a, c, q] = await Promise.all([
-    api.get('/admin/email/audiences'),
-    api.get('/admin/email/campaigns'),
-    api.get('/admin/email/queue'),
+    maybe(can('email.audiences'), () => api.get('/admin/email/audiences')),
+    maybe(can('email.campaigns.view'), () => api.get('/admin/email/campaigns')),
+    maybe(can('email.queue.view'), () => api.get('/admin/email/queue')),
   ])
-  audiences.value = a.audiences
-  emailEnvironment.value = a.environment
-  mailStatus.value = a.mail
-  campaigns.value = c
-  setQueue(q.items)
-  loadTestList().catch(() => {})
+  audiences.value = a?.audiences ?? []
+  emailEnvironment.value = a?.environment ?? null
+  mailStatus.value = a?.mail ?? null
+  campaigns.value = c ?? []
+  setQueue(q?.items ?? [])
+  if (can('email.test_recipients.view')) loadTestList().catch(() => {})
 }
 
 // The "Test list" audience: a few committee addresses to try a send on first.
@@ -739,7 +737,7 @@ async function changeTestList(action) {
     testRecipients.value = res.recipients
     if (action === 'add') newTestEmail.value = ''
     // The audience's count and description come from the server.
-    audiences.value = (await api.get('/admin/email/audiences')).audiences
+    if (can('email.audiences')) audiences.value = (await api.get('/admin/email/audiences')).audiences
   } catch (e) {
     error.value = e.message
   } finally {
@@ -753,8 +751,8 @@ async function changeTestList(action) {
 const audienceGroups = computed(() => {
   const out = new Map()
   for (const a of audiences.value) {
-    if (a.whatsapp && !can('whatsapp')) continue
-    if (!a.whatsapp && !can('email')) continue
+    if (a.whatsapp && !can('whatsapp.post')) continue
+    if (!a.whatsapp && !can('email.send') && !can('email.preview')) continue
     if (!out.has(a.group)) out.set(a.group, [])
     out.get(a.group).push(a)
   }
@@ -1355,7 +1353,7 @@ const sponsorInbox = ref(null)
 const rolesDigest = ref(null)
 
 async function loadSponsorInbox() {
-  if (!can('sponsors')) return
+  if (!can('sponsors.view')) return
   try {
     const [inbox, digest] = await Promise.all([
       api.get('/admin/sponsors/inbox'),
@@ -1595,7 +1593,7 @@ async function removeAdmin(a) {
 }
 
 async function loadPasskeyLinks() {
-  if (!can('passkey_links')) return
+  if (!can('passkeys.view')) return
   try {
     const res = await api.get('/admin/passkey-links')
     passkeyLinks.value = res.links
@@ -1644,7 +1642,7 @@ async function revokePasskeyLink(l) {
 }
 
 async function loadManagedLockers() {
-  if (!can('lockers')) return
+  if (!can('lockers.inventory.view')) return
   try {
     const [all, holders] = await Promise.all([
       api.get('/admin/lockers'), api.get('/admin/locker-holders'),
@@ -1666,7 +1664,7 @@ async function toggleLockerActive(locker) {
 }
 
 async function loadAllowances() {
-  if (!can('locker_allowances')) return
+  if (!can('lockers.allowances.view')) return
   try {
     const res = await api.get('/admin/locker-grants')
     allowances.value = res.allowances
@@ -1915,7 +1913,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
       <h1 style="margin:0; font:var(--type-h1)">Committee admin</h1>
       <div style="display:flex; gap:var(--space-4); align-items:center">
         <!-- Every committee member can work the door, role or not. -->
-        <Button v-if="hasAdminArea" size="sm" variant="secondary" @click="router.push('/checkin')">Door check-in</Button>
+        <Button v-if="(hasAdminArea) && (can('events.checkin.view'))" size="sm" variant="secondary" @click="router.push('/checkin')">Door check-in</Button>
         <span v-if="dash" style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">
           {{ dash.academicYear }} · {{ dash.environment }}
         </span>
@@ -2044,7 +2042,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             <div style="display:flex; align-items:center; gap:var(--space-3); flex-wrap:wrap">
               <Badge :tone="warnTone[w.level]">{{ w.level }}</Badge>
               <span style="font:var(--type-small)">{{ w.message }}</span>
-              <Button v-if="w.action === 'sync' && can('sync')" size="sm" variant="secondary" @click="sync">Sync now</Button>
+              <Button v-if="w.action === 'sync' && can('events.sync.union')" size="sm" variant="secondary" @click="sync">Sync now</Button>
               <Button v-if="w.action === 'links'" size="sm" variant="secondary" @click="tab = 'links'">Link products</Button>
               <Button v-if="w.action === 'overdue'" size="sm" variant="secondary" @click="tab = 'overdue'">Review them</Button>
               <Button v-if="w.action === 'email' && can('email')" size="sm" variant="secondary" @click="tab = 'email'">Review them</Button>
@@ -2065,8 +2063,8 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
         </div>
 
         <div style="display:flex; gap:var(--space-3); margin:var(--space-8) 0; flex-wrap:wrap">
-          <Button v-if="can('sync')" :disabled="busy" @click="sync">{{ busy ? 'Working…' : 'Sync from eActivities' }}</Button>
-          <Button v-if="can('sync')" variant="secondary" :disabled="busy" @click="reconcile">Match bookings now</Button>
+          <Button v-if="can('events.sync.union')" :disabled="busy" @click="sync">{{ busy ? 'Working…' : 'Sync from eActivities' }}</Button>
+          <Button v-if="can('events.sync.reconcile')" variant="secondary" :disabled="busy" @click="reconcile">Match bookings now</Button>
         </div>
 
         <div class="admin-cols admin-cols--split">
@@ -2138,18 +2136,18 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                   </p>
                 </div>
                 <div style="display:flex; gap:var(--space-2); flex-wrap:wrap; align-items:center">
-                  <Button v-if="e.can_edit" size="sm" variant="ghost" @click="togglePublished(e)">{{ e.published ? 'Unpublish' : 'Publish' }}</Button>
+                  <Button v-if="e.can_publish" size="sm" variant="ghost" @click="togglePublished(e)">{{ e.published ? 'Unpublish' : 'Publish' }}</Button>
                   <Button v-if="e.can_book" size="sm" variant="secondary" @click="router.push(`/admin/events/${e.id}`)">Bookings</Button>
-                  <Button v-if="e.can_edit" size="sm" variant="ghost" @click="editEvent(e)">Edit</Button>
-                  <Button v-if="can('email')" size="sm" variant="secondary" title="Email people about it" @click="announceEvent(e)">Announce</Button>
-                  <Button v-if="e.can_edit" size="sm" variant="danger" @click="removeEvent(e)">Delete</Button>
+                  <Button v-if="(e.can_edit) && (can('events.edit'))" size="sm" variant="ghost" @click="editEvent(e)">Edit</Button>
+                  <Button v-if="(can('email')) && (can('email.announce_event'))" size="sm" variant="secondary" title="Email people about it" @click="announceEvent(e)">Announce</Button>
+                  <Button v-if="e.can_delete" size="sm" variant="danger" @click="removeEvent(e)">Delete</Button>
                   <span v-if="!e.can_edit && !e.can_book" style="font:var(--type-2xs); color:var(--text-faint)">Read-only event</span>
                 </div>
               </div>
             </Card>
           </div>
 
-          <Card v-if="can('events') || can('industry')" variant="offset">
+          <Card v-if="can('events.create') || can('events.edit')" variant="offset">
             <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">
               {{ editingId ? 'Edit event' : 'New event' }}
             </h2>
@@ -2263,7 +2261,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                     <option v-for="p in productOptions" :key="p.id" :value="p.id">{{ p.name }}</option>
                   </select>
                 </Field>
-                <Button size="sm" :disabled="busy" @click="saveEventProduct">Link</Button>
+                <Button v-if="can('events.ticket_types.product')" size="sm" :disabled="busy" @click="saveEventProduct">Link</Button>
               </div>
               <p v-else style="margin:0; font:var(--type-2xs); color:var(--text-faint)">
                 Save the event first, then link its Union product.
@@ -2276,10 +2274,10 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               <h3 style="margin:0; font:var(--type-h5)">Ticket types</h3>
               <div v-for="(t, i) in draft.ticket_types" :key="i" style="display:grid; gap:var(--space-2); padding:var(--space-3) 0; border-top:1px solid var(--border-hairline)">
                 <div style="display:grid; grid-template-columns:2fr 1fr 1fr 1fr; gap:var(--space-2)">
-                  <Field label="Name"><Input v-model="t.name" placeholder="With alcohol" /></Field>
-                  <Field label="Price (£)"><Input v-model="t.price_pounds" inputmode="decimal" placeholder="0" /></Field>
-                  <Field label="Cap"><Input v-model.number="t.capacity" type="number" min="1" /></Field>
-                  <Field label="Max/user"><Input v-model.number="t.max_per_user" type="number" min="1" /></Field>
+                  <Field label="Name"><Input v-model="t.name" :disabled="!can(t.id ? 'events.ticket_types.edit' : 'events.ticket_types.create')" placeholder="With alcohol" /></Field>
+                  <Field label="Price (£)"><Input v-model="t.price_pounds" :disabled="!can(t.id ? 'events.ticket_types.edit' : 'events.ticket_types.create')" inputmode="decimal" placeholder="0" /></Field>
+                  <Field label="Cap"><Input v-model.number="t.capacity" :disabled="!can(t.id ? 'events.ticket_types.edit' : 'events.ticket_types.create')" type="number" min="1" /></Field>
+                  <Field label="Max/user"><Input v-model.number="t.max_per_user" :disabled="!can(t.id ? 'events.ticket_types.edit' : 'events.ticket_types.create')" type="number" min="1" /></Field>
                 </div>
                 <label style="font:var(--type-2xs); color:var(--text-muted)">
                   <input v-model="t.members_only" type="checkbox" /> Members only
@@ -2298,7 +2296,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                      product is chosen here rather than once for the event. It is
                      also what stops a "with alcohol" purchase confirming a
                      "no alcohol" seat. -->
-                <template v-if="t.id && t.requires_purchase">
+                <template v-if="t.id && t.requires_purchase && can('events.ticket_types.product')">
                   <div style="display:flex; gap:var(--space-2); align-items:flex-end; flex-wrap:wrap">
                     <Field label="Union product" style="flex:1 1 260px">
                       <select v-model="ticketProducts[t.id]" class="ees-select">
@@ -2308,7 +2306,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                         </option>
                       </select>
                     </Field>
-                    <Button size="sm" :disabled="busy" @click="saveTicketProduct(t)">Link</Button>
+                    <Button v-if="can('events.ticket_types.product')" size="sm" :disabled="busy" @click="saveTicketProduct(t)">Link</Button>
                   </div>
                   <p v-if="linkFor(t.id)" style="margin:0; font:var(--type-2xs); color:var(--text-muted)">
                     Linked to {{ productNameFor(t.id) }} — only purchases of that confirm this ticket.
@@ -2327,7 +2325,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                   Link a Union product to this event first (above) — no purchase can
                   confirm this ticket until you do.
                 </p>
-                <Button
+                <Button v-if="can('events.ticket_types.delete')"
                   size="sm"
                   variant="ghost"
                   @click="draft.ticket_types.splice(i, 1)"
@@ -2340,7 +2338,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 No ticket types — this is a drop-in event. The page will say
                 “No booking needed” and nobody has to reserve a place.
               </p>
-              <Button size="sm" variant="ghost" @click="draft.ticket_types.push({ name: '', price_pounds: '', capacity: null, max_per_user: 1, members_only: false, requires_purchase: true, purchase_url: '', sales_open_enabled: false, sales_open_at: '', sales_close_enabled: false, sales_close_at: '' })">
+              <Button v-if="can('events.ticket_types.create')" size="sm" variant="ghost" @click="draft.ticket_types.push({ name: '', price_pounds: '', capacity: null, max_per_user: 1, members_only: false, requires_purchase: true, purchase_url: '', sales_open_enabled: false, sales_open_at: '', sales_close_enabled: false, sales_close_at: '' })">
                 Add ticket type
               </Button>
 
@@ -2465,7 +2463,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 </template>
               </fieldset>
 
-              <label style="font:var(--type-small)"><input v-model="draft.published" type="checkbox" /> Published</label>
+              <label style="font:var(--type-small)"><input v-model="draft.published" type="checkbox" :disabled="!can('events.publish')" /> Published</label>
               <label style="font:var(--type-small)">
                 <input
                   v-model="draft.industry"
@@ -2497,7 +2495,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 page under Sponsors, which takes it off everyone else's list.
               </p>
               <div style="display:flex; gap:var(--space-3)">
-                <Button :disabled="busy" @click="saveEvent">{{ editingId ? 'Save changes' : 'Create event' }}</Button>
+                <Button v-if="editingId ? can('events.edit') : can('events.create')" :disabled="busy" @click="saveEvent">{{ editingId ? 'Save changes' : 'Create event' }}</Button>
                 <Button variant="ghost" @click="resetDraft">Clear</Button>
               </div>
             </div>
@@ -2545,9 +2543,9 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               <Field label="Order number (optional)" style="flex:1 1 200px">
                 <Input v-model="orderNumbers[r.id]" placeholder="e.g. AB99ZZ4" />
               </Field>
-              <Button size="sm" :disabled="busy" @click="confirmBooking(r)">Confirm</Button>
-              <Button size="sm" variant="secondary" :disabled="busy" @click="remind(r)">Send reminder</Button>
-              <Button size="sm" variant="danger" :disabled="busy" @click="cancelBooking(r)">Cancel booking</Button>
+              <Button v-if="can('events.bookings.confirm')" size="sm" :disabled="busy" @click="confirmBooking(r)">Confirm</Button>
+              <Button v-if="can('events.bookings.remind')" size="sm" variant="secondary" :disabled="busy" @click="remind(r)">Send reminder</Button>
+              <Button v-if="can('events.bookings.cancel')" size="sm" variant="danger" :disabled="busy" @click="cancelBooking(r)">Cancel booking</Button>
             </div>
           </div>
         </Card>
@@ -2565,7 +2563,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               @click="openPage(p.slug)"
             >{{ p.label }}</button>
             <TraceRule style="margin:var(--space-4) 0" />
-            <Button size="sm" variant="ghost" @click="reimport">Re-import from eesoc.com</Button>
+            <Button v-if="can('resources.import')" size="sm" variant="ghost" @click="reimport">Re-import from eesoc.com</Button>
           </Card>
 
           <Card v-if="pageDetail" variant="offset">
@@ -2583,14 +2581,14 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 <div style="display:flex; justify-content:space-between; gap:var(--space-3); align-items:center">
                   <span style="font:var(--type-small)"><Badge tone="brand">{{ node.kind }}</Badge> {{ node.title }}</span>
                   <span style="display:flex; gap:4px">
-                    <Button size="sm" variant="ghost" @click="moveEntry(node, -1)">↑</Button>
-                    <Button size="sm" variant="ghost" @click="moveEntry(node, 1)">↓</Button>
-                    <Button size="sm" variant="danger" @click="removeEntry(node)">×</Button>
+                    <Button v-if="can('resources.entries.move')" size="sm" variant="ghost" @click="moveEntry(node, -1)">↑</Button>
+                    <Button v-if="can('resources.entries.move')" size="sm" variant="ghost" @click="moveEntry(node, 1)">↓</Button>
+                    <Button v-if="can('resources.entries.move')" size="sm" variant="danger" @click="removeEntry(node)">×</Button>
                   </span>
                 </div>
                 <div v-for="c in node.children" :key="c.id" style="padding-left:var(--space-5); display:flex; justify-content:space-between; align-items:center">
                   <span style="font:var(--type-2xs); color:var(--text-muted)">{{ c.title }} ({{ c.children.length }})</span>
-                  <Button size="sm" variant="ghost" @click="removeEntry(c)">×</Button>
+                  <Button v-if="can('resources.entries.move')" size="sm" variant="ghost" @click="removeEntry(c)">×</Button>
                 </div>
               </div>
             </div>
@@ -2620,7 +2618,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               <Field label="Body" help="Markdown: links, **bold**, *italics*, - lists.">
                 <textarea v-model="newEntry.body" rows="4" class="ees-textarea" />
               </Field>
-              <Button @click="addEntry">Add entry</Button>
+              <Button v-if="can('resources.entries.create')" @click="addEntry">Add entry</Button>
             </div>
           </Card>
           <Card v-else variant="outline">
@@ -2653,7 +2651,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               </div>
               <div style="display:flex; gap:var(--space-2)">
                 <Button size="sm" variant="ghost" @click="copyUrl(u.url)">Copy URL</Button>
-                <Button size="sm" variant="danger" @click="removeUpload(u)">Delete</Button>
+                <Button v-if="can('files.delete')" size="sm" variant="danger" @click="removeUpload(u)">Delete</Button>
               </div>
             </div>
           </div>
@@ -2668,7 +2666,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             names and ordering are ours and are kept when the roster is re-synced
             — they are matched on login, so the same person keeps their entry.
           </p>
-          <Button :disabled="busy" @click="syncCommittee">
+          <Button v-if="can('committee.sync')" :disabled="busy" @click="syncCommittee">
             {{ busy ? 'Working…' : 'Sync committee now' }}
           </Button>
         </div>
@@ -2744,10 +2742,10 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                     </select>
                   </div>
                   <div style="display:flex; gap:4px">
-                    <Button size="sm" variant="ghost" :disabled="i === 0" @click="moveMember(m, -1)">←</Button>
-                    <Button size="sm" variant="ghost" :disabled="i === group.members.length - 1" @click="moveMember(m, 1)">→</Button>
+                    <Button v-if="can('committee.profiles')" size="sm" variant="ghost" :disabled="i === 0" @click="moveMember(m, -1)">←</Button>
+                    <Button v-if="can('committee.profiles')" size="sm" variant="ghost" :disabled="i === group.members.length - 1" @click="moveMember(m, 1)">→</Button>
                   </div>
-                  <Button size="sm" :disabled="busy" @click="saveMember(m)">Save</Button>
+                  <Button v-if="can('committee.profiles')" size="sm" :disabled="busy" @click="saveMember(m)">Save</Button>
                 </div>
               </div>
             </Card>
@@ -2785,7 +2783,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                   </optgroup>
                 </select>
               </Field>
-              <Button :disabled="!products.length" @click="createLink">Link product</Button>
+              <Button v-if="can('products.link')" :disabled="!products.length" @click="createLink">Link product</Button>
               <p v-if="!products.length" style="margin:0; font:var(--type-2xs); color:var(--danger)">
                 No Union products synced yet — press "Sync from eActivities" on the Overview first.
               </p>
@@ -2801,7 +2799,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 {{ productLabel(l) }}
                 <span style="color:var(--text-faint)">(#{{ l.union_product_id }}<template v-if="l.union_product_line_id">:{{ l.union_product_line_id }}</template>)</span>
               </span>
-              <Button size="sm" variant="ghost" @click="deleteLink(l)">Remove</Button>
+              <Button v-if="can('products.unlink')" size="sm" variant="ghost" @click="deleteLink(l)">Remove</Button>
             </div>
           </Card>
         </div>
@@ -2810,7 +2808,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
       <!-- ============================ LOCKERS ============================= -->
       <template v-if="tab === 'lockers'">
         <div class="admin-cols">
-          <Card v-if="can('locker_allowances')" variant="offset">
+          <Card v-if="can('lockers.allowances.view') || can('lockers.allowances.grant')" variant="offset">
             <h2 style="margin:0 0 var(--space-2); font:var(--type-h4)">Give free lockers</h2>
             <p style="margin:0 0 var(--space-4); font:var(--type-small); color:var(--text-muted)">
               For {{ allowanceYear }}, on top of any they buy on the Union shop.
@@ -2829,7 +2827,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 <Input v-model="allowanceForm.note" placeholder="Committee — Treasurer" />
               </Field>
             </div>
-            <Button
+            <Button v-if="can('lockers.allowances.grant')"
               size="sm"
               style="margin-top:var(--space-4)"
               :disabled="busy || !allowanceForm.who.trim()"
@@ -2837,7 +2835,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             >Give allowance</Button>
           </Card>
 
-          <Card v-if="can('locker_allowances')" variant="outline">
+          <Card v-if="can('lockers.allowances.view') || can('lockers.allowances.grant')" variant="outline">
             <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">Allowances for {{ allowanceYear }}</h2>
             <p v-if="!allowances.length" style="margin:0; font:var(--type-small); color:var(--text-faint)">Nobody has free lockers yet.</p>
             <div
@@ -2857,22 +2855,22 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 </span>
               </div>
               <div style="display:flex; gap:var(--space-2); flex-shrink:0">
-                <Button size="sm" variant="ghost" @click="changeAllowance(a)">Change</Button>
-                <Button size="sm" variant="ghost" @click="removeAllowance(a)">Remove</Button>
+                <Button v-if="can('lockers.allowances.grant')" size="sm" variant="ghost" @click="changeAllowance(a)">Change</Button>
+                <Button v-if="can('lockers.allowances.revoke')" size="sm" variant="ghost" @click="removeAllowance(a)">Remove</Button>
               </div>
             </div>
           </Card>
-          <Card v-if="can('lockers')" variant="outline">
+          <Card v-if="can('lockers.inventory.view')" variant="outline">
             <h2 style="margin:0 0 var(--space-3); font:var(--type-h4)">Locker administration</h2>
             <p style="font:var(--type-small); color:var(--text-muted)">{{ managedLockers.length }} lockers · {{ lockerHolders.length }} current holders</p>
             <div style="max-height:420px; overflow:auto">
               <div v-for="locker in managedLockers" :key="locker.id" style="display:flex; align-items:center; justify-content:space-between; gap:var(--space-2); border-top:1px solid var(--border-hairline); padding:var(--space-2) 0">
                 <span style="font:var(--type-small)">Locker {{ locker.number }} · {{ locker.is_active ? 'Active' : 'Disabled' }}</span>
-                <Button size="sm" variant="ghost" :disabled="busy" @click="toggleLockerActive(locker)">{{ locker.is_active ? 'Disable' : 'Enable' }}</Button>
+                <Button v-if="can('lockers.inventory.edit')" size="sm" variant="ghost" :disabled="busy" @click="toggleLockerActive(locker)">{{ locker.is_active ? 'Disable' : 'Enable' }}</Button>
               </div>
             </div>
           </Card>
-          <Card v-if="can('lockers')" variant="outline">
+          <Card v-if="can('lockers.inventory.view')" variant="outline">
             <h2 style="margin:0 0 var(--space-3); font:var(--type-h4)">Current holders</h2>
             <p v-if="!lockerHolders.length" style="font:var(--type-small); color:var(--text-muted)">No lockers currently assigned.</p>
             <div v-for="holder in lockerHolders" :key="holder.bookingId" style="border-top:1px solid var(--border-hairline); padding:var(--space-2) 0; font:var(--type-small)">
@@ -2884,7 +2882,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
 
       <!-- ============================= PEOPLE ============================= -->
       <!-- ============================ WHATSAPP ============================ -->
-      <template v-if="tab === 'whatsapp' && can('whatsapp')">
+      <template v-if="tab === 'whatsapp' && anyPermission('whatsapp.')">
         <div class="admin-cols">
           <Card variant="outline">
             <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">Society WhatsApp account</h2>
@@ -2895,7 +2893,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             <Field label="Heading"><Input v-model="whatsappHeading" placeholder="Optional heading" /></Field>
             <Field label="Message"><textarea v-model="whatsappBody" rows="7" class="ees-textarea" placeholder="Write the message…" /></Field>
             <WhatsAppGroupPicker v-model="whatsappRecipients" :disabled="busy" />
-            <Button :disabled="busy || !whatsappBody.trim() || !whatsappRecipients.length" @click="sendWhatsAppPost">Post to selected groups</Button>
+            <Button v-if="can('whatsapp.post')" :disabled="busy || !whatsappBody.trim() || !whatsappRecipients.length" @click="sendWhatsAppPost">Post to selected groups</Button>
           </Card>
         </div>
       </template>
@@ -2967,7 +2965,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               <span v-if="q.note" style="font:var(--type-2xs); color:var(--danger)">{{ q.note }}</span>
               <span v-if="q.warning" style="font:var(--type-2xs); color:var(--danger)">{{ q.warning }}</span>
             </div>
-            <Button size="sm" :disabled="busy" @click="openReview(q.id)">Review</Button>
+            <Button v-if="can('email.queue.view')" size="sm" :disabled="busy" @click="openReview(q.id)">Review</Button>
           </div>
         </Card>
 
@@ -3020,20 +3018,20 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               <span style="font:var(--type-label); color:var(--text-muted)">Test list</span>
               <div v-for="addr in testRecipients" :key="addr" class="test-list__row">
                 <span style="font-family:var(--font-mono); font-size:var(--text-xs)">{{ addr }}</span>
-                <Button size="sm" variant="ghost" :disabled="busy" @click="changeTestList(addr)">Remove</Button>
+                <Button v-if="can('email.test_recipients.remove')" size="sm" variant="ghost" :disabled="busy" @click="changeTestList(addr)">Remove</Button>
               </div>
               <span v-if="!testRecipients.length" style="font:var(--type-small); color:var(--text-faint)">Nobody yet.</span>
-              <form class="test-list__add" @submit.prevent="changeTestList('add')">
+              <form v-if="can('email.test_recipients.add')" class="test-list__add" @submit.prevent="changeTestList('add')">
                 <Input v-model="newTestEmail" type="email" placeholder="name@ic.ac.uk" aria-label="Add to test list" />
                 <Button type="submit" size="sm" variant="secondary" :disabled="busy || !newTestEmail.includes('@')">Add</Button>
               </form>
             </div>
 
             <div style="display:flex; gap:var(--space-3); flex-wrap:wrap; align-items:center">
-              <Button variant="secondary" :disabled="busy || !compose.audiences.length" @click="preview">
+              <Button v-if="can('email.preview')" variant="secondary" :disabled="busy || !compose.audiences.length" @click="preview">
                 Preview
               </Button>
-              <Button :disabled="busy || Boolean(sendBlocked)" @click="sendEmail">
+              <Button v-if="can('email.send') || can('whatsapp.post')" :disabled="busy || Boolean(sendBlocked)" @click="sendEmail">
                 {{ busy ? 'Working…' : 'Send' }}
               </Button>
               <span v-if="previewCount !== null" style="font:var(--type-small); color:var(--text-muted)">
@@ -3072,7 +3070,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             <Card variant="outline">
               <div style="display:flex; align-items:baseline; justify-content:space-between; gap:var(--space-3); flex-wrap:wrap">
                 <h2 style="margin:0; font:var(--type-h4)">Sent</h2>
-                <Button size="sm" variant="ghost" :disabled="busy" title="Send any due last-chance reminders now, instead of at the next ten-minute pass" @click="runReminderPass">
+                <Button v-if="can('email.announce_now')" size="sm" variant="ghost" :disabled="busy" title="Send any due last-chance reminders now, instead of at the next ten-minute pass" @click="runReminderPass">
                   Run reminder pass
                 </Button>
               </div>
@@ -3087,7 +3085,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:var(--space-3)">
                   <span style="font:var(--type-small)">{{ c.subject }}</span>
                   <span style="display:flex; gap:var(--space-2); align-items:center; flex-shrink:0">
-                    <Button v-if="c.status === 'awaiting_approval'" size="sm" variant="ghost" :disabled="busy" @click="openReview(c.id)">Review</Button>
+                    <Button v-if="(c.status === 'awaiting_approval') && (can('email.queue.view'))" size="sm" variant="ghost" :disabled="busy" @click="openReview(c.id)">Review</Button>
                     <Badge :tone="campaignTone[c.status] || 'neutral'">{{ c.status.replace('_', ' ') }}</Badge>
                   </span>
                 </div>
@@ -3107,12 +3105,12 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           <Card variant="offset">
             <h2 style="margin:0 0 var(--space-2); font:var(--type-h4)">Committee access</h2>
             <p style="margin:0 0 var(--space-4); font:var(--type-small); color:var(--text-muted)">
-              <template v-if="canManageUsers">
-                Choose a role to preselect permissions, then customise them per person.
+              <template v-if="canManageUsers || can('access.revoke')">
+                A role preselects permissions; authorised managers can grant, customise or revoke access independently.
                 Committee members can still edit their own card independently.
               </template>
               <template v-else>
-                Who has access, and who to ask. Only someone with the Manage access permission can change it.
+                Who has access, and who to ask. Changes require explicit access-management permissions.
               </template>
             </p>
 
@@ -3128,8 +3126,8 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                   <span style="font:var(--type-2xs); color:var(--text-muted)">{{ roleOptions.find((r) => r.id === a.role)?.label || a.role }} · {{ a.capabilities?.length ?? 0 }} permissions</span>
                 </div>
                 <div style="display:flex; gap:var(--space-2); flex-wrap:wrap; align-items:center">
-                  <Button v-if="canManageUsers && !a.standing && a.user_id" size="sm" variant="secondary" @click="editAccess(a)">{{ editingAccessId === a.user_id ? 'Close' : 'Edit permissions' }}</Button>
-                  <Button v-if="canManageUsers && !a.standing && a.user_id" size="sm" variant="ghost" @click="removeAdmin(a)">Remove</Button>
+                  <Button v-if="(canManageUsers && !a.standing && a.user_id) && (can('access.grant'))" size="sm" variant="secondary" @click="editAccess(a)">{{ editingAccessId === a.user_id ? 'Close' : 'Edit permissions' }}</Button>
+                  <Button v-if="!a.standing && a.user_id && can('access.revoke')" size="sm" variant="ghost" @click="removeAdmin(a)">Remove</Button>
                 </div>
               </div>
               <div v-if="editingAccessId === a.user_id && canManageUsers" style="display:grid; gap:var(--space-3); margin-top:var(--space-4)">
@@ -3141,7 +3139,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 <p style="font:var(--type-2xs); color:var(--text-muted); margin:0">Changing the role preselects its default permissions. Untick or tick any permission to customise this person’s access.</p>
                 <PermissionSelector v-model="editingPermissions" :permissions="permissionOptions" />
                 <div style="display:flex; align-items:center; flex-wrap:wrap; gap:var(--space-2)">
-                  <Button size="sm" :disabled="busy" @click="saveAccess(a)">Save access</Button>
+                  <Button v-if="can('access.grant')" size="sm" :disabled="busy" @click="saveAccess(a)">Save access</Button>
                   <Button size="sm" variant="ghost" @click="resetEditPermissions">Reset to role defaults</Button>
                   <span style="font:var(--type-2xs); color:var(--text-faint)">{{ editingPermissions.length }} selected · {{ isPreset(editingAccessRole, editingPermissions) ? 'Role defaults' : 'Custom selection' }}</span>
                 </div>
@@ -3164,7 +3162,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               <div style="display:grid; gap:var(--space-3); margin-top:var(--space-4)">
                 <PermissionSelector v-model="newPermissions" :permissions="permissionOptions" />
                 <div style="display:flex; align-items:center; flex-wrap:wrap; gap:var(--space-2)">
-                  <Button size="sm" :disabled="!newAdminEmail.trim() || busy" @click="addAdmin">Grant access</Button>
+                  <Button v-if="can('access.grant')" size="sm" :disabled="!newAdminEmail.trim() || busy" @click="addAdmin">Grant access</Button>
                   <Button size="sm" variant="ghost" @click="resetNewPermissions">Reset to role defaults</Button>
                   <span style="font:var(--type-2xs); color:var(--text-faint)">{{ newPermissions.length }} permissions selected</span>
                 </div>
@@ -3182,7 +3180,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             <Field label="Email" help="Any account on the site — member, guest or sponsor.">
               <Input v-model="impersonateEmail" placeholder="name@imperial.ac.uk" />
             </Field>
-            <Button
+            <Button v-if="can('access.impersonate')"
               size="sm"
               variant="ghost"
               style="margin-top:var(--space-3)"
@@ -3204,7 +3202,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             <Field label="Email" help="If there is no account yet, one is made — as when granting sponsor access.">
               <Input v-model="passkeyLinkEmail" placeholder="name@company.com" />
             </Field>
-            <Button
+            <Button v-if="can('passkeys.create')"
               size="sm"
               style="margin-top:var(--space-3)"
               :disabled="busy || !passkeyLinkEmail.trim()"
@@ -3228,7 +3226,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                     {{ linkStatus(l) }}<template v-if="l.createdBy"> · made by {{ l.createdBy }}</template>
                   </span>
                 </div>
-                <Button v-if="l.status === 'live'" size="sm" variant="ghost" @click="revokePasskeyLink(l)">Revoke</Button>
+                <Button v-if="(l.status === 'live') && (can('passkeys.revoke'))" size="sm" variant="ghost" @click="revokePasskeyLink(l)">Revoke</Button>
               </div>
             </template>
           </Card>
@@ -3291,7 +3289,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               </span>
               <WhatsAppGroupPicker v-if="can('whatsapp')" v-model="digestWhatsApp" :disabled="busy" />
               <div style="display:flex; gap:var(--space-3); align-items:center; flex-wrap:wrap">
-                <Button size="sm" :disabled="busy || !can('email')" @click="sendRolesDigest">
+                <Button v-if="can('sponsors.digest.send') && can('email.send')" size="sm" :disabled="busy" @click="sendRolesDigest">
                   Email {{ rolesDigest.recipients }} jobs subscriber(s)<template v-if="digestWhatsApp.length"> + WhatsApp</template>
                 </Button>
                 <span style="font:var(--type-2xs); color:var(--text-faint)">
@@ -3354,12 +3352,12 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                   </span>
                 </div>
                 <div style="display:flex; gap:4px; flex-wrap:wrap">
-                  <Button size="sm" variant="ghost" @click="moveSponsor(sp, -1)">↑</Button>
-                  <Button size="sm" variant="ghost" @click="moveSponsor(sp, 1)">↓</Button>
-                  <Button size="sm" variant="ghost" @click="toggleSponsorActive(sp)">{{ sp.active ? 'Unpublish' : 'Publish' }}</Button>
+                  <Button v-if="can('sponsors.reorder')" size="sm" variant="ghost" @click="moveSponsor(sp, -1)">↑</Button>
+                  <Button v-if="can('sponsors.reorder')" size="sm" variant="ghost" @click="moveSponsor(sp, 1)">↓</Button>
+                  <Button v-if="can('sponsors.edit')" size="sm" variant="ghost" @click="toggleSponsorActive(sp)">{{ sp.active ? 'Unpublish' : 'Publish' }}</Button>
                   <Button size="sm" variant="secondary" @click="router.push(`/admin/sponsors/${sp.id}`)">Agreement &amp; activity</Button>
-                  <Button size="sm" variant="ghost" @click="editSponsor(sp)">Edit</Button>
-                  <Button size="sm" variant="danger" @click="removeSponsor(sp)">Delete</Button>
+                  <Button v-if="can('sponsors.edit')" size="sm" variant="ghost" @click="editSponsor(sp)">Edit</Button>
+                  <Button v-if="can('sponsors.delete')" size="sm" variant="danger" @click="removeSponsor(sp)">Delete</Button>
                 </div>
               </div>
 
@@ -3374,14 +3372,14 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                     <div style="display:flex; gap:4px; flex-shrink:0">
                       <!-- For a contact whose mail server eats our sign-in codes. -->
                       <Button
-                        v-if="can('passkey_links')"
+                        v-if="(can('passkey_links')) && (can('passkeys.create'))"
                         size="sm"
                         variant="ghost"
                         :disabled="busy"
                         title="Make a link that lets them sign in with a passkey, no emailed code"
                         @click="makePasskeyLink(u.email)"
                       >Passkey link</Button>
-                      <Button size="sm" variant="ghost" @click="revokeSponsorAccess(sp, u)">Revoke</Button>
+                      <Button v-if="can('sponsors.users.revoke')" size="sm" variant="ghost" @click="revokeSponsorAccess(sp, u)">Revoke</Button>
                     </div>
                   </div>
                   <PasskeyLinkMade v-if="madeLinks[u.email.toLowerCase()]" :link="madeLinks[u.email.toLowerCase()]" />
@@ -3393,7 +3391,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                   <Field label="Add an email" style="flex:1">
                     <Input v-model="sponsorUserEmail[sp.id]" placeholder="name@company.com" />
                   </Field>
-                  <Button size="sm" @click="grantSponsorAccess(sp)">Grant</Button>
+                  <Button v-if="can('sponsors.users.grant')" size="sm" @click="grantSponsorAccess(sp)">Grant</Button>
                 </div>
                 <p style="margin:var(--space-2) 0 0; font:var(--type-2xs); color:var(--text-faint)">
                   They sign in with that address using the usual emailed code, which is
@@ -3442,7 +3440,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 Draft sponsors stay on this page only. Publish once the agreement is signed.
               </p>
               <div style="display:flex; gap:var(--space-3)">
-                <Button :disabled="busy" @click="saveSponsor">{{ editingSponsor ? 'Save' : 'Add sponsor' }}</Button>
+                <Button v-if="editingSponsor ? can('sponsors.edit') : can('sponsors.create')" :disabled="busy" @click="saveSponsor">{{ editingSponsor ? 'Save' : 'Add sponsor' }}</Button>
                 <Button variant="ghost" @click="resetSponsor">Clear</Button>
               </div>
             </div>
@@ -3513,10 +3511,10 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           <template v-else-if="sendBlocked && compose.audiences.length">{{ sendBlocked }}</template>
         </span>
         <Button variant="ghost" @click="closeCompose">Cancel</Button>
-        <Button variant="secondary" :disabled="busy || !compose.audiences.length" @click="preview">
+        <Button v-if="can('email.preview')" variant="secondary" :disabled="busy || !compose.audiences.length" @click="preview">
           Preview
         </Button>
-        <Button :disabled="busy || Boolean(sendBlocked)" :title="sendBlocked || undefined" @click="sendEmail">
+        <Button v-if="can('email.send') || can('whatsapp.post') || can('email.announce_event')" :disabled="busy || Boolean(sendBlocked)" :title="sendBlocked || undefined" @click="sendEmail">
           {{ busy ? 'Sending…' : 'Send' }}
         </Button>
       </template>
@@ -3559,7 +3557,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           <textarea v-model="mailDraft.body" rows="5" class="ees-textarea" :disabled="isScheduled" />
         </Field>
         <div v-if="!isScheduled" style="display:flex; gap:var(--space-3); align-items:center">
-          <Button size="sm" variant="secondary" :disabled="busy || !draftDirty" @click="draftAction(saveDraft)">
+          <Button v-if="can('email.queue.edit')" size="sm" variant="secondary" :disabled="busy || !draftDirty" @click="draftAction(saveDraft)">
             Save and update the preview
           </Button>
           <span v-if="draftDirty" style="font:var(--type-2xs); color:var(--text-muted)">Unsaved changes.</span>
@@ -3618,7 +3616,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             <span class="recipients__source">
               {{ r.list ? 'department list' : (sourceLabels[r.source] || r.source) }}
             </span>
-            <Button size="sm" variant="ghost" :disabled="busy || isScheduled" @click="removeRecipient(r.email)">Remove</Button>
+            <Button v-if="can('email.queue.edit')" size="sm" variant="ghost" :disabled="busy || isScheduled" @click="removeRecipient(r.email)">Remove</Button>
           </div>
           <span v-if="!reviewing.count" style="font:var(--type-small); color:var(--text-faint)">
             Nobody yet — tick an audience above or add an address.
@@ -3633,7 +3631,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           <div v-for="email in mailDraft.excluded" :key="email" class="recipients__row">
             <span style="font-family:var(--font-mono); font-size:var(--text-xs); color:var(--text-muted); text-decoration:line-through">{{ email }}</span>
             <span />
-            <Button size="sm" variant="ghost" :disabled="busy || isScheduled" @click="restoreRecipient(email)">Put back</Button>
+            <Button v-if="can('email.queue.edit')" size="sm" variant="ghost" :disabled="busy || isScheduled" @click="restoreRecipient(email)">Put back</Button>
           </div>
         </div>
 
@@ -3645,24 +3643,24 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
         <!-- Wraps on a phone: three buttons do not fit 390px in one row, and
              the dialog's own footer does not wrap. -->
         <div class="review-actions">
-          <Button variant="ghost" :disabled="busy" @click="dismissDraft">Dismiss</Button>
+          <Button v-if="can('email.queue.dismiss')" variant="ghost" :disabled="busy" @click="dismissDraft">Dismiss</Button>
           <span class="review-actions__gap" />
-          <Button variant="secondary" :disabled="busy" title="Send it, as it stands, to the Test list only" @click="testDraft">
+          <Button v-if="can('email.queue.test')" variant="secondary" :disabled="busy" title="Send it, as it stands, to the Test list only" @click="testDraft">
             Send a test
           </Button>
           <template v-if="isScheduled">
-            <Button variant="secondary" :disabled="busy" @click="unscheduleDraft">Take off schedule</Button>
-            <Button variant="secondary" :disabled="busy || !(reviewing?.count || draftWhatsApp.length)" @click="sendNowDraft">Send now</Button>
+            <Button v-if="can('email.queue.unschedule')" variant="secondary" :disabled="busy" @click="unscheduleDraft">Take off schedule</Button>
+            <Button v-if="can('email.queue.send')" variant="secondary" :disabled="busy || !(reviewing?.count || draftWhatsApp.length)" @click="sendNowDraft">Send now</Button>
           </template>
           <template v-else-if="canSchedule">
-            <Button variant="secondary" :disabled="busy || !(reviewing?.count || draftWhatsApp.length) || !mailDraft.subject.trim()" @click="sendNowDraft">
+            <Button v-if="can('email.queue.send')" variant="secondary" :disabled="busy || !(reviewing?.count || draftWhatsApp.length) || !mailDraft.subject.trim()" @click="sendNowDraft">
               Send now
             </Button>
-            <Button :disabled="busy || !(reviewing?.count || draftWhatsApp.length) || !mailDraft.subject.trim()" @click="scheduleDraft">
+            <Button v-if="can('email.queue.schedule')" :disabled="busy || !(reviewing?.count || draftWhatsApp.length) || !mailDraft.subject.trim()" @click="scheduleDraft">
               {{ busy ? 'Working…' : `Approve for ${reviewing.sendAtText}` }}
             </Button>
           </template>
-          <Button v-else :disabled="busy || !(reviewing?.count || draftWhatsApp.length) || !mailDraft.subject.trim()" @click="sendNowDraft">
+          <Button v-else-if="can('email.queue.send')" :disabled="busy || !(reviewing?.count || draftWhatsApp.length) || !mailDraft.subject.trim()" @click="sendNowDraft">
             {{ busy ? 'Working…' : `Send to ${reviewing?.count ?? 0}` }}
           </Button>
         </div>

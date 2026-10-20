@@ -29,7 +29,7 @@ from clients import database
 from models.auth import AuthSession
 from services import campaigns, emailing, whatsapp
 from utils import email as mailer
-from utils.deps import require_admin, require_feature, require_email, verify_csrf
+from utils.deps import require_action, require_admin, require_feature, require_email, verify_csrf
 
 log = logging.getLogger("api.approvals")
 
@@ -167,7 +167,7 @@ async def _decide(row: dict, status: str, reviewed_by: int | None, **extra) -> d
 # ---------------------------------------------------------------- routes
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_action("email.queue.view"))])
 async def list_queue(_: AuthSession = Depends(require_email)) -> dict:
     """Everything waiting or scheduled, the soonest to go first."""
     rows = await database.get(
@@ -180,7 +180,7 @@ async def list_queue(_: AuthSession = Depends(require_email)) -> dict:
     return {"items": [_summary(r, await _event_or_none(r)) for r in rows]}
 
 
-@router.get("/{campaign_id}")
+@router.get("/{campaign_id}", dependencies=[Depends(require_action("email.queue.view"))])
 async def review(campaign_id: int, _: AuthSession = Depends(require_email)) -> dict:
     row = await database.get(f"/email/campaigns/{campaign_id}")
     if row is None:
@@ -188,7 +188,7 @@ async def review(campaign_id: int, _: AuthSession = Depends(require_email)) -> d
     return await _detail(row)
 
 
-@router.put("/{campaign_id}", dependencies=[Depends(verify_csrf)])
+@router.put("/{campaign_id}", dependencies=[Depends(require_action("email.queue.edit")), Depends(verify_csrf)])
 async def edit(
     campaign_id: int,
     subject: str | None = Body(default=None, embed=True),
@@ -208,7 +208,7 @@ async def edit(
     re-rendered — so what is on screen is always what Send would do.
     """
     await _queued(campaign_id, ("awaiting_approval",))
-    if audiences is not None and emailing.whatsapp_groups_in(audiences) and not _.can("whatsapp"):
+    if audiences is not None and emailing.whatsapp_groups_in(audiences) and not _.can("whatsapp.post"):
         raise HTTPException(403, "You cannot add WhatsApp recipients.")
     if subject is not None and not subject.strip():
         raise HTTPException(400, "Give the email a subject.")
@@ -241,7 +241,7 @@ async def edit(
     return detail
 
 
-@router.post("/{campaign_id}/test", dependencies=[Depends(verify_csrf)])
+@router.post("/{campaign_id}/test", dependencies=[Depends(require_action("email.queue.test")), Depends(verify_csrf)])
 async def send_test(campaign_id: int, _: AuthSession = Depends(require_email)) -> dict:
     """The email, as it stands, to the test list — and to nobody else.
 
@@ -268,7 +268,7 @@ async def send_test(campaign_id: int, _: AuthSession = Depends(require_email)) -
     return {"ok": True, "sent": len(reached), "message": f"Test sent to {', '.join(reached)}."}
 
 
-@router.post("/{campaign_id}/send", dependencies=[Depends(verify_csrf)])
+@router.post("/{campaign_id}/send", dependencies=[Depends(require_action("email.queue.send")), Depends(verify_csrf)])
 async def send_now(campaign_id: int, session: AuthSession = Depends(require_email)) -> dict:
     """Send it now — whether it was waiting, or approved for later.
 
@@ -276,7 +276,7 @@ async def send_now(campaign_id: int, session: AuthSession = Depends(require_emai
     "already dealt with", never a second send.
     """
     row = await _queued(campaign_id)
-    if whatsapp.groups_of(row) and not session.can("whatsapp"):
+    if whatsapp.groups_of(row) and not session.can("whatsapp.post"):
         raise HTTPException(403, "WhatsApp permission is required to send this campaign.")
     try:
         count = await campaigns.start_send(
@@ -296,7 +296,7 @@ async def send_now(campaign_id: int, session: AuthSession = Depends(require_emai
     }
 
 
-@router.post("/{campaign_id}/schedule", dependencies=[Depends(verify_csrf)])
+@router.post("/{campaign_id}/schedule", dependencies=[Depends(require_action("email.queue.schedule")), Depends(verify_csrf)])
 async def schedule(campaign_id: int, session: AuthSession = Depends(require_email)) -> dict:
     """Approve it for its time. It then goes by itself, at that moment.
 
@@ -305,7 +305,7 @@ async def schedule(campaign_id: int, session: AuthSession = Depends(require_emai
     because who is subscribed changes in between.
     """
     row = await _queued(campaign_id, ("awaiting_approval",))
-    if whatsapp.groups_of(row) and not session.can("whatsapp"):
+    if whatsapp.groups_of(row) and not session.can("whatsapp.post"):
         raise HTTPException(403, "WhatsApp permission is required to approve this campaign.")
     at = campaigns.parse_time(row.get("send_at"))
     if at is None:
@@ -336,7 +336,7 @@ async def schedule(campaign_id: int, session: AuthSession = Depends(require_emai
     }
 
 
-@router.post("/{campaign_id}/unschedule", dependencies=[Depends(verify_csrf)])
+@router.post("/{campaign_id}/unschedule", dependencies=[Depends(require_action("email.queue.unschedule")), Depends(verify_csrf)])
 async def unschedule(campaign_id: int, session: AuthSession = Depends(require_email)) -> dict:
     """Take an approval back. It waits in the queue again, to edit or dismiss."""
     row = await _queued(campaign_id, ("scheduled",))
@@ -344,7 +344,7 @@ async def unschedule(campaign_id: int, session: AuthSession = Depends(require_em
     return {"ok": True, "message": "Taken off the schedule. Nothing was sent."}
 
 
-@router.post("/{campaign_id}/dismiss", dependencies=[Depends(verify_csrf)])
+@router.post("/{campaign_id}/dismiss", dependencies=[Depends(require_action("email.queue.dismiss")), Depends(verify_csrf)])
 async def dismiss(campaign_id: int, session: AuthSession = Depends(require_email)) -> dict:
     """Decide it should not go. Kept, as a record of what was not sent and who
     decided; an on-sale email never comes back by itself — its event is marked

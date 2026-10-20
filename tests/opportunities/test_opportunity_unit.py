@@ -150,7 +150,7 @@ def test_review_prepares_draft_without_queueing_or_sending(monkeypatch):
 
     response = asyncio.run(api.moderate_opportunity(
         17, api.ReviewRequest(decision="approved"),
-        SimpleNamespace(user=SimpleNamespace(id=101)),
+        SimpleNamespace(user=SimpleNamespace(id=101), can=lambda p: p == "opportunities.approve"),
     ))
     assert response["emailCampaignId"] is None
     assert response["opportunity"]["announcementStatus"] == "draft"
@@ -225,7 +225,7 @@ def test_opportunity_admin_guard_uses_explicit_permission_not_role_label():
             asyncio.run(require_opportunities_admin(session))
         assert error.value.status_code == 403
     for role in ("industry", "events", "admin", "superuser"):
-        session = SimpleNamespace(role=role, is_admin=True, can=lambda c: c == "opportunities")
+        session = SimpleNamespace(role=role, is_admin=True, can=lambda c: c == "opportunities.view")
         assert asyncio.run(require_opportunities_admin(session)) is session
 
 

@@ -53,6 +53,32 @@ students — booking events, holding sessions, reading resources.
 Approval is per-change. Being told to promote once is not standing permission
 to promote the next thing.
 
+### Releasing just one approved feature
+
+If Raph approves **only a feature**, not everything presently on staging, do
+**not** run the standard whole-staging promotion. Other changes on staging may
+not be approved yet. Use the *frontend-only* mode of `.github/workflows/promote.yml`
+for a standalone UI change:
+
+1. Read the actual frontend source SHA pinned in production's kustomization.
+2. Branch from that SHA on `release/<feature>`, then apply **only** the approved
+   frontend file changes from staging. Verify `git diff --name-only BASE HEAD`
+   contains exactly those files, and push the release branch.
+3. Trigger `promote.yml` with `mode=frontend-only`, the full release-branch
+   `source_sha`, the **exact** `approved_paths` comma-separated list, and a
+   `test_spec` from `tests/e2e`. The workflow validates ancestry and the exact
+   changed-file allowlist, builds the candidate from the production baseline,
+   tests it, and changes **only** the production frontend image pin. It
+   preserves the prior production assets for users with old tabs open.
+4. Verify ArgoCD has synced the new frontend and the public page serves the
+   expected link. Do not update any other production service for that approval.
+
+This intentionally makes production image tags mixed. The normal full promote
+still works for a later, separately approved whole-staging release. For a
+feature involving API/database/schema changes, create an appropriate isolated
+multi-service plan; never blindly cherry-pick just the frontend of such a
+feature. Full instructions and invocation are in `deploy/README.md`.
+
 ### Do not go around it
 
 - **Do not hand-edit `deploy/k8s/overlays/production/kustomization.yaml`.** That

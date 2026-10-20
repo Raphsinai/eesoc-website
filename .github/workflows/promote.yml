@@ -1,6 +1,6 @@
-# Promote staging to production.
+# Promote to production: whole staging release or an isolated frontend-only release.
 #
-# This is the only thing that moves eesoc.com. It copies the image tags that
+# Whole release copies the image tags that
 # eesoc.raphsinai.dev is already running into the production overlay and commits
 # — the identical images, never a rebuild, so what goes live is the artifact
 # that was actually tested rather than a fresh build of the same source that
@@ -15,6 +15,26 @@ name: promote to production
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: Full staging promotion, or an isolated frontend-only release
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - frontend-only
+      source_sha:
+        description: "frontend-only: full commit SHA from a release/* branch based on the current production frontend source"
+        required: false
+        type: string
+      approved_paths:
+        description: "frontend-only: exact comma-separated files changed from production, e.g. frontend/src/views/LockersView.vue"
+        required: false
+        type: string
+      test_spec:
+        description: "frontend-only: a Playwright spec from main, e.g. tests/e2e/lockers/union-shop-link.spec.js"
+        required: false
+        type: string
       sha:
         description: >-
           Commit SHA to promote. Leave blank to promote whatever staging is
@@ -22,8 +42,14 @@ on:
         required: false
         type: string
 
+# All production promotions (full or selective) run one at a time.
+concurrency:
+  group: eesoc-production-promotion
+  cancel-in-progress: false
+
 jobs:
   promote:
+    if: inputs.mode == 'all'
     runs-on: ubuntu-latest
     # Attach required reviewers to this environment in repository settings if
     # production should need a second pair of eyes. With none configured it
@@ -153,3 +179,161 @@ jobs:
             echo
             echo "To roll back: \`git revert\` the commit this just pushed."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Ship just one approved frontend feature without inadvertently shipping every
+  # other change on staging. This is deliberately NOT a copy of staging's
+  # frontend image: staging may contain unapproved UI changes in the same image.
+  # Instead we build from the deployed production frontend's source commit plus
+  # an explicitly reviewed, branch-pinned subset of frontend file changes.
+  selective-frontend:
+    if: inputs.mode == 'frontend-only'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate production baseline and exact release file allowlist
+        id: pick
+        env:
+          SELECTIVE_SOURCE: ${{ inputs.source_sha }}
+          SELECTIVE_PATHS: ${{ inputs.approved_paths }}
+          SELECTIVE_TEST: ${{ inputs.test_spec }}
+        run: |
+          set -euo pipefail
+          git fetch -q origin '+refs/heads/*:refs/remotes/origin/*'
+          python3 scripts/validate-selective-frontend.py \
+            --source "$SELECTIVE_SOURCE" \
+            --approved-paths "$SELECTIVE_PATHS" \
+            --test-spec "$SELECTIVE_TEST"
+
+      - name: Check out exactly the approved source, independent of staging
+        run: git worktree add --detach release-src "${{ steps.pick.outputs.source_sha }}"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build frontend from production plus the approved change
+        run: |
+          set -euo pipefail
+          npm ci --prefix release-src/frontend
+          npm --prefix release-src/frontend run build
+
+      - name: Run the selected browser acceptance tests against this build
+        env:
+          SELECTIVE_TEST: ${{ inputs.test_spec }}
+        run: |
+          set -euo pipefail
+          npm ci
+          npx playwright install --with-deps chromium
+          npm --prefix release-src/frontend run preview -- --host 127.0.0.1 --port 4174 --strictPort > /tmp/eesoc-selective-vite.log 2>&1 &
+          preview_pid=$!
+          trap 'kill "$preview_pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4174/ > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:4174/ > /dev/null
+          npx playwright test --config tests/e2e/selective-release.config.cjs "$SELECTIVE_TEST"
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase the owner for the registry
+        run: echo "OWNER_LC=${OWNER,,}" >> "$GITHUB_ENV"
+        env:
+          OWNER: ${{ github.repository_owner }}
+
+      - name: Build isolated frontend image (inherit production assets, never staging)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./release-src/frontend
+          push: true
+          tags: ghcr.io/${{ env.OWNER_LC }}/eesoc-frontend:${{ steps.pick.outputs.source_sha }}
+          build-args: |
+            VITE_API_BASE=/api
+            PREVIOUS_FRONTEND_IMAGE=ghcr.io/${{ env.OWNER_LC }}/eesoc-frontend:${{ steps.pick.outputs.base_sha }}
+          cache-from: type=gha,scope=selective-frontend
+          cache-to: type=gha,mode=max,scope=selective-frontend
+
+      - name: Install kustomize
+        run: |
+          curl -sfLo kustomize.tar.gz \
+            https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz
+          tar xzf kustomize.tar.gz
+          sudo mv kustomize /usr/local/bin/
+          rm kustomize.tar.gz
+
+      - name: Publish a frontend-only production pin, refusing concurrent changes
+        env:
+          SELECTIVE_SOURCE: ${{ steps.pick.outputs.source_sha }}
+          EXPECTED_FRONTEND: ${{ steps.pick.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          overlay=deploy/k8s/overlays/production/kustomization.yaml
+          for attempt in 1 2 3 4 5; do
+            git fetch -q origin main
+            git reset -q --hard origin/main
+
+            # A second promote between the validation and this push must NOT
+            # turn this into an unreviewed release against a different base.
+            actual=$(python3 - <<'PY_CHECK'
+          import yaml
+          doc = yaml.safe_load(open('deploy/k8s/overlays/production/kustomization.yaml'))
+          print(next(i['newTag'] for i in doc['images'] if i['name'] == 'ghcr.io/OWNER/eesoc-frontend'))
+          PY_CHECK
+            )
+            if [ "$actual" != "$EXPECTED_FRONTEND" ]; then
+              echo "::error::production frontend changed from $EXPECTED_FRONTEND to $actual; rebase and reapprove the release"
+              exit 1
+            fi
+
+            cp "$overlay" /tmp/selective-production-before.yaml
+            (cd deploy/k8s/overlays/production && \
+              kustomize edit set image \
+              "ghcr.io/OWNER/eesoc-frontend=ghcr.io/${OWNER_LC}/eesoc-frontend:${SELECTIVE_SOURCE}")
+
+            # The pin may change *only* the frontend image, never any other
+            # service. This deliberately leaves the production DB/API/Union/
+            # WhatsApp versions unchanged and permits mixed production tags.
+            python3 - <<'PY_COMPARE'
+          import yaml
+          old = yaml.safe_load(open('/tmp/selective-production-before.yaml'))
+          new = yaml.safe_load(open('deploy/k8s/overlays/production/kustomization.yaml'))
+          def pins(doc):
+              return {i['name']: i for i in doc['images']}
+          old_images, new_images = pins(old), pins(new)
+          front = 'ghcr.io/OWNER/eesoc-frontend'
+          if {k: v for k, v in old_images.items() if k != front} != {k: v for k, v in new_images.items() if k != front}:
+              raise SystemExit('::error::non-frontend image pin unexpectedly changed')
+          old['images'] = []
+          new['images'] = []
+          if old != new:
+              raise SystemExit('::error::non-image production configuration unexpectedly changed')
+          PY_COMPARE
+
+            kustomize build deploy/k8s/overlays/production > /dev/null
+            kustomize build deploy/k8s/overlays/staging > /dev/null
+            git add "$overlay"
+            git diff --cached --quiet && { echo '::error::no production change'; exit 1; }
+            git diff --cached --name-only | grep -qx "$overlay"
+            git commit -q -m "promote(frontend): $SELECTIVE_SOURCE only [skip ci]"
+            if git push origin HEAD:main; then
+              echo "Released ONLY the frontend image $SELECTIVE_SOURCE; all other production images unchanged"
+              exit 0
+            fi
+            echo "main changed while pinning (attempt $attempt); retrying from its newest commit"
+            sleep $((attempt * 3))
+          done
+          exit 1

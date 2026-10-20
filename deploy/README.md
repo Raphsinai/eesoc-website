@@ -68,6 +68,50 @@ To require a second pair of eyes before production, add required reviewers to
 the `production` environment in the repository settings. The workflow already
 declares it; with no reviewers configured it simply runs.
 
+### Releasing only one frontend feature (not all of staging)
+
+The ordinary *promote to production* workflow moves **all six** images from
+staging to production. Use it only when **all** staged changes are approved.
+To ship an approved UI feature while other staged features remain unapproved:
+
+1. Read the frontend `newTag` in
+   `deploy/k8s/overlays/production/kustomization.yaml`. It is the exact
+   source commit of the frontend currently serving production, including a
+   previous selective frontend release.
+2. Create a branch `release/<short-feature-name>` **from that production SHA**.
+   Copy only the approved frontend files from the reviewed staging feature and
+   commit. Run `git diff --name-only <production-SHA> HEAD` to verify the full
+   changed-file list. Push the release branch so the source is retained.
+3. Run **Actions → promote to production** with *mode = frontend-only*, the
+   release branch's **full** `source_sha`, `approved_paths` as comma-separated
+   exact paths, and `test_spec` as a Playwright browser test under `tests/e2e/`.
+   Or from the CLI:
+
+   ```bash
+   gh workflow run promote.yml --ref main \
+     -f mode=frontend-only \
+     -f source_sha=<full-40-character-SHA-from-release-branch> \
+     -f approved_paths=frontend/src/views/LockersView.vue \
+     -f test_spec=tests/e2e/lockers/union-shop-link.spec.js
+   ```
+
+The workflow refuses a candidate not descended from the **deployed frontend**
+source, an unpushed release commit, mismatches between approved and actual
+changed files, or a concurrent change to the production frontend pin. It builds
+and tests the isolated source, publishes a frontend-only image, and records its
+source SHA in **only** the frontend production image pin. Other production image
+tags stay untouched. In particular, it never uses the staging frontend image
+or staging's floating `:latest` as the base, because those could include
+unapproved UI changes. It inherits the currently deployed production image's
+hashed assets so tabs from earlier builds continue loading.
+
+**Mixed production image tags are intentional after a selective promotion.**
+To undo it, revert its `promote(frontend): ...` Git commit. Standard whole-image
+promotion remains available but requires fresh explicit approval because it
+includes everything then on staging. The frontend-only workflow is not suitable
+when the feature needs an API change or database migration; build and review an
+isolated service-group release for those cases rather than bypassing this guard.
+
 ### Why one branch and not a `staging` branch
 
 Promotion is a copy of an image tag, not a merge. A `staging` branch would make

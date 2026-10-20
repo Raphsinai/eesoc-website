@@ -36,7 +36,7 @@ images:
   newTag: 97a649442c57276d5e42b9d481ce414a74096387
 - name: ghcr.io/OWNER/eesoc-frontend
   newName: ghcr.io/raphsinai/eesoc-frontend
-  newTag: 97a649442c57276d5e42b9d481ce414a74096387
+  newTag: 9989a100c98391ced2fe0f9066051da651be18ff
 - name: ghcr.io/OWNER/eesoc-garage-init
   newName: ghcr.io/raphsinai/eesoc-garage-init
   newTag: 97a649442c57276d5e42b9d481ce414a74096387

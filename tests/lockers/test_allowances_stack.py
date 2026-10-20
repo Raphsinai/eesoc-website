@@ -18,7 +18,6 @@ import pytest
 # the address can only be resolved through the members feed.
 MEMBER_EMAIL = "member1@ic.ac.uk"
 MEMBER_SHORTCODE = "ab1234"
-DENIED = "You cannot grant free locker allowances."
 
 
 def _mine(client, shortcode: str) -> dict | None:
@@ -44,13 +43,13 @@ def test_only_a_superuser_holds_the_capability(superuser_client, admin_client):
 
 
 def test_an_admin_is_refused(admin_client):
-    for response in (
-        admin_client.get("/admin/locker-grants"),
-        admin_client.put(f"/admin/locker-grants/{MEMBER_SHORTCODE}", json={"free_count": 1}),
-        admin_client.delete(f"/admin/locker-grants/{MEMBER_SHORTCODE}"),
+    for response, action in (
+        (admin_client.get("/admin/locker-grants"), "lockers.allowances.view"),
+        (admin_client.put(f"/admin/locker-grants/{MEMBER_SHORTCODE}", json={"free_count": 1}), "lockers.allowances.grant"),
+        (admin_client.delete(f"/admin/locker-grants/{MEMBER_SHORTCODE}"), "lockers.allowances.revoke"),
     ):
         assert response.status_code == 403, response.text
-        assert response.json()["detail"] == DENIED
+        assert action in response.json()["detail"]
 
 
 def test_an_address_is_resolved_to_the_shortcode(superuser_client, member_client, cleanup):

@@ -76,6 +76,12 @@ def test_every_admin_route_has_named_action_guard_or_documented_self_service_exc
     assert not unprotected, '\n'.join(unprotected)
 
 
+def test_booking_view_can_open_calendar_without_event_edit_permission():
+    decorators = list(_route_decorators('admin.py'))
+    event_listing = next(code for name, _, code in decorators if name == 'list_all_events')
+    assert 'require_any_action("events.view", "events.bookings.view")' in event_listing
+
+
 def test_action_catalogue_has_unique_keys_and_no_wildcards_or_group_grants():
     catalogue = roles.describe_permissions()
     assert len(catalogue) >= 125
@@ -130,6 +136,8 @@ def test_event_ticket_form_does_not_allow_create_edit_delete_from_event_edit_alo
         'requires_purchase': True,
     }]}
     only_edit = make_session('events', ['events.edit', 'events.scope.all'])
+    # A partial non-ticket update must never require tickets edit privileges.
+    admin._assert_ticket_type_changes(only_edit, prev, {'title': 'Updated schedule'})
     admin._assert_ticket_type_changes(only_edit, prev, {'ticket_types': [prev['ticket_types'][0]]})
     for payload, needed in (
         ({'ticket_types': [prev['ticket_types'][0], {'name': 'VIP', 'price_pence': 900}]}, 'events.ticket_types.create'),

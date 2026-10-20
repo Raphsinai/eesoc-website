@@ -265,7 +265,7 @@ async def reconcile() -> dict:
 # -------------------------------------------------------------------- events
 
 
-@router.get("/events", dependencies=[Depends(require_action("events.view"))])
+@router.get("/events", dependencies=[Depends(require_any_action("events.view", "events.bookings.view"))])
 async def list_all_events(
     session: AuthSession = Depends(require_event_viewer),
 ) -> list[dict]:
@@ -280,7 +280,7 @@ async def list_all_events(
     # Read-only published events can appear for planning; private drafts must
     # stay inside the caller's explicitly selected event scope.
     events = [e for e in events if e.get("published") or
-              (session.can("events.view") and (
+              ((session.can("events.view") or session.can("events.bookings.view")) and (
                   session.can("events.scope.all") or
                   (session.can("events.scope.industry") and e.get("industry"))))]
     # Which sponsors each event is linked to, for the badge in the list.
@@ -329,7 +329,10 @@ def _assert_ticket_type_changes(session: AuthSession, previous: dict, body: dict
     date-format differences for edits to actual ticket values.
     """
     if "ticket_types" not in body:
-        raise HTTPException(400, "Event edits must include existing ticket types")
+        # Partial event updates may modify only dates, publication or other
+        # event fields. Omission never changes ticket types and must not
+        # require an unrelated ticket permission.
+        return
     previous_by_id = {t["id"]: t for t in previous.get("ticket_types", [])}
     submitted_ids = set()
     fields = ("name", "description", "price_pence", "capacity", "requires_purchase",

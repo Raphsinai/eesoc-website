@@ -207,7 +207,7 @@ function maybe(allow, request) {
 
 async function load() {
   error.value = ''
-  const eventish = can('events.view')
+  const eventish = can('events.view') || can('events.bookings.view')
   try {
     const [d, ev, pr, ln, pg, ad, sp, cm, mine] = await Promise.all([
       maybe(session.isAdmin, () => api.get('/admin/dashboard')),

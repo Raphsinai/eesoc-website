@@ -8,7 +8,7 @@ client, and the api service is what enforces authorisation.
 from datetime import datetime, timedelta, timezone
 
 from asyncpg.exceptions import CheckViolationError, UniqueViolationError
-from fastapi import APIRouter
+from fastapi import Body, APIRouter
 from fastapi.exceptions import HTTPException
 
 from models.auth import (
@@ -255,9 +255,11 @@ async def get_user_session(token_hash: str) -> AuthSession:
                 user_row["member_id"],
             )
 
-        role = await conn.fetchval(
-            "SELECT role FROM public.admins WHERE user_id = $1;", row["user_id"]
+        access = await conn.fetchrow(
+            "SELECT role, permissions FROM public.admins WHERE user_id = $1;", row["user_id"]
         )
+        role = access["role"] if access else None
+        permissions = access["permissions"] if access else None
 
         # Who opened this session, when it is an impersonation. Returned in full
         # so the api can name them in the banner without a second round trip.
@@ -279,6 +281,7 @@ async def get_user_session(token_hash: str) -> AuthSession:
         session=Session(**dict(row)),
         user=User(**dict(user_row)),
         role=role,
+        permissions=permissions,
         is_admin=role is not None,
         member=Member(**dict(member_row)) if member_row else None,
         sponsor_ids=sponsor_ids,
@@ -408,7 +411,7 @@ async def list_admins() -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT a.user_id, a.role, a.granted_at, a.note,
+            SELECT a.user_id, a.role, a.permissions, a.granted_at, a.note,
                    u.email, u.first_name, u.last_name
               FROM public.admins a
               JOIN public.users u ON u.id = a.user_id
@@ -422,6 +425,7 @@ async def list_admins() -> list[dict]:
 async def add_admin(
     user_id: int,
     role: str = "admin",
+    permissions: list[str] | None = Body(default=None, embed=True),
     granted_by: int | None = None,
     note: str | None = None,
 ) -> None:
@@ -436,16 +440,18 @@ async def add_admin(
         try:
             await conn.execute(
                 """
-                INSERT INTO public.admins (user_id, role, granted_by, note)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO public.admins (user_id, role, permissions, granted_by, note)
+                VALUES ($1, $2, $3::text[], $4, $5)
                 ON CONFLICT (user_id) DO UPDATE SET
-                    role       = EXCLUDED.role,
-                    granted_by = EXCLUDED.granted_by,
-                    granted_at = NOW(),
-                    note       = COALESCE(EXCLUDED.note, public.admins.note);
+                    role        = EXCLUDED.role,
+                    permissions = EXCLUDED.permissions,
+                    granted_by  = EXCLUDED.granted_by,
+                    granted_at  = NOW(),
+                    note        = COALESCE(EXCLUDED.note, public.admins.note);
                 """,
                 user_id,
                 role,
+                permissions,
                 granted_by,
                 note,
             )

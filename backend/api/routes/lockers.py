@@ -143,7 +143,7 @@ async def release(
     bookings = await database.get(
         "/lockers/bookings", {"user_id": session.user.id}
     ) or []
-    if not any(b["id"] == booking_id for b in bookings) and not session.is_admin:
+    if not any(b["id"] == booking_id for b in bookings) and not session.can("lockers"):
         raise HTTPException(404, "No such booking")
     await database.post(f"/lockers/bookings/{booking_id}/release")
     return {"ok": True}

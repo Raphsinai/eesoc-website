@@ -16,6 +16,7 @@ import StatBlock from '@/components/ds/StatBlock.vue'
 import Dialog from '@/components/ds/Dialog.vue'
 import TraceRule from '@/components/ds/TraceRule.vue'
 import PasskeyLinkMade from '@/components/PasskeyLinkMade.vue'
+import PermissionSelector from '@/components/PermissionSelector.vue'
 import OpportunitiesAdminPanel from '@/components/OpportunitiesAdminPanel.vue'
 import WhatsAppGroupPicker from '@/components/WhatsAppGroupPicker.vue'
 import WhatsAppLink from '@/components/WhatsAppLink.vue'
@@ -31,15 +32,16 @@ const router = useRouter()
 const TABS = [
   ['overview', 'Overview', 'any'],
   ['card', 'My card', 'card'],
-  ['events', 'Events', 'eventish'],
-  ['overdue', 'Unpaid bookings', 'eventish'],
-  ['resources', 'Resources', 'site'],
-  ['opportunities', 'Opportunities', 'oppadmin'],
-  ['files', 'Files', 'site'],
-  ['committee', 'Committee', 'site'],
-  ['links', 'Union products', 'site'],
-  ['lockers', 'Lockers', 'locker_allowances'],
-  ['email', 'Email', 'site'],
+  ['events', 'Events', 'eventview'],
+  ['overdue', 'Unpaid bookings', 'bookingish'],
+  ['resources', 'Resources', 'resources'],
+  ['opportunities', 'Opportunities', 'opportunities'],
+  ['files', 'Files', 'files'],
+  ['committee', 'Committee', 'committee'],
+  ['links', 'Union products', 'product_links'],
+  ['lockers', 'Lockers', 'lockerish'],
+  ['email', 'Email', 'email'],
+  ['whatsapp', 'WhatsApp', 'whatsapp'],
   ['people', 'People', 'any'],
   ['sponsors', 'Sponsors', 'sponsors'],
 ]
@@ -47,10 +49,11 @@ const TABS = [
 function allowed(need) {
   if (need === 'any') return session.isAdmin
   if (need === 'card') return Boolean(session.committeeLogin)
-  if (need === 'oppadmin') return ['admin', 'superuser'].includes(session.role)
   // Events and the bookings that go with them: the events officers see all of
   // it, the industry officers see it for their own events.
-  if (need === 'eventish') return can('events') || can('industry')
+  if (need === 'eventview') return can('events') || can('industry') || can('bookings') || can('industry_bookings')
+  if (need === 'bookingish') return can('bookings') || can('industry_bookings')
+  if (need === 'lockerish') return can('lockers') || can('locker_allowances')
   return can(need)
 }
 
@@ -83,6 +86,38 @@ const overdue = ref(null)
 const orderNumbers = reactive({})
 const admins = ref([])
 const roleOptions = ref([])
+const newRole = ref('admin')
+const permissionOptions = ref([])
+const newPermissions = ref([])
+const editingAccessId = ref(null)
+const editingAccessRole = ref('admin')
+const editingPermissions = ref([])
+let accessFormInitialized = false
+
+function preset(role) {
+  return [...(roleOptions.value.find((r) => r.id === role)?.capabilities ?? [])]
+}
+function isPreset(role, permissions) {
+  const selected = new Set(permissions)
+  const defaults = preset(role)
+  return selected.size === defaults.length && defaults.every((p) => selected.has(p))
+}
+function permissionsPayload(role, selection) {
+  return isPreset(role, selection) ? null : [...selection].sort()
+}
+function editAccess(a) {
+  if (editingAccessId.value === a.user_id) {
+    editingAccessId.value = null
+    return
+  }
+  editingAccessId.value = a.user_id
+  editingAccessRole.value = a.role
+  editingPermissions.value = [...a.capabilities]
+}
+function resetEditPermissions() { editingPermissions.value = preset(editingAccessRole.value) }
+function resetNewPermissions() { newPermissions.value = preset(newRole.value) }
+watch(newRole, resetNewPermissions)
+
 const canManageUsers = ref(false)
 const sponsors = ref([])
 const sponsorTotals = ref(null)
@@ -93,7 +128,6 @@ const packageEdits = reactive({})
 const committee = ref([])
 // This person's own committee entry, for the "My card" tab.
 const myCard = ref(null)
-const newRole = ref('admin')
 const impersonateEmail = ref('')
 
 // ---------------------------------------------------------- passkey links ---
@@ -106,14 +140,37 @@ const passkeyLinkEmail = ref('')
 const madeLinks = reactive({})
 
 // ------------------------------------------------------ locker allowances ---
-// Free lockers on top of any bought, per academic year. Superuser only — see
-// the `locker_allowances` capability in api/utils/roles.py for why.
+// Free lockers on top of any bought, per academic year. Guarded by the
+// independent `locker_allowances` permission.
 const allowances = ref([])
+const managedLockers = ref([])
+const lockerHolders = ref([])
 const allowanceYear = ref('')
 const allowanceMax = ref(10)
 const allowanceForm = reactive({ who: '', free: 1, note: '' })
 
 // ------------------------------------------------------------------ email ---
+const whatsappHeading = ref('')
+const whatsappBody = ref('')
+const whatsappRecipients = ref([])
+async function sendWhatsAppPost() {
+  if (!whatsappBody.value.trim() || !whatsappRecipients.value.length) return
+  if (!confirm(`Post to ${whatsappRecipients.value.length} WhatsApp group(s)?`)) return
+  error.value = ''
+  busy.value = true
+  try {
+    const result = await api.post('/admin/email/send', {
+      heading: whatsappHeading.value, body: whatsappBody.value,
+      audiences: whatsappRecipients.value.map((id) => `whatsapp:${id}`),
+    })
+    flash(result.message || 'WhatsApp post queued.')
+    whatsappHeading.value = ''
+    whatsappBody.value = ''
+    whatsappRecipients.value = []
+  } catch (e) { error.value = e.message }
+  finally { busy.value = false }
+}
+
 const audiences = ref([])
 const mailStatus = ref(null)
 const campaigns = ref([])
@@ -142,23 +199,24 @@ function flash(message) {
  *  therefore gated on the same capability that gates its tab, and `null` for
  *  anything they cannot have. */
 function maybe(allow, request) {
-  return allow ? request : Promise.resolve(null)
+  // Lazy: never start a request for a feature this account cannot access.
+  return allow ? request() : Promise.resolve(null)
 }
 
 async function load() {
   error.value = ''
-  const eventish = can('events') || can('industry')
+  const eventish = can('events') || can('industry') || can('bookings') || can('industry_bookings')
   try {
     const [d, ev, pr, ln, pg, ad, sp, cm, mine] = await Promise.all([
-      maybe(session.isAdmin, api.get('/admin/dashboard')),
-      maybe(eventish, api.get('/admin/events')),
-      maybe(session.isAdmin, api.get('/admin/union/products')),
-      maybe(session.isAdmin, api.get('/admin/product-links')),
-      maybe(can('site'), api.get('/resources')),
-      maybe(session.isAdmin, api.get('/admin/admins')),
-      maybe(can('sponsors'), api.get('/admin/sponsors')),
-      maybe(can('site'), api.get('/admin/committee')),
-      maybe(Boolean(session.committeeLogin), api.get('/committee/me')),
+      maybe(session.isAdmin, () => api.get('/admin/dashboard')),
+      maybe(eventish, () => api.get('/admin/events')),
+      maybe(can('events') || can('industry') || can('product_links'), () => api.get('/admin/union/products')),
+      maybe(can('events') || can('industry') || can('product_links'), () => api.get('/admin/product-links')),
+      maybe(can('resources'), () => api.get('/resources')),
+      maybe(session.isAdmin, () => api.get('/admin/admins')),
+      maybe(can('sponsors'), () => api.get('/admin/sponsors')),
+      maybe(can('committee'), () => api.get('/admin/committee')),
+      maybe(Boolean(session.committeeLogin), () => api.get('/committee/me')),
     ])
     dash.value = d
     events.value = ev ?? []
@@ -167,6 +225,11 @@ async function load() {
     pages.value = pg?.pages ?? []
     admins.value = ad?.admins ?? []
     roleOptions.value = ad?.roles ?? []
+    permissionOptions.value = ad?.permissions ?? []
+    if (!accessFormInitialized && roleOptions.value.length) {
+      resetNewPermissions()
+      accessFormInitialized = true
+    }
     canManageUsers.value = Boolean(ad?.canManage)
     sponsors.value = sp?.sponsors ?? sp ?? []
     sponsorTotals.value = sp?.totals ?? null
@@ -184,6 +247,7 @@ onMounted(async () => {
   loadSponsorInbox()
   loadPasskeyLinks()
   loadAllowances()
+  loadManagedLockers()
   // Arriving from an event's page with "Email everyone who hasn't bought".
   const id = Number(route.query.announce)
   if (id) {
@@ -194,11 +258,11 @@ onMounted(async () => {
   // Landing straight on the Email tab (a bookmark, or the link in the
   // "waiting for approval" notice). The tab watcher only loads it on a
   // *change* of tab, so without this the queue would read empty.
-  if (can('site') && tab.value === 'email') {
+  if (can('email') && tab.value === 'email') {
     await loadEmail().catch((e) => (error.value = e.message))
   }
   const review = Number(route.query.review)
-  if (review && can('site')) {
+  if (review && can('email')) {
     tab.value = 'email'
     router.replace({ query: { tab: 'email' } })
     openReview(review)
@@ -689,6 +753,8 @@ async function changeTestList(action) {
 const audienceGroups = computed(() => {
   const out = new Map()
   for (const a of audiences.value) {
+    if (a.whatsapp && !can('whatsapp')) continue
+    if (!a.whatsapp && !can('email')) continue
     if (!out.has(a.group)) out.set(a.group, [])
     out.get(a.group).push(a)
   }
@@ -1482,8 +1548,10 @@ async function addAdmin() {
     const res = await api.post('/admin/admins', {
       email: newAdminEmail.value.trim(),
       role: newRole.value,
+      permissions: permissionsPayload(newRole.value, newPermissions.value),
     })
     newAdminEmail.value = ''
+    resetNewPermissions()
     // An account that has never signed in may be a typo, so say whose it is.
     flash(
       res.neverSignedIn
@@ -1496,16 +1564,23 @@ async function addAdmin() {
   }
 }
 
-/** Changing a role is the same call as granting one — the server upserts. */
-async function setRole(a, role) {
-  if (role === a.role) return
+/** Save role and its chosen individual permissions as one atomic update. */
+async function saveAccess(a) {
+  busy.value = true
+  error.value = ''
   try {
-    await api.post('/admin/admins', { email: a.email, role })
-    flash(`${a.email} is now ${role}.`)
+    await api.post('/admin/admins', {
+      email: a.email,
+      role: editingAccessRole.value,
+      permissions: permissionsPayload(editingAccessRole.value, editingPermissions.value),
+    })
+    editingAccessId.value = null
+    flash(`Access updated for ${a.email}.`)
     await load()
   } catch (e) {
     error.value = e.message
-    await load()
+  } finally {
+    busy.value = false
   }
 }
 
@@ -1566,6 +1641,28 @@ async function revokePasskeyLink(l) {
   } catch (e) {
     error.value = e.message
   }
+}
+
+async function loadManagedLockers() {
+  if (!can('lockers')) return
+  try {
+    const [all, holders] = await Promise.all([
+      api.get('/admin/lockers'), api.get('/admin/locker-holders'),
+    ])
+    managedLockers.value = all ?? []
+    lockerHolders.value = holders?.holders ?? []
+  } catch (e) { error.value = e.message }
+}
+
+async function toggleLockerActive(locker) {
+  if (!confirm(`${locker.is_active ? 'Disable' : 'Enable'} locker ${locker.number}?`)) return
+  busy.value = true
+  try {
+    await api.patch(`/admin/lockers/${locker.id}`, { is_active: !locker.is_active })
+    await loadManagedLockers()
+    flash('Locker updated.')
+  } catch (e) { error.value = e.message }
+  finally { busy.value = false }
 }
 
 async function loadAllowances() {
@@ -1902,7 +1999,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
       </template>
 
       <template v-if="tab === 'overview' && dash">
-        <Card v-if="['admin', 'superuser'].includes(session.role) && dash.opportunitiesAwaitingApproval" variant="raised" class="pending-card" style="margin-bottom:var(--space-6)">
+        <Card v-if="can('opportunities') && dash.opportunitiesAwaitingApproval" variant="raised" class="pending-card" style="margin-bottom:var(--space-6)">
           <div style="display:grid; gap:var(--space-4)">
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:var(--space-4)">
               <h2 style="margin:0; font:var(--type-h4)">Opportunities awaiting approval <Badge tone="danger">{{ dash.opportunitiesAwaitingApproval }}</Badge></h2>
@@ -1947,10 +2044,10 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             <div style="display:flex; align-items:center; gap:var(--space-3); flex-wrap:wrap">
               <Badge :tone="warnTone[w.level]">{{ w.level }}</Badge>
               <span style="font:var(--type-small)">{{ w.message }}</span>
-              <Button v-if="w.action === 'sync'" size="sm" variant="secondary" @click="sync">Sync now</Button>
+              <Button v-if="w.action === 'sync' && can('sync')" size="sm" variant="secondary" @click="sync">Sync now</Button>
               <Button v-if="w.action === 'links'" size="sm" variant="secondary" @click="tab = 'links'">Link products</Button>
               <Button v-if="w.action === 'overdue'" size="sm" variant="secondary" @click="tab = 'overdue'">Review them</Button>
-              <Button v-if="w.action === 'email' && can('site')" size="sm" variant="secondary" @click="tab = 'email'">Review them</Button>
+              <Button v-if="w.action === 'email' && can('email')" size="sm" variant="secondary" @click="tab = 'email'">Review them</Button>
             </div>
           </Card>
         </div>
@@ -1968,8 +2065,8 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
         </div>
 
         <div style="display:flex; gap:var(--space-3); margin:var(--space-8) 0; flex-wrap:wrap">
-          <Button :disabled="busy" @click="sync">{{ busy ? 'Working…' : 'Sync from eActivities' }}</Button>
-          <Button variant="secondary" :disabled="busy" @click="reconcile">Match bookings now</Button>
+          <Button v-if="can('sync')" :disabled="busy" @click="sync">{{ busy ? 'Working…' : 'Sync from eActivities' }}</Button>
+          <Button v-if="can('sync')" variant="secondary" :disabled="busy" @click="reconcile">Match bookings now</Button>
         </div>
 
         <div class="admin-cols admin-cols--split">
@@ -2040,21 +2137,19 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                     {{ (e.ticket_types || []).map((t) => t.name).join(', ') || 'no ticket types' }}
                   </p>
                 </div>
-                <div v-if="e.can_edit === false" style="font:var(--type-2xs); color:var(--text-faint); text-align:right; max-width:28ch">
-                  Not an industry event — the events officers look after this one.
-                </div>
-                <div v-else style="display:flex; gap:var(--space-2)">
-                  <Button size="sm" variant="ghost" @click="togglePublished(e)">{{ e.published ? 'Unpublish' : 'Publish' }}</Button>
-                  <Button size="sm" variant="secondary" @click="router.push(`/admin/events/${e.id}`)">Details</Button>
-                  <Button size="sm" variant="ghost" @click="editEvent(e)">Edit</Button>
-                  <Button v-if="can('site')" size="sm" variant="secondary" title="Email people about it, post it on WhatsApp, or both" @click="announceEvent(e)">Announce</Button>
-                  <Button size="sm" variant="danger" @click="removeEvent(e)">Delete</Button>
+                <div style="display:flex; gap:var(--space-2); flex-wrap:wrap; align-items:center">
+                  <Button v-if="e.can_edit" size="sm" variant="ghost" @click="togglePublished(e)">{{ e.published ? 'Unpublish' : 'Publish' }}</Button>
+                  <Button v-if="e.can_book" size="sm" variant="secondary" @click="router.push(`/admin/events/${e.id}`)">Bookings</Button>
+                  <Button v-if="e.can_edit" size="sm" variant="ghost" @click="editEvent(e)">Edit</Button>
+                  <Button v-if="can('email')" size="sm" variant="secondary" title="Email people about it" @click="announceEvent(e)">Announce</Button>
+                  <Button v-if="e.can_edit" size="sm" variant="danger" @click="removeEvent(e)">Delete</Button>
+                  <span v-if="!e.can_edit && !e.can_book" style="font:var(--type-2xs); color:var(--text-faint)">Read-only event</span>
                 </div>
               </div>
             </Card>
           </div>
 
-          <Card variant="offset">
+          <Card v-if="can('events') || can('industry')" variant="offset">
             <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">
               {{ editingId ? 'Edit event' : 'New event' }}
             </h2>
@@ -2070,6 +2165,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               </Field>
               <div style="display:flex; gap:var(--space-3); align-items:center; flex-wrap:wrap">
                 <input
+                  v-if="can('files')"
                   ref="eventImageInput"
                   type="file"
                   accept="image/jpeg,image/png,image/webp,image/gif"
@@ -2714,7 +2810,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
       <!-- ============================ LOCKERS ============================= -->
       <template v-if="tab === 'lockers'">
         <div class="admin-cols">
-          <Card variant="offset">
+          <Card v-if="can('locker_allowances')" variant="offset">
             <h2 style="margin:0 0 var(--space-2); font:var(--type-h4)">Give free lockers</h2>
             <p style="margin:0 0 var(--space-4); font:var(--type-small); color:var(--text-muted)">
               For {{ allowanceYear }}, on top of any they buy on the Union shop.
@@ -2741,7 +2837,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             >Give allowance</Button>
           </Card>
 
-          <Card variant="outline">
+          <Card v-if="can('locker_allowances')" variant="outline">
             <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">Allowances for {{ allowanceYear }}</h2>
             <p v-if="!allowances.length" style="margin:0; font:var(--type-small); color:var(--text-faint)">Nobody has free lockers yet.</p>
             <div
@@ -2766,10 +2862,44 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               </div>
             </div>
           </Card>
+          <Card v-if="can('lockers')" variant="outline">
+            <h2 style="margin:0 0 var(--space-3); font:var(--type-h4)">Locker administration</h2>
+            <p style="font:var(--type-small); color:var(--text-muted)">{{ managedLockers.length }} lockers · {{ lockerHolders.length }} current holders</p>
+            <div style="max-height:420px; overflow:auto">
+              <div v-for="locker in managedLockers" :key="locker.id" style="display:flex; align-items:center; justify-content:space-between; gap:var(--space-2); border-top:1px solid var(--border-hairline); padding:var(--space-2) 0">
+                <span style="font:var(--type-small)">Locker {{ locker.number }} · {{ locker.is_active ? 'Active' : 'Disabled' }}</span>
+                <Button size="sm" variant="ghost" :disabled="busy" @click="toggleLockerActive(locker)">{{ locker.is_active ? 'Disable' : 'Enable' }}</Button>
+              </div>
+            </div>
+          </Card>
+          <Card v-if="can('lockers')" variant="outline">
+            <h2 style="margin:0 0 var(--space-3); font:var(--type-h4)">Current holders</h2>
+            <p v-if="!lockerHolders.length" style="font:var(--type-small); color:var(--text-muted)">No lockers currently assigned.</p>
+            <div v-for="holder in lockerHolders" :key="holder.bookingId" style="border-top:1px solid var(--border-hairline); padding:var(--space-2) 0; font:var(--type-small)">
+              {{ holder.locker }} · {{ holder.name || holder.email }}
+            </div>
+          </Card>
         </div>
       </template>
 
       <!-- ============================= PEOPLE ============================= -->
+      <!-- ============================ WHATSAPP ============================ -->
+      <template v-if="tab === 'whatsapp' && can('whatsapp')">
+        <div class="admin-cols">
+          <Card variant="outline">
+            <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">Society WhatsApp account</h2>
+            <WhatsAppLink />
+          </Card>
+          <Card variant="offset">
+            <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">Post to WhatsApp</h2>
+            <Field label="Heading"><Input v-model="whatsappHeading" placeholder="Optional heading" /></Field>
+            <Field label="Message"><textarea v-model="whatsappBody" rows="7" class="ees-textarea" placeholder="Write the message…" /></Field>
+            <WhatsAppGroupPicker v-model="whatsappRecipients" :disabled="busy" />
+            <Button :disabled="busy || !whatsappBody.trim() || !whatsappRecipients.length" @click="sendWhatsAppPost">Post to selected groups</Button>
+          </Card>
+        </div>
+      </template>
+
       <!-- ============================== EMAIL ============================= -->
       <template v-if="tab === 'email'">
         <!-- Mail is the one thing on this page that fails silently: a mailbox
@@ -2928,7 +3058,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               <div class="mail-preview" v-html="previewHtml" />
             </Card>
 
-            <Card variant="outline">
+            <Card v-if="can('whatsapp')" variant="outline">
               <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">WhatsApp</h2>
               <WhatsAppLink @changed="refreshAudiences" />
               <TraceRule style="margin:var(--space-5) 0" />
@@ -2978,46 +3108,43 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             <h2 style="margin:0 0 var(--space-2); font:var(--type-h4)">Committee access</h2>
             <p style="margin:0 0 var(--space-4); font:var(--type-small); color:var(--text-muted)">
               <template v-if="canManageUsers">
-                One role each. Everyone also edits their own committee card,
-                whatever role they hold.
+                Choose a role to preselect permissions, then customise them per person.
+                Committee members can still edit their own card independently.
               </template>
               <template v-else>
-                Who has access, and who to ask. Only a superuser can change it.
+                Who has access, and who to ask. Only someone with the Manage access permission can change it.
               </template>
             </p>
 
-            <div
-              v-for="a in admins"
-              :key="a.email"
-              style="display:flex; justify-content:space-between; align-items:center; gap:var(--space-3); padding:var(--space-3) 0; border-top:1px solid var(--border-hairline)"
-            >
-              <div style="display:grid; gap:2px; min-width:0">
-                <span style="font:var(--type-small)">
-                  {{ [a.first_name, a.last_name].filter(Boolean).join(' ') || a.email }}
-                  <Badge v-if="a.standing" tone="accent">standing</Badge>
-                </span>
-                <span style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint); overflow-wrap:anywhere">
-                  {{ a.email }}
-                </span>
+            <div v-for="a in admins" :key="a.email" style="border-top:1px solid var(--border-hairline); padding:var(--space-3) 0">
+              <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:var(--space-3)">
+                <div style="display:grid; gap:3px; min-width:0">
+                  <span style="font:var(--type-small)">
+                    {{ [a.first_name, a.last_name].filter(Boolean).join(' ') || a.email }}
+                    <Badge v-if="a.standing" tone="accent">standing</Badge>
+                    <Badge v-if="a.permissions !== null && a.permissions !== undefined && !a.standing" tone="neutral">custom</Badge>
+                  </span>
+                  <span style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint); overflow-wrap:anywhere">{{ a.email }}</span>
+                  <span style="font:var(--type-2xs); color:var(--text-muted)">{{ roleOptions.find((r) => r.id === a.role)?.label || a.role }} · {{ a.capabilities?.length ?? 0 }} permissions</span>
+                </div>
+                <div style="display:flex; gap:var(--space-2); flex-wrap:wrap; align-items:center">
+                  <Button v-if="canManageUsers && !a.standing && a.user_id" size="sm" variant="secondary" @click="editAccess(a)">{{ editingAccessId === a.user_id ? 'Close' : 'Edit permissions' }}</Button>
+                  <Button v-if="canManageUsers && !a.standing && a.user_id" size="sm" variant="ghost" @click="removeAdmin(a)">Remove</Button>
+                </div>
               </div>
-
-              <div style="display:flex; gap:var(--space-2); align-items:center; flex-shrink:0">
-                <select
-                  v-if="canManageUsers && !a.standing && a.user_id"
-                  :value="a.role"
-                  class="ees-select"
-                  @change="(e) => setRole(a, e.target.value)"
-                >
-                  <option v-for="r in roleOptions" :key="r.id" :value="r.id">{{ r.label }}</option>
-                </select>
-                <Badge v-else tone="neutral">{{ a.role }}</Badge>
-
-                <Button
-                  v-if="canManageUsers && !a.standing && a.user_id"
-                  size="sm"
-                  variant="ghost"
-                  @click="removeAdmin(a)"
-                >Remove</Button>
+              <div v-if="editingAccessId === a.user_id && canManageUsers" style="display:grid; gap:var(--space-3); margin-top:var(--space-4)">
+                <Field label="Role preset">
+                  <select v-model="editingAccessRole" @change="resetEditPermissions" class="ees-select" style="width:100%; max-width:300px">
+                    <option v-for="r in roleOptions" :key="r.id" :value="r.id">{{ r.label }}</option>
+                  </select>
+                </Field>
+                <p style="font:var(--type-2xs); color:var(--text-muted); margin:0">Changing the role preselects its default permissions. Untick or tick any permission to customise this person’s access.</p>
+                <PermissionSelector v-model="editingPermissions" :permissions="permissionOptions" />
+                <div style="display:flex; align-items:center; flex-wrap:wrap; gap:var(--space-2)">
+                  <Button size="sm" :disabled="busy" @click="saveAccess(a)">Save access</Button>
+                  <Button size="sm" variant="ghost" @click="resetEditPermissions">Reset to role defaults</Button>
+                  <span style="font:var(--type-2xs); color:var(--text-faint)">{{ editingPermissions.length }} selected · {{ isPreset(editingAccessRole, editingPermissions) ? 'Role defaults' : 'Custom selection' }}</span>
+                </div>
               </div>
             </div>
 
@@ -3034,7 +3161,14 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               <p v-if="roleOptions.length" style="margin:var(--space-2) 0 0; font:var(--type-2xs); color:var(--text-faint)">
                 {{ roleOptions.find((r) => r.id === newRole)?.blurb }}
               </p>
-              <Button size="sm" style="margin-top:var(--space-3)" @click="addAdmin">Grant access</Button>
+              <div style="display:grid; gap:var(--space-3); margin-top:var(--space-4)">
+                <PermissionSelector v-model="newPermissions" :permissions="permissionOptions" />
+                <div style="display:flex; align-items:center; flex-wrap:wrap; gap:var(--space-2)">
+                  <Button size="sm" :disabled="!newAdminEmail.trim() || busy" @click="addAdmin">Grant access</Button>
+                  <Button size="sm" variant="ghost" @click="resetNewPermissions">Reset to role defaults</Button>
+                  <span style="font:var(--type-2xs); color:var(--text-faint)">{{ newPermissions.length }} permissions selected</span>
+                </div>
+              </div>
             </template>
           </Card>
 
@@ -3155,13 +3289,13 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               <span v-for="l in sponsorInbox.listings" :key="`l${l.id}`" class="inbox-row">
                 <strong>{{ l.sponsor }}</strong> · {{ l.title }}<template v-if="l.location"> · {{ l.location }}</template>
               </span>
-              <WhatsAppGroupPicker v-if="can('site')" v-model="digestWhatsApp" :disabled="busy" />
+              <WhatsAppGroupPicker v-if="can('whatsapp')" v-model="digestWhatsApp" :disabled="busy" />
               <div style="display:flex; gap:var(--space-3); align-items:center; flex-wrap:wrap">
-                <Button size="sm" :disabled="busy || !can('site')" @click="sendRolesDigest">
+                <Button size="sm" :disabled="busy || !can('email')" @click="sendRolesDigest">
                   Email {{ rolesDigest.recipients }} jobs subscriber(s)<template v-if="digestWhatsApp.length"> + WhatsApp</template>
                 </Button>
                 <span style="font:var(--type-2xs); color:var(--text-faint)">
-                  <template v-if="can('site')">One email listing every new role, to members who opted in to jobs and internships.</template>
+                  <template v-if="can('email')">One email listing every new role, to members who opted in to jobs and internships.</template>
                   <template v-else>Sending needs a committee member with email access.</template>
                 </span>
               </div>

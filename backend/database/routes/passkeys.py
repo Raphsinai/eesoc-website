@@ -291,7 +291,7 @@ async def link_by_token(token_hash: str) -> dict:
                    c.email AS created_by_email,
                    c.first_name AS created_by_first_name,
                    c.last_name AS created_by_last_name,
-                   ca.role AS created_by_role
+                   ca.role AS created_by_role, ca.permissions AS created_by_permissions
               FROM public.passkey_links l
               JOIN public.users u        ON u.id = l.user_id
               LEFT JOIN public.admins ua ON ua.user_id = l.user_id

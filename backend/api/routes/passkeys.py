@@ -452,25 +452,26 @@ def _is_standing(email: str | None) -> bool:
 
 
 def _link_refusal(
-    maker_role: str | None, target_email: str, target_role: str | None
+    maker_role: str | None, target_email: str, target_role: str | None,
+    maker_permissions: list[str] | None = None,
 ) -> str | None:
     """Why this maker may not give a way into this account, or None if they may.
 
-      * making links at all is `passkey_links` — admin and superuser;
+      * making links at all is the `passkey_links` permission;
       * the standing superuser's account takes no links from anybody: it is
         the one account that can hand out every other kind of access;
       * an account holding any committee role needs `users` too — otherwise an
         admin could link a superuser's account and open it themselves.
     """
-    caps = role_table.capabilities(maker_role)
+    caps = role_table.effective_capabilities(maker_role, maker_permissions)
     if "passkey_links" not in caps:
-        return "Only an admin or a superuser can make passkey links."
+        return "You do not have permission to make passkey links."
     if _is_standing(target_email):
         return "The standing superuser sets up their own passkeys."
     if target_role and "users" not in caps:
         return (
-            "That account has committee access, so only a superuser can make "
-            "it a passkey link."
+            "That account has committee access, so permission to manage access is required to make "
+            "a passkey link for it."
         )
     return None
 
@@ -491,7 +492,10 @@ async def _live_link(token: str) -> dict:
         "superuser" if _is_standing(link.get("created_by_email"))
         else link.get("created_by_role")
     )
-    refusal = _link_refusal(maker_role, link["email"], link.get("user_role"))
+    refusal = _link_refusal(
+        maker_role, link["email"], link.get("user_role"),
+        None if _is_standing(link.get("created_by_email")) else link.get("created_by_permissions"),
+    )
     if link.get("created_by") is None or refusal:
         log.warning(
             "Refused passkey link %s for %s made by %s: %s",
@@ -641,7 +645,7 @@ async def create_link(
 
     user = await resolve_or_create_user(address, verified=False)
     refusal = _link_refusal(
-        session.role, user["email"], await _committee_role(user["id"])
+        session.role, user["email"], await _committee_role(user["id"]), session.permissions,
     )
     if refusal:
         raise HTTPException(403, refusal)

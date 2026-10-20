@@ -15,7 +15,7 @@ from services import storage
 from utils.deps import (
     committee_card,
     require_session,
-    require_site,
+    require_committee_page,
     verify_csrf,
 )
 from utils.year import academic_year
@@ -61,7 +61,7 @@ async def get_committee() -> dict:
 
 @router.put("/committee/intro", dependencies=[Depends(verify_csrf)])
 async def set_intro(
-    value: str = Body(embed=True), session: AuthSession = Depends(require_site)
+    value: str = Body(embed=True), session: AuthSession = Depends(require_committee_page)
 ) -> dict:
     await database.put(
         "/union/content/committee.intro",
@@ -82,7 +82,7 @@ async def set_profile(
     cid: str | None = Body(default=None, embed=True),
     hidden: bool = Body(default=False, embed=True),
     user_email: str | None = Body(default=None, embed=True),
-    session: AuthSession = Depends(require_site),
+    session: AuthSession = Depends(require_committee_page),
 ) -> dict:
     """The editable half of a committee entry: intro, photo, display role, order.
 
@@ -215,7 +215,7 @@ def _own(entry: dict) -> dict:
 
 
 @router.get("/admin/committee")
-async def admin_committee(session: AuthSession = Depends(require_site)) -> dict:
+async def admin_committee(session: AuthSession = Depends(require_committee_page)) -> dict:
     """Roster plus overlay, for the admin editor."""
     year = academic_year()
     # include_hidden: this is the only place a hidden person can be

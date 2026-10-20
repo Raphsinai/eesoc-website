@@ -1,6 +1,6 @@
 """Transactional (non-marketing) notices for the opportunities workflow.
 
-Only the admins and superusers currently listed in access control receive
+Only accounts with the opportunities permission receive
 review alerts; we never use the entire committee roster or a broad configured
 mailing list. Failure cannot undo an already-committed moderation decision.
 """
@@ -13,6 +13,7 @@ import logging
 from clients import database
 from config import settings
 from utils import email as mailer
+from utils import roles
 
 log = logging.getLogger("api.opportunity_notifications")
 _background: set[asyncio.Task] = set()
@@ -33,7 +34,7 @@ async def admin_recipients() -> list[str]:
     recipients = {
         str(row["email"]).strip().lower()
         for row in rows
-        if row.get("role") in ("admin", "superuser") and row.get("email")
+        if "opportunities" in roles.effective_capabilities(row.get("role"), row.get("permissions")) and row.get("email")
     }
     if settings.superuser_email:
         recipients.add(settings.superuser_email.strip().lower())

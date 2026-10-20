@@ -50,6 +50,7 @@ class AuthSession(BaseModel):
     session: Session
     user: User
     role: str | None = None
+    permissions: list[str] | None = None
     is_admin: bool = False
     member: Member | None = None
     sponsor_ids: list[int] = []
@@ -71,12 +72,13 @@ class AuthSession(BaseModel):
         """
         if _is_standing_superuser(self.user.email):
             self.role = "superuser"
+            self.permissions = None  # cannot narrow or override the standing superuser
         self.is_admin = self.role is not None
         return self
 
     @property
     def capabilities(self) -> frozenset[str]:
-        return roles.capabilities(self.role)
+        return roles.effective_capabilities(self.role, self.permissions)
 
     def can(self, capability: str) -> bool:
         return capability in self.capabilities

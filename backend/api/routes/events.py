@@ -165,8 +165,9 @@ async def list_events(
     session: AuthSession | None = Depends(current_session),
 ) -> dict:
     """The calendar. Admins additionally see unpublished drafts."""
-    can_see_all = bool(session and (session.can("events") or session.can("bookings")))
-    can_see_industry = bool(session and (session.can("industry") or session.can("industry_bookings")))
+    readable = bool(session and (session.can("events.view") or session.can("events.bookings.view")))
+    can_see_all = bool(readable and session.can("events.scope.all"))
+    can_see_industry = bool(readable and session.can("events.scope.industry"))
     events = await database.get(
         "/events",
         {"published_only": not (can_see_all or can_see_industry), "upcoming": upcoming, "limit": limit},
@@ -186,9 +187,10 @@ async def get_event(
     if event is None:
         raise HTTPException(404, "No such event")
 
-    is_admin = bool(session and (
-        session.can("events") or session.can("bookings") or
-        (event.get("industry") and (session.can("industry") or session.can("industry_bookings")))
+    allowed_read = bool(session and (session.can("events.view") or session.can("events.bookings.view")))
+    is_admin = bool(allowed_read and (
+        session.can("events.scope.all") or
+        (event.get("industry") and session.can("events.scope.industry"))
     ))
     if not event["published"] and not is_admin:
         raise HTTPException(404, "No such event")
@@ -736,12 +738,11 @@ async def _own_reservation(reservation_id: int, session: AuthSession) -> dict:
     reservation = await database.get(f"/reservations/{reservation_id}")
     if reservation is None:
         raise HTTPException(404, "No such reservation")
+    # Member self-service routes NEVER operate on another person's booking,
+    # even if the caller holds some committee read or write permissions.
+    # Committee corrections belong behind separately granted /admin routes.
     if reservation["user_id"] != session.user.id:
-        event = await database.get(f"/events/{reservation['event_id']}")
-        if not (session.can("bookings") or
-                (session.can("industry_bookings") and event and event.get("industry"))):
-            # 404 rather than 403 — do not confirm another person's booking id.
-            raise HTTPException(404, "No such reservation")
+        raise HTTPException(404, "No such reservation")
     return reservation
 
 
@@ -884,7 +885,8 @@ async def leave_waitlist(
     entry_id: int, session: AuthSession = Depends(require_session)
 ) -> dict:
     mine = await database.get("/waitlist", {"user_id": session.user.id}) or []
-    if not any(e["id"] == entry_id for e in mine) and not session.can("bookings"):
+    if not any(e["id"] == entry_id for e in mine):
+        # This is the member's own unsubscribe action, not an admin API.
         raise HTTPException(404, "No such waitlist entry")
     await database.post(f"/waitlist/{entry_id}/release")
     return {"ok": True}

@@ -160,7 +160,8 @@ def test_one_permission_does_not_grant_all_other_operations_in_its_category():
         'whatsapp.view': 'whatsapp.post',
         'email.queue.view': 'email.queue.send',
         'sponsors.view': 'sponsors.delete',
-        'lockers.inventory.view': 'lockers.allowances.grant',
+        'lockers.inventory.view': 'lockers.bookings.release',
+        'lockers.bookings.view': 'lockers.allowances.grant',
         'opportunities.view': 'opportunities.approve',
         'sponsors.portal.view': 'sponsors.portal.jobs.create',
     }
@@ -199,3 +200,62 @@ def test_future_agents_have_a_mandatory_contract():
                    'frontend/src/stores/session.js', 'Category', '403', 'production'):
         assert phrase.lower() in instructions.lower()
     assert 'AGENTS.md' in claude
+
+
+def test_self_service_reservation_never_accepts_another_user_even_with_bookings_view(monkeypatch):
+    import importlib
+    events = importlib.import_module('routes.events')
+
+    async def fake_get(path, params=None):
+        if path == '/reservations/72':
+            return {'id': 72, 'event_id': 300, 'user_id': 999}
+        pytest.fail(f'Unexpected database request: {path}')
+
+    monkeypatch.setattr(events.database, 'get', fake_get)
+    session = make_session('admin', ['events.bookings.view', 'events.scope.all'])
+    with pytest.raises(HTTPException) as denied:
+        asyncio.run(events._own_reservation(72, session))
+    assert denied.value.status_code == 404
+
+
+def test_public_locker_release_requires_ownership_or_specific_release_permission(monkeypatch):
+    import importlib
+    lockers = importlib.import_module('routes.lockers')
+    released = []
+
+    async def fake_get(path, params=None):
+        assert path == '/lockers/bookings'
+        return []
+
+    async def fake_post(path, json=None, params=None):
+        released.append(path)
+        return {'ok': True}
+
+    monkeypatch.setattr(lockers.database, 'get', fake_get)
+    monkeypatch.setattr(lockers.database, 'post', fake_post)
+    viewer = make_session('admin', ['lockers.inventory.view'])
+    with pytest.raises(HTTPException) as denied:
+        asyncio.run(lockers.release(54, viewer))
+    assert denied.value.status_code == 404
+    assert not released
+    operator = make_session('admin', ['lockers.bookings.release'])
+    assert asyncio.run(lockers.release(54, operator))['ok']
+    assert released == ['/lockers/bookings/54/release']
+
+
+def test_published_only_events_for_a_create_only_operator(monkeypatch):
+    import importlib
+    events = importlib.import_module('routes.events')
+    params_seen = []
+
+    async def fake_get(path, params=None):
+        assert path == '/events'
+        params_seen.append(params)
+        # Fail closed even if an older DB adapter ignores published_only.
+        return [{'published': False, 'industry': False}]
+
+    monkeypatch.setattr(events.database, 'get', fake_get)
+    creator = make_session('admin', ['events.create', 'events.scope.all'])
+    result = asyncio.run(events.list_events(session=creator))
+    assert params_seen[0]['published_only'] is True
+    assert result['events'] == []

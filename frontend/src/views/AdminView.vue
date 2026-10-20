@@ -1652,6 +1652,18 @@ async function loadManagedLockers() {
   } catch (e) { error.value = e.message }
 }
 
+async function releaseLockerHolder(holder) {
+  if (!confirm(`Release locker ${holder.locker} from ${holder.name || holder.email}?`)) return
+  busy.value = true
+  error.value = ''
+  try {
+    await api.post(`/lockers/bookings/${holder.bookingId}/release`)
+    flash('Locker released.')
+    await loadManagedLockers()
+  } catch (e) { error.value = e.message }
+  finally { busy.value = false }
+}
+
 async function toggleLockerActive(locker) {
   if (!confirm(`${locker.is_active ? 'Disable' : 'Enable'} locker ${locker.number}?`)) return
   busy.value = true
@@ -2875,6 +2887,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             <p v-if="!lockerHolders.length" style="font:var(--type-small); color:var(--text-muted)">No lockers currently assigned.</p>
             <div v-for="holder in lockerHolders" :key="holder.bookingId" style="border-top:1px solid var(--border-hairline); padding:var(--space-2) 0; font:var(--type-small)">
               {{ holder.locker }} · {{ holder.name || holder.email }}
+              <Button v-if="can('lockers.bookings.release')" size="sm" variant="ghost" :disabled="busy" @click="releaseLockerHolder(holder)">Release</Button>
             </div>
           </Card>
         </div>

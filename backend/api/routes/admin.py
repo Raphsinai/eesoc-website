@@ -194,11 +194,13 @@ async def overview(session: AuthSession = Depends(require_admin)) -> dict:
     runs = await database.get("/union/sync-runs/latest") or []
     year = academic_year()
     members = await database.get("/union/members/count", {"academic_year": year})
-    full_calendar = any(session.can(c) for c in ("events", "bookings"))
-    events = await database.get("/events", {"published_only": not full_calendar, "limit": 500}) or []
+    readable = session.can("events.view") or session.can("events.bookings.view")
+    full_calendar = readable and session.can("events.scope.all")
+    industry_calendar = readable and session.can("events.scope.industry")
+    events = await database.get("/events", {"published_only": not (full_calendar or industry_calendar), "limit": 500}) or []
     if not full_calendar:
         events = [event for event in events if event.get("published") or
-                  (event.get("industry") and (session.can("industry") or session.can("industry_bookings")))]
+                  (industry_calendar and event.get("industry"))]
 
     union_health = None
     if union.configured():

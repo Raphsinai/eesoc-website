@@ -174,6 +174,7 @@ GROUPS = {
             'lockers.inventory.edit': 'Enable or disable lockers',
             'lockers.holders.view': 'View locker holders',
             'lockers.bookings.view': 'View locker bookings',
+            'lockers.bookings.release': 'Release another person’s locker booking',
         },
         'Year-end management': {
             'lockers.clearout.notify': 'Send locker clear-out reminders',

@@ -43,9 +43,10 @@ async def search(
             add(label, kind, to)
 
     # Only published events, and only what the caller may see.
-    can_see_all = bool(session and (session.can("events") or session.can("bookings")))
-    can_see_industry = bool(session and (session.can("industry") or session.can("industry_bookings")))
-    can_see_resources = bool(session and session.can("resources"))
+    readable = bool(session and (session.can("events.view") or session.can("events.bookings.view")))
+    can_see_all = bool(readable and session.can("events.scope.all"))
+    can_see_industry = bool(readable and session.can("events.scope.industry"))
+    can_see_resources = bool(session and session.can("resources.drafts"))
     events = await database.get(
         "/events", {"published_only": not (can_see_all or can_see_industry), "limit": 200}
     ) or []

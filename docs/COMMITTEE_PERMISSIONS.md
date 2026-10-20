@@ -28,6 +28,7 @@ The server supplies role presets and the permission catalogue from `GET /admin/a
 | View, approve, reject opportunity | `opportunities.view` / `.approve` / `.reject` |
 | Edit email queue, send test, approve, schedule, unschedule, dismiss | `email.queue.edit` / `.test` / `.send` / `.schedule` / `.unschedule` / `.dismiss` |
 | Post to WhatsApp | `whatsapp.post` |
+| Release someone else's locker | `lockers.bookings.release` |
 
 The full catalogue also separately covers sponsors, sponsor marketing and portal operations, resources, shared file uploads, product links, committee page, lockers, allowances and Union sales sync. **No named role implicitly overrides a permission.** Scope and action are independent: a booking cancellation right also needs either `events.scope.all` or `events.scope.industry` on the matching event, verified by the backend; a read permission never implies a write permission.
 

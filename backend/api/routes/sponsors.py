@@ -49,7 +49,7 @@ async def list_sponsors(
     information and must never reach this response. Returning the row wholesale
     is how that leaks the first time somebody adds a column.
     """
-    may_preview = bool(session and session.can("sponsors"))
+    may_preview = bool(session and session.can("sponsors.view"))
     sponsors = await database.get(
         "/sponsors", {"active_only": not may_preview}
     ) or []

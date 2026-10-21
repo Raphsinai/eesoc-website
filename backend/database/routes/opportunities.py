@@ -7,6 +7,7 @@ checked by the public API, never trusted to query parameters from the browser.
 from __future__ import annotations
 
 import json
+from datetime import date
 
 from fastapi import APIRouter, HTTPException
 
@@ -27,6 +28,19 @@ COLUMNS = """
     o.approved_at, o.email_campaign_id, o.created_at,
     o.editable_after_rejection, o.revision, o.updated_at,
     o.announcement_subject, o.announcement_body,
+    o.posted_until, o.pending_revision, o.pending_revision_at,
+    COALESCE((SELECT jsonb_agg(jsonb_build_object(
+                'id', asset.id, 'stored_name', asset.stored_name,
+                'content_type', asset.content_type)
+                ORDER BY array_position(ARRAY(
+                   SELECT requested::bigint FROM jsonb_array_elements_text(
+                     COALESCE(o.pending_revision->'image_ids', '[]'::jsonb)
+                   ) AS requested
+                ), asset.id))
+              FROM public.uploads asset
+              WHERE asset.id IN (SELECT requested::bigint FROM jsonb_array_elements_text(
+                  COALESCE(o.pending_revision->'image_ids', '[]'::jsonb)
+              ) AS requested)), '[]'::jsonb) AS pending_images,
     submitter.email AS submitter_email,
     COALESCE((SELECT jsonb_agg(jsonb_build_object(
                 'id', asset.id, 'stored_name', asset.stored_name,
@@ -41,7 +55,7 @@ FROM = """public.opportunities o
 
 def _model(row) -> Opportunity:
     data = dict(row)
-    for key in ("links", "target_years", "images"):
+    for key in ("links", "target_years", "images", "pending_images", "pending_revision"):
         if isinstance(data.get(key), str):
             data[key] = json.loads(data[key])
     return Opportunity(**data)
@@ -59,6 +73,8 @@ async def list_opportunities(
             f"SELECT {COLUMNS} FROM {FROM}"
             " WHERE ($1::varchar IS NULL OR o.status = $1)"
             " AND ($2::bigint IS NULL OR o.submitted_by = $2)"
+            " AND ($1::varchar IS DISTINCT FROM 'approved' OR o.posted_until IS NULL "
+            " OR o.posted_until >= (NOW() AT TIME ZONE 'Europe/London')::date)"
             " ORDER BY CASE WHEN o.status = 'pending' THEN 0 ELSE 1 END,"
             " o.created_at DESC, o.id DESC LIMIT $3;",
             status, submitted_by, max(1, min(limit, 500)),
@@ -98,13 +114,13 @@ async def create_opportunity(item: OpportunityCreate) -> Opportunity:
         row = await conn.fetchrow(
             """INSERT INTO public.opportunities
                   (submitted_by, title, description, links, contact_email,
-                   contact_phone, target_years, image_ids)
-               VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7::jsonb, $8)
+                   contact_phone, target_years, image_ids, posted_until)
+               VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7::jsonb, $8, $9)
                RETURNING id;""",
             item.submitted_by, item.title, item.description,
             json.dumps([str(link) for link in item.links]),
             str(item.contact_email) if item.contact_email else None,
-            item.contact_phone, json.dumps(item.target_years), item.image_ids,
+            item.contact_phone, json.dumps(item.target_years), item.image_ids, item.posted_until,
         )
     return await get_opportunity(row["id"])
 
@@ -115,10 +131,9 @@ def _review_conflict() -> HTTPException:
 
 @router.put("/{opportunity_id}")
 async def resubmit_opportunity(opportunity_id: int, item: OpportunityEdit) -> Opportunity:
-    """Only its owner can replace a rejected, explicitly editable submission.
+    """Owner edits of approved listings are isolated until approved.
 
-    Updating returns it to the pending queue in a single transaction, not to
-    the public listing; approval is never inherited across revisions.
+    Rejected editable submissions can be resubmitted for initial approval.
     """
     if item.owner_id is None:
         raise HTTPException(400, "An owner is required")
@@ -133,11 +148,19 @@ async def resubmit_opportunity(opportunity_id: int, item: OpportunityEdit) -> Op
             )
             if count != len(item.image_ids):
                 raise HTTPException(400, "One or more images do not belong to your account")
+        current = await conn.fetchrow("SELECT status, pending_revision, editable_after_rejection FROM public.opportunities WHERE id=$1 AND submitted_by=$2 FOR UPDATE", opportunity_id, item.owner_id)
+        if not current or current['pending_revision'] is not None or current['status'] == 'pending' or (current['status'] == 'rejected' and not current['editable_after_rejection']):
+            raise _review_conflict()
+        if current['status'] == 'approved':
+            revision_data = item.model_dump(mode='json', exclude={'owner_id', 'submitted_by'})
+            await conn.execute("UPDATE public.opportunities SET pending_revision=$3::jsonb, pending_revision_at=NOW(), updated_at=NOW() WHERE id=$1 AND submitted_by=$2", opportunity_id, item.owner_id, json.dumps(revision_data))
+            row = await conn.fetchrow(f"SELECT {COLUMNS} FROM {FROM} WHERE o.id=$1", opportunity_id)
+            return _model(row)
         row = await conn.fetchrow(
             """UPDATE public.opportunities
                   SET title=$3, description=$4, links=$5::jsonb,
                       contact_email=$6, contact_phone=$7,
-                      target_years=$8::jsonb, image_ids=$9,
+                      target_years=$8::jsonb, image_ids=$9, posted_until=$10,
                       status='pending', editable_after_rejection=FALSE,
                       revision=revision+1, updated_at=NOW(),
                       reviewed_by=NULL, reviewed_at=NULL,
@@ -148,9 +171,25 @@ async def resubmit_opportunity(opportunity_id: int, item: OpportunityEdit) -> Op
             opportunity_id, item.owner_id, item.title, item.description,
             json.dumps([str(url) for url in item.links]),
             str(item.contact_email) if item.contact_email else None,
-            item.contact_phone, json.dumps(item.target_years), item.image_ids,
+            item.contact_phone, json.dumps(item.target_years), item.image_ids, item.posted_until,
         )
         if row is None:
+            raise _review_conflict()
+    return await get_opportunity(opportunity_id)
+
+
+@router.post("/{opportunity_id}/takedown")
+async def takedown_opportunity(opportunity_id: int, review: OpportunityReview) -> Opportunity:
+    if review.reviewed_by is None:
+        raise HTTPException(400, "A reviewer is required")
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        result = await conn.execute("""UPDATE public.opportunities SET status='rejected',
+            pending_revision=NULL, pending_revision_at=NULL, review_notes=$3,
+            editable_after_rejection=$4, reviewed_by=$2, reviewed_at=NOW(), updated_at=NOW()
+            WHERE id=$1 AND status='approved'""", opportunity_id, review.reviewed_by,
+            (review.notes or '').strip() or None, review.allow_edit)
+        if result != 'UPDATE 1':
             raise _review_conflict()
     return await get_opportunity(opportunity_id)
 
@@ -166,6 +205,30 @@ async def review_opportunity(opportunity_id: int, review: OpportunityReview) -> 
 
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction():
+        current = await conn.fetchrow("SELECT status, pending_revision FROM public.opportunities WHERE id=$1 FOR UPDATE", opportunity_id)
+        if current and current['status'] == 'approved' and current['pending_revision'] is not None:
+            if review.decision == 'approved':
+                revision = current['pending_revision']
+                await conn.execute("""UPDATE public.opportunities SET
+                    title=$2, description=$3, links=$4::jsonb, contact_email=$5,
+                    contact_phone=$6, target_years=$7::jsonb, image_ids=$8, posted_until=$9,
+                    pending_revision=NULL, pending_revision_at=NULL,
+                    revision=revision+1, reviewed_by=$10, reviewed_at=NOW(),
+                    review_notes=$11, updated_at=NOW(),
+                    announcement_subject=CASE WHEN email_campaign_id IS NULL THEN $12 ELSE announcement_subject END,
+                    announcement_body=CASE WHEN email_campaign_id IS NULL THEN $13 ELSE announcement_body END
+                    WHERE id=$1""", opportunity_id, revision['title'], revision['description'],
+                    json.dumps(revision['links']), revision.get('contact_email'), revision.get('contact_phone'),
+                    json.dumps(revision['target_years']), revision['image_ids'], date.fromisoformat(revision['posted_until']) if revision.get('posted_until') else None,
+                    review.reviewed_by, (review.notes or '').strip() or None,
+                    review.campaign_subject, review.campaign_body)
+            else:
+                await conn.execute("""UPDATE public.opportunities SET pending_revision=NULL,
+                    pending_revision_at=NULL, reviewed_by=$2, reviewed_at=NOW(),
+                    review_notes=$3, updated_at=NOW() WHERE id=$1""", opportunity_id,
+                    review.reviewed_by, (review.notes or '').strip() or None)
+            updated = await conn.fetchrow(f"SELECT {COLUMNS} FROM {FROM} WHERE o.id=$1", opportunity_id)
+            return {"opportunity": _model(updated).model_dump(mode='json'), "email_campaign_id": None}
         row = await conn.fetchrow(
             """UPDATE public.opportunities
                   SET status=$2::varchar, reviewed_by=$3, review_notes=$4,

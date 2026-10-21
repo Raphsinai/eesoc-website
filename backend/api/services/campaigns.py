@@ -26,7 +26,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 
@@ -149,6 +150,16 @@ async def message_for(row: dict) -> Callable[[str], tuple[str, str, str]]:
     subject = (row.get("subject") or "").strip()
     heading = (row.get("heading") or "").strip() or subject
     html, text = emailing.render_body(row.get("body") or "")
+
+    if kind == "opportunity_announcement" and row.get("opportunity_id"):
+        # A human's earlier email approval must not advertise a listing that
+        # has since been taken down or has expired.
+        opportunity = await database.get(f"/opportunities/{row['opportunity_id']}")
+        until = opportunity.get("posted_until") if opportunity else None
+        if not opportunity or opportunity.get("status") != "approved" or (
+            until and date.fromisoformat(str(until)) < datetime.now(ZoneInfo("Europe/London")).date()
+        ):
+            raise Unbuildable("the linked opportunity is no longer published")
 
     if kind in ("newsletter", "opportunity_announcement"):
         return lambda unsubscribe: mailer.campaign_message(

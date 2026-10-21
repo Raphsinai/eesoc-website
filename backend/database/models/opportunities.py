@@ -1,6 +1,6 @@
 """Shapes crossing the API/database-adapter boundary for opportunities."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field, HttpUrl, field_validator
@@ -16,6 +16,7 @@ class OpportunityCreate(BaseModel):
     contact_phone: str | None = Field(default=None, max_length=40)
     target_years: list[Year] = Field(min_length=1, max_length=6)
     image_ids: list[int] = Field(default_factory=list, max_length=5)
+    posted_until: date | None = None
     # Adapter-only, set from a verified session, never from a client request.
     submitted_by: int | None = None
 
@@ -77,6 +78,9 @@ class Opportunity(OpportunityCreate):
     created_at: datetime | None = None
     submitter_email: str | None = None
     images: list[dict] = Field(default_factory=list)
+    pending_revision: dict | None = None
+    pending_images: list[dict] = Field(default_factory=list)
+    pending_revision_at: datetime | None = None
 
 
 class OpportunityReview(BaseModel):

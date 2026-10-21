@@ -53,14 +53,25 @@ async def alert_admins(title: str, subject: str, details: str, url: str) -> None
         log.exception("Could not send opportunity admin notification")
 
 
-async def alert_submitter(row: dict, *, resubmitted: bool = False) -> None:
+async def alert_submitter(row: dict, *, resubmitted: bool = False, revision_decision: str | None = None) -> None:
     address = (row.get("submitter_email") or "").strip()
     if not address:
         return
     title = row["title"]
     url = f"{settings.site_origin.rstrip('/')}/opportunities"
     status = row["status"]
-    if resubmitted:
+    if revision_decision == "approved":
+        subject = f"Opportunity changes approved: {title}"
+        message = "The committee approved your edits. The updated opportunity is now live."
+    elif revision_decision == "rejected":
+        subject = f"Opportunity changes need work: {title}"
+        message = (
+            "The committee did not approve your proposed changes. "
+            "Your previously approved listing remains public (until its deadline). "
+            "You can edit it and submit another revision."
+            + f"\n\nAdmin notes:\n{row.get('review_notes') or 'No notes provided.'}"
+        )
+    elif resubmitted:
         subject = f"Opportunity resubmitted: {title}"
         message = "Your updated opportunity is waiting for another admin review."
     elif status == "approved":
@@ -74,7 +85,8 @@ async def alert_submitter(row: dict, *, resubmitted: bool = False) -> None:
         subject = f"Opportunity needs changes: {title}"
         can_edit = bool(row.get("editable_after_rejection"))
         message = (
-            "The admin team has rejected this submission. "
+            ("The admin team has taken this opportunity off the public page. "
+             if row.get("approved_at") else "The admin team has rejected this submission. ")
             + ("You can edit it and resubmit it for review. " if can_edit else
                "This submission cannot be edited. You may submit a new opportunity. ")
             + f"\n\nAdmin notes:\n{row.get('review_notes') or 'No notes provided.'}"

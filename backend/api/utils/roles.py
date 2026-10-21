@@ -221,7 +221,9 @@ GROUPS = {
         'Opportunities': {
             'opportunities.view': 'View private opportunity submissions',
             'opportunities.approve': 'Approve opportunities',
-            'opportunities.reject': 'Reject opportunities',
+            'opportunities.reject': 'Reject submissions or proposed edits',
+            'opportunities.unpublish': 'Take down approved opportunities',
+            'opportunities.return_for_changes': 'Take down and send approved opportunities back for editing',
         },
     },
 }

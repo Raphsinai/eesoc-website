@@ -9,6 +9,8 @@ when the adapter verifies ownership. Publication queues, but never sends, mail.
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -38,6 +40,11 @@ YEAR_LABELS = {
 }
 
 
+class TakedownRequest(BaseModel):
+    notes: str | None = Field(default=None, max_length=3000)
+    allow_edit: bool = False
+
+
 class ReviewRequest(BaseModel):
     decision: Literal["approved", "rejected"]
     notes: str | None = Field(default=None, max_length=3000)
@@ -61,10 +68,28 @@ def _view(row: dict, *, private: bool = False, committee: bool = False) -> dict:
         ],
         "createdAt": row.get("created_at"),
         "approvedAt": row.get("approved_at"),
+        "postedUntil": row.get("posted_until"),
     }
     if private or committee:
         out.update({
             "status": row["status"],
+            "pendingRevision": (
+                {
+                    "title": row["pending_revision"]["title"],
+                    "description": row["pending_revision"]["description"],
+                    "links": row["pending_revision"].get("links") or [],
+                    "contactEmail": row["pending_revision"].get("contact_email"),
+                    "contactPhone": row["pending_revision"].get("contact_phone"),
+                    "targetYears": row["pending_revision"].get("target_years") or [],
+                    "postedUntil": row["pending_revision"].get("posted_until"),
+                    "images": [
+                        {"id": image["id"], "url": storage.public_url(image["stored_name"])}
+                        for image in row.get("pending_images") or []
+                        if image.get("content_type", "").startswith("image/")
+                    ],
+                } if row.get("pending_revision") else None
+            ),
+            "pendingRevisionAt": row.get("pending_revision_at"),
             "reviewNotes": row.get("review_notes"),
             "reviewedAt": row.get("reviewed_at"),
             "emailCampaignId": row.get("email_campaign_id"),
@@ -108,16 +133,28 @@ def _announcement(row: dict) -> tuple[str, str, list[str]]:
     return subject, "\n\n".join(body), audiences
 
 
+def _validate_posted_until(payload: OpportunityCreate) -> None:
+    if payload.posted_until and payload.posted_until < datetime.now(ZoneInfo("Europe/London")).date():
+        raise HTTPException(422, "The posting deadline must be today or later")
+
+
+def _is_public(row: dict) -> bool:
+    if row.get("status") != "approved":
+        return False
+    until = row.get("posted_until")
+    return not until or date.fromisoformat(str(until)) >= datetime.now(ZoneInfo("Europe/London")).date()
+
+
 @router.get("/opportunities")
 async def published_opportunities() -> dict:
     rows = await database.get("/opportunities", {"status": "approved", "limit": 300}) or []
-    return {"opportunities": [_view(r) for r in rows if r.get("status") == "approved"]}
+    return {"opportunities": [_view(r) for r in rows if _is_public(r)]}
 
 
 @router.get("/opportunities/{opportunity_id}")
 async def published_opportunity(opportunity_id: int) -> dict:
     row = await database.get(f"/opportunities/{opportunity_id}")
-    if row is None or row.get("status") != "approved":
+    if row is None or not _is_public(row):
         raise HTTPException(404, "No published opportunity with that id")
     return _view(row)
 
@@ -140,6 +177,7 @@ async def submit_opportunity(
 ) -> dict:
     if not session.user.id:
         raise HTTPException(401, "Sign in to submit an opportunity")
+    _validate_posted_until(payload)
     # Client cannot choose submitted_by, moderation status, or review notes.
     row = await database.post(
         "/opportunities", {**payload.model_dump(mode="json"), "submitted_by": session.user.id}
@@ -181,6 +219,7 @@ async def resubmit_opportunity(
     payload: OpportunityCreate,
     session: AuthSession = Depends(require_session),
 ) -> dict:
+    _validate_posted_until(payload)
     row = await database.put(f"/opportunities/{opportunity_id}", {
         **payload.model_dump(mode="json"), "owner_id": session.user.id,
     })
@@ -261,8 +300,9 @@ async def moderate_opportunity(
     row = await database.get(f"/opportunities/{opportunity_id}")
     if row is None:
         raise HTTPException(404, "No such submission")
-    if row.get("status") != "pending":
-        raise HTTPException(409, "That submission has already been reviewed")
+    revision_review = row.get("status") == "approved" and bool(row.get("pending_revision"))
+    if row.get("status") != "pending" and not revision_review:
+        raise HTTPException(409, "There is no submission awaiting review")
 
     body = {
         "decision": request.decision,
@@ -271,11 +311,42 @@ async def moderate_opportunity(
         "reviewed_by": session.user.id,
     }
     if request.decision == "approved":
-        subject, message, _ = _announcement(row)
+        candidate = dict(row)
+        if revision_review:
+            candidate.update({key: row["pending_revision"][key] for key in (
+                "title", "description", "links", "target_years",
+                "contact_email", "contact_phone",
+            )})
+        subject, message, _ = _announcement(candidate)
         body.update({"campaign_subject": subject, "campaign_body": message})
     # The adapter atomically locks the decision. Approval publishes the listing
     # and prepares the owner's email draft but DOES NOT create an email campaign.
     result = await database.post(f"/opportunities/{opportunity_id}/review", body)
     reviewed = result["opportunity"]
-    opportunity_notifications.dispatch(opportunity_notifications.alert_submitter(reviewed))
+    opportunity_notifications.dispatch(opportunity_notifications.alert_submitter(
+        reviewed, revision_decision=request.decision if revision_review else None
+    ))
     return {"opportunity": _view(reviewed, committee=True), "emailCampaignId": None}
+
+
+
+@router.post(
+    "/admin/opportunities/{opportunity_id}/takedown",
+    dependencies=[Depends(require_any_action("opportunities.unpublish", "opportunities.return_for_changes")), Depends(verify_csrf)],
+)
+async def takedown_opportunity(
+    opportunity_id: int,
+    request: TakedownRequest,
+    session: AuthSession = Depends(require_opportunities_admin),
+) -> dict:
+    needed = "opportunities.return_for_changes" if request.allow_edit else "opportunities.unpublish"
+    if not session.can(needed):
+        raise HTTPException(403, f"Permission required: {needed}")
+    if request.allow_edit and not (request.notes or "").strip():
+        raise HTTPException(400, "Explain what needs to be changed before sending it back")
+    result = await database.post(f"/opportunities/{opportunity_id}/takedown", {
+        "decision": "rejected", "allow_edit": request.allow_edit,
+        "notes": request.notes, "reviewed_by": session.user.id,
+    })
+    opportunity_notifications.dispatch(opportunity_notifications.alert_submitter(result))
+    return {"opportunity": _view(result, committee=True)}

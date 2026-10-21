@@ -20,6 +20,7 @@ const years = [
   ['msc', 'MSc'], ['phd', 'PhD'],
 ]
 const yearName = (id) => years.find(([key]) => key === id)?.[1] || id
+const todayLondon = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/London' }).format(new Date())
 const items = ref([])
 const mine = ref([])
 const loading = ref(true)
@@ -34,6 +35,7 @@ const imageFiles = ref([])
 const existingImages = ref([])
 const editingId = ref(null)
 const editingNotes = ref('')
+const editingWasApproved = ref(false)
 const editingAnnouncement = ref(null)
 const draft = reactive({ subject: '', body: '' })
 const draftBusy = ref(false)
@@ -41,7 +43,7 @@ const draftNotice = ref('')
 const opportunity = ref(null)
 const form = reactive({
   title: '', description: '', links: [''], contact_email: '',
-  contact_phone: '', target_years: [],
+  contact_phone: '', target_years: [], posted_until: '',
 })
 const detailId = computed(() => {
   const raw = route.params.id
@@ -102,11 +104,12 @@ function startSubmit() {
   draftNotice.value = ''
   editingId.value = null
   editingNotes.value = ''
+  editingWasApproved.value = false
   imageFiles.value = []
   existingImages.value = []
   Object.assign(form, {
     title: '', description: '', links: [''], contact_email: '',
-    contact_phone: '', target_years: [],
+    contact_phone: '', target_years: [], posted_until: '',
   })
   formError.value = ''
   view.value = 'submit'
@@ -170,6 +173,7 @@ async function submit() {
       contact_email: form.contact_email.trim() || null,
       contact_phone: form.contact_phone.trim() || null,
       target_years: form.target_years,
+      posted_until: form.posted_until || null,
       image_ids: ids,
     }
     if (editingId.value) {
@@ -181,7 +185,7 @@ async function submit() {
     existingImages.value = []
     Object.assign(form, {
       title: '', description: '', links: [''], contact_email: '',
-      contact_phone: '', target_years: [],
+      contact_phone: '', target_years: [], posted_until: '',
     })
     imageFiles.value = []
     submitted.value = true
@@ -194,11 +198,12 @@ async function submit() {
   }
 }
 
-function editRejected(item) {
+function editSubmission(item) {
   if (!session.authenticated) { openLogin(); return }
-  if (item.status !== 'rejected' || !item.allowEdit) return
+  if (!((item.status === 'rejected' && item.allowEdit) || (item.status === 'approved' && !item.pendingRevision))) return
   editingId.value = item.id
-  editingNotes.value = item.reviewNotes || ''
+  editingWasApproved.value = item.status === 'approved'
+  editingNotes.value = item.status === 'rejected' ? item.reviewNotes || '' : ''
   imageFiles.value = []
   existingImages.value = [...item.images]
   Object.assign(form, {
@@ -208,6 +213,7 @@ function editRejected(item) {
     contact_email: item.contactEmail || '',
     contact_phone: item.contactPhone || '',
     target_years: [...item.targetYears],
+    posted_until: item.postedUntil || '',
   })
   submitted.value = false
   formError.value = ''
@@ -291,6 +297,7 @@ watch(detailId, loadPublished)
       <p v-if="loading">Loading opportunity…</p>
       <article v-else-if="opportunity" class="opps__detail">
         <span class="opps__eyebrow">Approved opportunity · {{ date(opportunity.approvedAt) }}</span>
+        <p v-if="opportunity.postedUntil" class="opps__meta">Posted until {{ date(opportunity.postedUntil) }}</p>
         <h2 class="opps__title">{{ opportunity.title }}</h2>
         <div class="opps__years"><Badge v-for="year in opportunity.targetYears" :key="year" tone="brand">{{ yearName(year) }}</Badge></div>
         <p class="opps__description">{{ opportunity.description }}</p>
@@ -318,6 +325,7 @@ watch(detailId, loadPublished)
             <img v-if="item.images.length" class="opps__cover" :src="item.images[0].url" :alt="`Image for ${item.title}`" loading="lazy" />
             <div class="opps__listing-body">
               <span class="opps__eyebrow">{{ date(item.approvedAt) }}</span>
+              <p v-if="item.postedUntil" class="opps__meta">Posted until {{ date(item.postedUntil) }}</p>
               <h2>{{ item.title }}</h2>
               <div class="opps__years"><Badge v-for="year in item.targetYears" :key="year" tone="brand">{{ yearName(year) }}</Badge></div>
               <p class="opps__excerpt">{{ item.description }}</p>
@@ -344,15 +352,19 @@ watch(detailId, loadPublished)
         </div>
         <p class="opps__meta">Submitted {{ date(item.createdAt) }} · For {{ item.targetYears.map(yearName).join(', ') }}</p>
         <p class="opps__description">{{ item.description }}</p>
+        <p v-if="item.postedUntil" class="opps__meta">Posted until {{ date(item.postedUntil) }}</p>
+        <p v-if="item.pendingRevision" class="opps__review"><strong>Updated card awaiting approval.</strong> The currently approved version remains visible to the public until the committee reviews your changes (or its posting deadline passes). Proposed title: {{ item.pendingRevision.title }}<template v-if="item.pendingRevision.postedUntil"> · proposed deadline: {{ date(item.pendingRevision.postedUntil) }}</template>.</p>
+        <p v-if="item.status === 'approved' && item.postedUntil && item.postedUntil < todayLondon" class="opps__meta">This opportunity has expired and is no longer publicly listed.</p>
         <p v-if="item.reviewNotes" class="opps__review"><strong>Admin notes:</strong> {{ item.reviewNotes }}</p>
         <p v-if="item.status === 'pending'" class="opps__meta">Waiting for admin review. Only you and the admins can see this.</p>
         <template v-if="item.status === 'rejected'">
           <p v-if="item.allowEdit" class="opps__meta">An admin has allowed revisions. Edit the details based on the feedback and submit them for another review.</p>
           <p v-else class="opps__meta">This submission is closed. You can make a new submission instead.</p>
-          <div v-if="item.allowEdit"><Button size="sm" variant="secondary" @click="editRejected(item)">Edit & resubmit</Button></div>
+          <div v-if="item.allowEdit"><Button size="sm" variant="secondary" @click="editSubmission(item)">Edit & resubmit</Button></div>
         </template>
         <template v-if="item.status === 'approved'">
-          <router-link :to="`/opportunities/${item.id}`" class="opps__link">View published listing ↗</router-link>
+          <div v-if="!item.pendingRevision" class="opps__actions"><Button size="sm" variant="secondary" @click="editSubmission(item)">Edit listing</Button></div>
+          <router-link v-if="!item.postedUntil || item.postedUntil >= todayLondon" :to="`/opportunities/${item.id}`" class="opps__link">View published listing ↗</router-link>
           <div v-if="!item.emailCampaignId" class="opps__actions">
             <Badge tone="accent">Announcement draft</Badge>
             <Button size="sm" variant="secondary" @click="openDraft(item)">Draft announcement email</Button>
@@ -383,8 +395,8 @@ watch(detailId, loadPublished)
     </section>
 
     <section v-else-if="view === 'submit'" class="opps__column">
-      <h2 class="opps__heading">{{ editingId ? 'Edit rejected opportunity' : 'Submit an opportunity' }}</h2>
-      <p class="opps__intro">{{ editingId ? 'An admin allowed revisions. Change the details using their notes, then resubmit for a new approval. The previous approval decision will not carry over.' : 'You must be signed in. Your submission will not be public until it has been approved by an admin. Contact details you enter will be shown on the public listing if approved.' }}</p>
+      <h2 class="opps__heading">{{ editingId ? (editingWasApproved ? 'Edit published opportunity' : 'Edit returned opportunity') : 'Submit an opportunity' }}</h2>
+      <p class="opps__intro">{{ editingId ? (editingWasApproved ? 'Your proposed changes will go to committee approval. The current approved listing stays public, unchanged, until those changes are approved or its deadline passes.' : 'An admin allowed revisions. Change the details using their notes, then resubmit for a new approval.') : 'You must be signed in. Your submission will not be public until it has been approved by an admin. Contact details you enter will be shown on the public listing if approved.' }}</p>
       <p v-if="editingId && editingNotes" class="opps__review"><strong>Admin feedback to address:</strong> {{ editingNotes }}</p>
       <form class="opps__form" @submit.prevent="submit">
         <Field label="Title" required><Input v-model="form.title" required maxlength="180" placeholder="e.g. Summer research programme" /></Field>
@@ -402,6 +414,9 @@ watch(detailId, loadPublished)
           <Field label="Contact email" help="Optional; public after approval."><Input v-model="form.contact_email" type="email" placeholder="organiser@example.com" /></Field>
           <Field label="Contact phone" help="Optional; public after approval."><Input v-model="form.contact_phone" type="tel" maxlength="40" placeholder="+44 …" /></Field>
         </div>
+        <Field label="Posted until" help="Optional. The opportunity automatically disappears from the public page after this date (inclusive). You can submit an updated deadline for committee approval.">
+          <Input v-model="form.posted_until" type="date" :min="todayLondon" />
+        </Field>
         <Field label="Target year groups" required help="Choose all groups who should see this opportunity. These will also be the proposed audiences for the email announcement.">
           <div class="opps__years-choice">
             <label v-for="[id, label] in years" :key="id"><input v-model="form.target_years" type="checkbox" :value="id" /> {{ label }}</label>
@@ -419,7 +434,7 @@ watch(detailId, loadPublished)
         </Field>
         <p v-if="formError" class="opps__error" role="alert">{{ formError }}</p>
         <div class="opps__actions">
-          <Button :disabled="posting" type="submit">{{ posting ? 'Submitting…' : editingId ? 'Resubmit for approval' : 'Send for approval' }}</Button>
+          <Button :disabled="posting" type="submit">{{ posting ? 'Submitting…' : editingId ? (editingWasApproved ? 'Send changes for approval' : 'Resubmit for approval') : 'Send for approval' }}</Button>
           <Button :disabled="posting" variant="ghost" type="button" @click="view = 'list'">Cancel</Button>
         </div>
       </form>

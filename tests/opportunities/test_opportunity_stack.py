@@ -213,3 +213,66 @@ def test_non_admin_committee_role_cannot_moderate(api, superuser_client):
         assert officer.post("/admin/opportunities/1/review", json={
             "decision": "approved",
         }).status_code == 403
+
+
+def test_approved_changes_stay_private_until_review_and_takedown_removes_listing(
+    api, member_client, admin_client, superuser_client,
+):
+    """Exercises JSONB decoding, revision approval and takedown in real Postgres."""
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    future = (datetime.now(ZoneInfo("Europe/London")).date() + timedelta(days=14)).isoformat()
+    created = member_client.post("/opportunities", json=submission(posted_until=future))
+    assert created.status_code in (200, 201), created.text
+    ident = created.json()["id"]
+    reviewed = admin_client.post(f"/admin/opportunities/{ident}/review", json={"decision": "approved"})
+    assert reviewed.status_code == 200, reviewed.text
+    original = api.get(f"/opportunities/{ident}")
+    assert original.status_code == 200, original.text
+    original_title = original.json()["title"]
+    assert original.json()["postedUntil"] == future
+
+    updated = submission(title=f"Updated {original_title}", posted_until=future,
+                         description="The revised programme is now open to a different set of applicants.")
+    # The owner gate remains effective even for approved opportunities.
+    assert superuser_client.put(f"/me/opportunities/{ident}", json=updated).status_code == 409
+    proposed = member_client.put(f"/me/opportunities/{ident}", json=updated)
+    assert proposed.status_code == 200, proposed.text
+    assert proposed.json()["status"] == "approved"
+    assert proposed.json()["pendingRevision"]["title"] == updated["title"]
+    assert member_client.put(f"/me/opportunities/{ident}", json=updated).status_code == 409
+    assert api.get(f"/opportunities/{ident}").json()["title"] == original_title
+    assert not any(r.get("pendingRevision") for r in api.get("/opportunities").json()["opportunities"])
+
+    # Rejecting a proposed revision must keep the previously approved content.
+    rejected = admin_client.post(f"/admin/opportunities/{ident}/review", json={
+        "decision": "rejected", "notes": "Please clarify the contact details."
+    })
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["opportunity"]["status"] == "approved"
+    assert own(member_client, ident)["pendingRevision"] is None
+    assert api.get(f"/opportunities/{ident}").json()["title"] == original_title
+
+    # Accept the next revision; this was the direct JSONB decoding bug path.
+    assert member_client.put(f"/me/opportunities/{ident}", json=updated).status_code == 200
+    approved_revision = admin_client.post(f"/admin/opportunities/{ident}/review", json={
+        "decision": "approved"
+    })
+    assert approved_revision.status_code == 200, approved_revision.text
+    public_updated = api.get(f"/opportunities/{ident}")
+    assert public_updated.status_code == 200, public_updated.text
+    assert public_updated.json()["title"] == updated["title"]
+    assert own(member_client, ident)["pendingRevision"] is None
+
+    # The two independent actions remove published content immediately.
+    removed = admin_client.post(f"/admin/opportunities/{ident}/takedown", json={
+        "allow_edit": True, "notes": "The advertised position is no longer available."
+    })
+    assert removed.status_code == 200, removed.text
+    assert api.get(f"/opportunities/{ident}").status_code == 404
+    mine = own(member_client, ident)
+    assert mine["status"] == "rejected"
+    assert mine["allowEdit"] is True
+    assert member_client.put(f"/me/opportunities/{ident}", json=updated).status_code == 200
+    assert api.get(f"/opportunities/{ident}").status_code == 404

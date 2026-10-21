@@ -395,7 +395,7 @@ watch(detailId, loadPublished)
     </section>
 
     <section v-else-if="view === 'submit'" class="opps__column">
-      <h2 class="opps__heading">{{ editingId ? (editingWasApproved ? 'Edit published opportunity' : 'Edit returned opportunity') : 'Submit an opportunity' }}</h2>
+      <h2 class="opps__heading">{{ editingId ? (editingWasApproved ? 'Edit published opportunity' : 'Edit rejected opportunity') : 'Submit an opportunity' }}</h2>
       <p class="opps__intro">{{ editingId ? (editingWasApproved ? 'Your proposed changes will go to committee approval. The current approved listing stays public, unchanged, until those changes are approved or its deadline passes.' : 'An admin allowed revisions. Change the details using their notes, then resubmit for a new approval.') : 'You must be signed in. Your submission will not be public until it has been approved by an admin. Contact details you enter will be shown on the public listing if approved.' }}</p>
       <p v-if="editingId && editingNotes" class="opps__review"><strong>Admin feedback to address:</strong> {{ editingNotes }}</p>
       <form class="opps__form" @submit.prevent="submit">

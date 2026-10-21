@@ -208,7 +208,9 @@ async def review_opportunity(opportunity_id: int, review: OpportunityReview) -> 
         current = await conn.fetchrow("SELECT status, pending_revision FROM public.opportunities WHERE id=$1 FOR UPDATE", opportunity_id)
         if current and current['status'] == 'approved' and current['pending_revision'] is not None:
             if review.decision == 'approved':
-                revision = current['pending_revision']
+                raw_revision = current['pending_revision']
+                # asyncpg decodes jsonb as text unless a codec was registered.
+                revision = json.loads(raw_revision) if isinstance(raw_revision, str) else raw_revision
                 await conn.execute("""UPDATE public.opportunities SET
                     title=$2, description=$3, links=$4::jsonb, contact_email=$5,
                     contact_phone=$6, target_years=$7::jsonb, image_ids=$8, posted_until=$9,

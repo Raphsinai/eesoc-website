@@ -420,13 +420,17 @@ function editEvent(e) {
   // Prefill the product and per-ticket line selects from existing links.
   const ev = links.value.find((l) => l.event_id === e.id && l.ticket_type_id === null)
   eventProduct.value = ev?.union_product_id ?? null
+  eventProductMode.value = ev && isManualOnlyProduct(ev) ? 'manual' : 'api'
+  eventShopRef.value = ev && isManualOnlyProduct(ev) ? shortShopId(ev.union_product_id) : ''
   for (const t of draft.ticket_types) {
     const link = links.value.find((l) => l.ticket_type_id === t.id)
-    // Same "productId:lineId" key the product <select> uses, so the
-    // existing choice shows as selected rather than blank.
+    // Retain existing linked IDs, even when the feed has never listed them.
     ticketProducts[t.id] = link
       ? `${link.union_product_id}:${link.union_product_line_id ?? ''}`
       : ''
+    ticketProductModes[t.id] = link && isManualOnlyProduct(link) ? 'manual' : 'api'
+    ticketShopRefs[t.id] = link && isManualOnlyProduct(link)
+      ? shortShopId(link.union_product_id) : ''
   }
   tab.value = 'events'
 }
@@ -1770,7 +1774,7 @@ async function impersonate() {
 // Union products are linked the way eActivities is shaped: ONE product for the
 // event, and optionally ONE line per ticket type. Picking "any line or a
 // specific line" against every ticket separately was two forms doing one job.
-const linkForm = reactive({ purpose: 'locker', union_key: '' })
+const linkForm = reactive({ purpose: 'locker', union_key: '', input_mode: 'api', shop_ref: '' })
 
 /** The event-level link, if any. */
 const eventLink = computed(
@@ -1783,6 +1787,9 @@ const productOptions = computed(() => {
   for (const p of products.value) {
     if (!seen.has(p.product_id)) seen.set(p.product_id, p.product_name)
   }
+  if (eventProduct.value && !seen.has(eventProduct.value)) {
+    seen.set(eventProduct.value, `Previously linked product #${eventProduct.value} (not in feed)`)
+  }
   return [...seen.entries()].map(([id, name]) => ({ id, name }))
 })
 
@@ -1792,15 +1799,39 @@ const productOptions = computed(() => {
  * product, not a line within the event's product. The line is still carried in
  * the key for the rarer case of one product with several lines.
  */
-const ticketProductOptions = computed(() =>
-  products.value.map((p) => ({
+const ticketProductOptions = computed(() => {
+  const options = products.value.map((p) => ({
     key: `${p.product_id}:${p.product_line_id ?? ''}`,
     label:
       p.line_name && p.line_name !== p.product_name
         ? `${p.product_name} — ${p.line_name}`
         : p.product_name,
-  })),
-)
+  }))
+  for (const key of Object.values(ticketProducts)) {
+    if (key && !options.some((p) => p.key === key)) {
+      options.push({ key, label: `Previously linked product #${key} (not in feed)` })
+    }
+  }
+  return options
+})
+
+// The Union shop displays #3023 but eActivities' sales feed records #1003023.
+// The API selection path continues to send its original id untouched; only
+// manual entry is converted on the server when saved.
+function shortShopId(productId) {
+  return String(productId > 1_000_000 ? productId - 1_000_000 : productId)
+}
+function isManualOnlyProduct(link) {
+  return link.union_product_id > 1_000_000 && !products.value.some(
+    (p) => p.product_id === link.union_product_id &&
+      (link.union_product_line_id == null || p.product_line_id === link.union_product_line_id),
+  )
+}
+function manualRef(input) {
+  const value = String(input || '').trim()
+  if (!value) throw new Error('Enter a SUMS product ID or Union shop URL.')
+  return value
+}
 
 function productNameFor(ticketTypeId) {
   const link = linkFor(ticketTypeId)
@@ -1815,15 +1846,20 @@ function productNameFor(ticketTypeId) {
 }
 
 const eventProduct = ref(null)
+const eventProductMode = ref('api')
+const eventShopRef = ref('')
+const ticketProductModes = reactive({})
+const ticketShopRefs = reactive({})
 
 async function saveEventProduct() {
   busy.value = true
   error.value = ''
   try {
-    await api.put(`/admin/events/${editingId.value}/product`, {
-      union_product_id: eventProduct.value || null,
-    })
-    flash(eventProduct.value ? 'Product linked to this event.' : 'Product unlinked.')
+    const manual = eventProductMode.value === 'manual'
+    await api.put(`/admin/events/${editingId.value}/product`, manual
+      ? { shop_product_ref: manualRef(eventShopRef.value) }
+      : { union_product_id: eventProduct.value || null })
+    flash(manual || eventProduct.value ? 'Product linked to this event.' : 'Product unlinked.')
     await load()
   } catch (e) {
     error.value = e.message
@@ -1839,12 +1875,15 @@ async function saveTicketProduct(t) {
     // The select's value is "productId:lineId"; the line half is empty when
     // the product has only one line, which is the usual case now that each
     // ticket type is its own product.
+    const manual = ticketProductModes[t.id] === 'manual'
     const [productId, lineId] = String(ticketProducts[t.id] || '').split(':')
-    await api.put(`/admin/ticket-types/${t.id}/product`, {
-      union_product_id: productId ? Number(productId) : null,
-      union_product_line_id: lineId ? Number(lineId) : null,
-    })
-    flash(productId ? `${t.name} linked to its product.` : `${t.name} unlinked.`)
+    await api.put(`/admin/ticket-types/${t.id}/product`, manual
+      ? { shop_product_ref: manualRef(ticketShopRefs[t.id]) }
+      : {
+          union_product_id: productId ? Number(productId) : null,
+          union_product_line_id: lineId ? Number(lineId) : null,
+        })
+    flash(manual || productId ? `${t.name} linked to its product.` : `${t.name} unlinked.`)
     await load()
   } catch (e) {
     error.value = e.message
@@ -1857,8 +1896,9 @@ const ticketProducts = reactive({})
 
 async function createLink() {
   error.value = ''
+  const manual = linkForm.input_mode === 'manual'
   const [productId, lineId] = String(linkForm.union_key).split(':')
-  if (!productId) {
+  if (!manual && !productId) {
     error.value = 'Pick a Union product.'
     return
   }
@@ -1867,11 +1907,13 @@ async function createLink() {
       purpose: linkForm.purpose,
       event_id: null,
       ticket_type_id: null,
-      union_product_id: Number(productId),
-      union_product_line_id: lineId ? Number(lineId) : null,
+      ...(manual
+        ? { shop_product_ref: manualRef(linkForm.shop_ref) }
+        : { union_product_id: Number(productId), union_product_line_id: lineId ? Number(lineId) : null }),
     })
     flash('Product linked.')
     linkForm.union_key = ''
+    linkForm.shop_ref = ''
     await load()
   } catch (e) {
     error.value = e.message
@@ -2267,11 +2309,20 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 which takes precedence over anything chosen here.
               </p>
               <div v-if="editingId" style="display:flex; gap:var(--space-2); align-items:flex-end; flex-wrap:wrap">
-                <Field label="Product" style="flex:1 1 220px">
+                <Field label="Link using" style="flex:0 1 180px">
+                  <select v-model="eventProductMode" class="ees-select">
+                    <option value="api">Synced API product</option>
+                    <option value="manual">SUMS ID / shop URL</option>
+                  </select>
+                </Field>
+                <Field v-if="eventProductMode === 'api'" label="Product" style="flex:1 1 220px">
                   <select v-model="eventProduct" class="ees-select">
                     <option :value="null">Not linked</option>
                     <option v-for="p in productOptions" :key="p.id" :value="p.id">{{ p.name }}</option>
                   </select>
+                </Field>
+                <Field v-else label="SUMS product ID or shop URL" style="flex:1 1 220px">
+                  <Input v-model="eventShopRef" placeholder="3023 or https://www-s.imperialcollegeunion.org/shop/product/3023-/" />
                 </Field>
                 <Button v-if="can('events.ticket_types.product')" size="sm" :disabled="busy" @click="saveEventProduct">Link</Button>
               </div>
@@ -2279,7 +2330,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 Save the event first, then link its Union product.
               </p>
               <p v-if="!products.length" style="margin:0; font:var(--type-2xs); color:var(--danger)">
-                No Union products synced — press "Sync from eActivities" on the Overview.
+                No products in the API feed yet. You can still link using a SUMS ID or shop URL.
               </p>
 
               <TraceRule />
@@ -2310,13 +2361,22 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                      "no alcohol" seat. -->
                 <template v-if="t.id && t.requires_purchase && can('events.ticket_types.product')">
                   <div style="display:flex; gap:var(--space-2); align-items:flex-end; flex-wrap:wrap">
-                    <Field label="Union product" style="flex:1 1 260px">
+                    <Field label="Link using" style="flex:0 1 180px">
+                      <select v-model="ticketProductModes[t.id]" class="ees-select">
+                        <option value="api">Synced API product</option>
+                        <option value="manual">SUMS ID / shop URL</option>
+                      </select>
+                    </Field>
+                    <Field v-if="ticketProductModes[t.id] !== 'manual'" label="Union product" style="flex:1 1 260px">
                       <select v-model="ticketProducts[t.id]" class="ees-select">
                         <option value="">Not linked — use the event's product</option>
                         <option v-for="o in ticketProductOptions" :key="`${t.id}-${o.key}`" :value="o.key">
                           {{ o.label }}
                         </option>
                       </select>
+                    </Field>
+                    <Field v-else label="SUMS product ID or shop URL" style="flex:1 1 260px">
+                      <Input v-model="ticketShopRefs[t.id]" placeholder="3023 or paste the full Union shop URL" />
                     </Field>
                     <Button v-if="can('events.ticket_types.product')" size="sm" :disabled="busy" @click="saveTicketProduct(t)">Link</Button>
                   </div>
@@ -2784,7 +2844,13 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                   <option value="membership">Membership</option>
                 </select>
               </Field>
-              <Field label="Union product" help="'Any line' is the safe default — line ids are not guaranteed unique across products.">
+              <Field label="Link using">
+                <select v-model="linkForm.input_mode" class="ees-select">
+                  <option value="api">Synced API product</option>
+                  <option value="manual">SUMS ID / shop URL</option>
+                </select>
+              </Field>
+              <Field v-if="linkForm.input_mode === 'api'" label="Union product" help="'Any line' is the safe default — line ids are not guaranteed unique across products.">
                 <select v-model="linkForm.union_key" class="ees-select">
                   <option value="">Choose…</option>
                   <optgroup label="Any line of the product">
@@ -2795,9 +2861,12 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                   </optgroup>
                 </select>
               </Field>
-              <Button v-if="can('products.link')" :disabled="!products.length" @click="createLink">Link product</Button>
+              <Field v-else label="SUMS product ID or shop URL">
+                <Input v-model="linkForm.shop_ref" placeholder="2771 or paste the full Union shop URL" />
+              </Field>
+              <Button v-if="can('products.link')" :disabled="busy || (linkForm.input_mode === 'api' && !products.length)" @click="createLink">Link product</Button>
               <p v-if="!products.length" style="margin:0; font:var(--type-2xs); color:var(--danger)">
-                No Union products synced yet — press "Sync from eActivities" on the Overview first.
+                No products in the API feed yet. You can still link using a SUMS ID or shop URL.
               </p>
             </div>
           </Card>

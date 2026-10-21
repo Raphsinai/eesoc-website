@@ -64,6 +64,7 @@ from utils.deps import (
 )
 from utils import roles as role_table
 from utils.year import academic_year
+from utils.shop_products import resolve_product_id
 
 log = logging.getLogger("api.admin")
 
@@ -866,6 +867,7 @@ async def union_products(
 async def set_event_product(
     event_id: int,
     union_product_id: int | None = Body(default=None, embed=True),
+    shop_product_ref: str | None = Body(default=None, embed=True),
     session: AuthSession = Depends(require_event_editor),
 ) -> dict:
     """Link the whole Union product to the whole event.
@@ -875,6 +877,8 @@ async def set_event_product(
     second, which would make matching ambiguous.
     """
     await _editable_event(event_id, session)
+    # Validate BEFORE removing a previous link; malformed shop ids must not unlink.
+    union_product_id = resolve_product_id(union_product_id, shop_product_ref)
     existing = await database.get("/product-links", {"event_id": event_id}) or []
     for link in existing:
         if link["ticket_type_id"] is None:
@@ -904,6 +908,7 @@ async def set_ticket_product(
     ticket_type_id: int,
     union_product_id: int | None = Body(default=None, embed=True),
     union_product_line_id: int | None = Body(default=None, embed=True),
+    shop_product_ref: str | None = Body(default=None, embed=True),
     session: AuthSession = Depends(require_event_editor),
 ) -> dict:
     """Point one ticket type at its own Union product.
@@ -921,6 +926,9 @@ async def set_ticket_product(
     for one ticket type would make matching ambiguous.
     """
     ticket = await _editable_ticket(ticket_type_id, session)
+    union_product_id = resolve_product_id(union_product_id, shop_product_ref)
+    if shop_product_ref is not None and union_product_line_id is not None:
+        raise HTTPException(400, "Manual shop links use any line of the product.")
 
     if union_product_id is None and union_product_line_id is not None:
         raise HTTPException(
@@ -975,6 +983,12 @@ async def create_link(
     so pinning one is only worth doing when a product genuinely has several
     lines you need to tell apart.
     """
+    # Manual references are never passed to the database adapter as extra fields.
+    shop_product_ref = body.pop("shop_product_ref", None)
+    if shop_product_ref is not None:
+        if body.get("union_product_line_id") is not None:
+            raise HTTPException(400, "Manual shop links use any line of the product.")
+        body["union_product_id"] = resolve_product_id(body.get("union_product_id"), shop_product_ref)
     body.setdefault("academic_year", academic_year())
     body["created_by"] = session.user.id
     if not body.get("purpose"):

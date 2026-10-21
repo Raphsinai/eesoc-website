@@ -2263,14 +2263,14 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             </Card>
           </div>
 
-          <Card v-if="can('events.create') || can('events.edit')" variant="offset">
+          <Card v-if="can('events.create') || can('events.edit')" variant="offset" class="event-editor">
             <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">
               {{ editingId ? 'Edit event' : 'New event' }}
             </h2>
-            <div style="display:grid; gap:var(--space-4)">
+            <div class="event-editor__form">
               <Field label="Title"><Input v-model="draft.title" /></Field>
               <Field label="Slug" help="Used in the URL."><Input v-model="draft.slug" /></Field>
-              <div style="display:grid; grid-template-columns:1fr 1fr; gap:var(--space-3)">
+              <div class="event-editor__pair">
                 <Field label="Category"><Input v-model="draft.category" /></Field>
                 <Field label="Venue"><Input v-model="draft.venue" /></Field>
               </div>
@@ -2284,7 +2284,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                   type="file"
                   accept="image/jpeg,image/png,image/webp,image/gif"
                   :disabled="busy"
-                  style="font-size:var(--text-xs)"
+                  class="event-editor__file"
                   @change="uploadEventImage"
                 />
                 <img
@@ -2297,7 +2297,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               <Field label="Description">
                 <textarea v-model="draft.description" rows="4" class="ees-textarea" />
               </Field>
-              <div style="display:grid; grid-template-columns:1fr 1fr; gap:var(--space-3)">
+              <div class="event-editor__pair">
                 <Field label="Starts"><Input v-model="draft.starts_at" type="datetime-local" /></Field>
                 <Field label="Ends"><Input v-model="draft.ends_at" type="datetime-local" /></Field>
               </div>
@@ -2307,7 +2307,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
               >
                 <Input v-model="draft.doors_close_at" type="datetime-local" />
               </Field>
-              <div style="display:grid; grid-template-columns:1fr 1fr; gap:var(--space-3)">
+              <div class="event-editor__pair">
                 <Field label="Total capacity" help="Blank = per-type only."><Input v-model.number="draft.capacity" type="number" min="1" /></Field>
                 <Field label="Hold (days)" help="Pay by midnight on the last day; 1 = the day they book."><Input v-model.number="draft.hold_days" type="number" min="1" /></Field>
               </div>
@@ -2397,8 +2397,8 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
 
               <TraceRule />
               <h3 style="margin:0; font:var(--type-h5)">Ticket types</h3>
-              <div v-for="(t, i) in draft.ticket_types" :key="i" style="display:grid; gap:var(--space-2); padding:var(--space-3) 0; border-top:1px solid var(--border-hairline)">
-                <div style="display:grid; grid-template-columns:2fr 1fr 1fr 1fr; gap:var(--space-2)">
+              <div v-for="(t, i) in draft.ticket_types" :key="i" class="event-editor__ticket">
+                <div class="event-editor__ticket-fields">
                   <Field label="Name"><Input v-model="t.name" :disabled="!can(t.id ? 'events.ticket_types.edit' : 'events.ticket_types.create')" placeholder="With alcohol" /></Field>
                   <Field label="Price (£)"><Input v-model="t.price_pounds" :disabled="!can(t.id ? 'events.ticket_types.edit' : 'events.ticket_types.create')" inputmode="decimal" placeholder="0" /></Field>
                   <Field label="Cap"><Input v-model.number="t.capacity" :disabled="!can(t.id ? 'events.ticket_types.edit' : 'events.ticket_types.create')" type="number" min="1" /></Field>
@@ -2628,7 +2628,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 nothing until you publish. Link the sponsor who takes it from their
                 page under Sponsors, which takes it off everyone else's list.
               </p>
-              <div style="display:flex; gap:var(--space-3)">
+              <div class="event-editor__actions">
                 <Button v-if="editingId ? can('events.edit') : can('events.create')" :disabled="busy" @click="saveEvent">{{ editingId ? 'Save changes' : 'Create event' }}</Button>
                 <Button variant="ghost" @click="resetDraft">Clear</Button>
               </div>
@@ -3885,6 +3885,32 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-md);
   background: var(--white, #fff);
+}
+
+/* The event editor sits beside the event list on desktop, but is a single
+   column on phones. Explicit minmax(0, ...) tracks and shrinkable children
+   prevent form controls (particularly datetime-local and ticket fields) from
+   imposing a ~500px min-content width inside a ~300px card. */
+.event-editor { min-width: 0; }
+.event-editor__form { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); min-width: 0; }
+.event-editor__form > *,
+.event-editor .ees-field { min-width: 0; }
+.event-editor .ees-input,
+.event-editor .ees-select,
+.event-editor .ees-textarea { min-width: 0; max-width: 100%; }
+.event-editor__pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+.event-editor__file { min-width: 0; max-width: 100%; font-size: var(--text-xs); }
+.event-editor__ticket { display: grid; min-width: 0; gap: var(--space-2); padding: var(--space-3) 0; border-top: 1px solid var(--border-hairline); }
+.event-editor__ticket-fields { display: grid; grid-template-columns: minmax(0, 2fr) repeat(3, minmax(0, 1fr)); gap: var(--space-2); }
+.event-editor__actions { display: flex; flex-wrap: wrap; gap: var(--space-3); }
+
+@media (max-width: 680px) {
+  /* Preserve usable editing space rather than spending 64px on page gutters. */
+  .admin { padding: var(--space-6) var(--space-3); }
+  .event-editor.ees-card__pad { padding: var(--space-4); }
+  .event-editor__pair { grid-template-columns: minmax(0, 1fr); }
+  .event-editor__ticket-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .event-editor__ticket-fields > :nth-child(-n+2) { grid-column: 1 / -1; }
 }
 
 /* Fixed page frame. Everything inside must be able to shrink, or a wide tab

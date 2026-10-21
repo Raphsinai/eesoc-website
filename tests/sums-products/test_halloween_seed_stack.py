@@ -19,7 +19,7 @@ def test_halloween_2026_mapping_is_scoped_idempotent_and_respects_existing_links
         INSERT INTO public.events (slug, title, starts_at, academic_year)
         VALUES ('halloween', 'Halloween x BioEng x BioSoc',
                 '2026-10-31T18:00:00Z', '26-27') RETURNING id
-    "").splitlines()[0])
+    """).splitlines()[0])
     try:
         sql(f"""
             INSERT INTO public.ticket_types (event_id, name, price_pence, requires_purchase)

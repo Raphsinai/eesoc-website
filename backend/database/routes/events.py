@@ -4,9 +4,10 @@ The interesting part is `reserve()`. Everything else is CRUD.
 """
 
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 from asyncpg.exceptions import UniqueViolationError
-from fastapi import APIRouter
+from fastapi import APIRouter, Body
 from fastapi.exceptions import HTTPException
 
 from models.events import (
@@ -40,7 +41,7 @@ def _target_years_text(years: list[int]) -> str:
 EVENT_COLUMNS = """
     id, slug, title, category, description, image_url, venue, starts_at, ends_at,
     doors_close_at,
-    capacity, hold_hours, published, sponsorship_claimable,
+    capacity, availability_badge, hold_hours, published, sponsorship_claimable,
     requested_by_sponsor_id, academic_year, created_by, created_at, updated_at,
     sales_open_at, sales_announced_at, purchase_url, industry, signup_url,
     map_url, meeting_url, meeting_url_private, target_years,
@@ -428,6 +429,24 @@ async def get_event(event_id: int) -> EventDetail:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             f"SELECT {EVENT_COLUMNS} FROM public.events WHERE id = $1;", event_id
+        )
+        if row is None:
+            raise HTTPException(404, "No such event")
+        return await _detail(conn, row)
+
+
+@router.patch("/events/{event_id}/availability-badge")
+async def update_event_availability_badge(
+    event_id: int,
+    availability_badge: Literal["auto", "not_many_left", "selling_fast"] = Body(embed=True),
+) -> EventDetail:
+    """Change only the display label; do not rewrite the event or ticket rows."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"""UPDATE public.events SET availability_badge=$2, updated_at=NOW()
+                  WHERE id=$1 RETURNING {EVENT_COLUMNS};""",
+            event_id, availability_badge,
         )
         if row is None:
             raise HTTPException(404, "No such event")

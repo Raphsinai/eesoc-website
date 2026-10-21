@@ -511,6 +511,20 @@ async function togglePublished(e) {
   await load()
 }
 
+async function saveEventAvailabilityBadge(e, badge) {
+  busy.value = true
+  error.value = ''
+  try {
+    await api.patch(`/admin/events/${e.id}/availability-badge`, { availability_badge: badge })
+    flash(`What's On label updated for ${e.title}.`)
+    await load()
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    busy.value = false
+  }
+}
+
 async function removeEvent(e) {
   if (!confirm(`Delete "${e.title}"? Bookings go with it.`)) return
   await api.del(`/admin/events/${e.id}`)
@@ -2196,6 +2210,20 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                   </p>
                 </div>
                 <div style="display:flex; gap:var(--space-2); flex-wrap:wrap; align-items:center">
+                  <label v-if="e.can_badge" style="display:flex; gap:var(--space-2); align-items:center; font:var(--type-2xs); color:var(--text-muted)">
+                    What's On label
+                    <select
+                      class="ees-select"
+                      :aria-label="`What's On label for ${e.title}`"
+                      :value="e.availability_badge || 'auto'"
+                      :disabled="busy"
+                      @change="saveEventAvailabilityBadge(e, $event.target.value)"
+                    >
+                      <option value="auto">Automatic</option>
+                      <option value="not_many_left">Not many left</option>
+                      <option value="selling_fast">Selling fast</option>
+                    </select>
+                  </label>
                   <Button v-if="e.can_publish" size="sm" variant="ghost" @click="togglePublished(e)">{{ e.published ? 'Unpublish' : 'Publish' }}</Button>
                   <Button v-if="e.can_book" size="sm" variant="secondary" @click="router.push(`/admin/events/${e.id}`)">Bookings</Button>
                   <Button v-if="(e.can_edit) && (can('events.edit'))" size="sm" variant="ghost" @click="editEvent(e)">Edit</Button>

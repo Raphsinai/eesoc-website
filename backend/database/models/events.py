@@ -1,6 +1,7 @@
 """Events, ticket types, product links and reservations."""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, field_validator
 
@@ -64,6 +65,8 @@ class Event(BaseModel):
     # talk), but never after ends_at — see the routes' validation.
     doors_close_at: datetime | None = None
     capacity: int | None = None
+    # Standalone admin action: an event edit must never reset this setting.
+    availability_badge: Literal["auto", "not_many_left", "selling_fast"] = "auto"
     hold_hours: int = 48
     published: bool = False
     # When tickets go on sale. None = not announced yet, which the site

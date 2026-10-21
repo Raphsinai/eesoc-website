@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Response
 
@@ -40,6 +41,7 @@ from services import sync as sync_service
 from utils.deps import (
     require_action,
     assert_may_edit_event,
+    assert_event_scope,
     assert_may_manage_booking,
     may_manage_booking,
     require_booking_editor,
@@ -293,6 +295,7 @@ async def list_all_events(
     return [
         {**e, "can_edit": session.can("events.edit") and may_edit_event(session, e),
          "can_delete": session.can("events.delete") and may_edit_event(session, e),
+         "can_badge": session.can("events.availability_badge.edit") and may_edit_event(session, e),
          "can_publish": session.can("events.publish") and may_edit_event(session, e),
          "can_book": session.can("events.bookings.view") and may_manage_booking(session, e), "sponsors": sponsors.get(e["id"], [])}
         for e in events
@@ -408,6 +411,26 @@ async def update_event(
     updated = await database.put(f"/events/{event_id}", body)
     await _sync_on_sale_email(event_id)
     return updated
+
+
+@router.patch(
+    "/events/{event_id}/availability-badge",
+    dependencies=[Depends(require_action("events.availability_badge.edit")), Depends(verify_csrf)],
+)
+async def set_event_availability_badge(
+    event_id: int,
+    availability_badge: Literal["auto", "not_many_left", "selling_fast"] = Body(embed=True),
+    session: AuthSession = Depends(require_admin),
+) -> dict:
+    """Independent badge permission and event scope, without events.edit."""
+    event = await database.get(f"/events/{event_id}")
+    if event is None:
+        raise HTTPException(404, "No such event")
+    assert_event_scope(session, event)
+    return await database.patch(
+        f"/events/{event_id}/availability-badge",
+        {"availability_badge": availability_badge},
+    )
 
 
 @router.patch("/events/{event_id}/published", dependencies=[Depends(require_action("events.publish")), Depends(verify_csrf)])

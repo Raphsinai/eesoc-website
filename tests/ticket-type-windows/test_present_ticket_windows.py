@@ -58,8 +58,8 @@ def test_the_next_opening_is_the_soonest_scheduled_type():
     assert present.next_ticket_opening([_tt()]) is None
 
 
-def test_the_badge_is_unchanged_without_windows():
-    assert present.event_status(_event(_tt()))[0] == "20 places"
+def test_the_badge_avoids_exact_capacity_without_windows():
+    assert present.event_status(_event(_tt()))[0] == "On sale"
     assert present.event_status(_event(_tt(price=0)))[0] == "Free entry"
 
 
@@ -85,10 +85,10 @@ def test_every_type_ended_reads_as_booking_closed():
     assert present.event_status(event) == ("Booking closed", "neutral")
 
 
-def test_the_badge_counts_only_what_is_on_sale():
+def test_the_badge_uses_only_capacity_currently_on_sale():
     # Early bird ended with 20 left; general on sale with 5 left.
     event = _event(
         _tt("Early bird", sales_close_at=_iso(-1)),
         _tt("General", sales_open_at=_iso(-1), remaining=5),
     )
-    assert present.event_status(event)[0] == "5 places"
+    assert present.event_status(event)[0] == "Not many left"

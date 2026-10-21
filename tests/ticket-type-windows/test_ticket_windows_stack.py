@@ -151,7 +151,7 @@ def test_an_event_without_windows_is_unchanged(make_event, api, member_client):
     page = api.get(f"/events/{event['slug']}").json()
     seat = page["ticketTypes"][0]
     assert seat["salesState"] == "open" and seat["selectable"] is True
-    assert page["status"] in ("20 places", "Free entry")
+    assert page["status"] == "Free entry"
     assert _reserve(member_client, event, _type(event, "Seat")).status_code == 200
 
 

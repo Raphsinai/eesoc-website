@@ -180,22 +180,31 @@ def event_status(event: dict) -> tuple[str, str]:
             return "Sold out", "danger"
         return "Booking closed", "neutral"
 
-    remaining = event.get("remaining")
-    if remaining is None:
-        remaining = sum(
-            (t["remaining"] for t in types if t.get("remaining") is not None),
-            0,
-        ) or None
+    # Availability badges deliberately never expose an exact count. Only seats
+    # in ticket types actually on sale count towards the automatic threshold;
+    # if any active type is uncapped, its combined availability is unknown.
+    # The event-wide cap still applies, even when a ticket type is uncapped.
+    event_remaining = event.get("remaining")
+    type_remaining = (
+        sum(t["remaining"] for t in types)
+        if types and all(t.get("remaining") is not None for t in types)
+        else None
+    )
+    available = min(event_remaining, type_remaining) if (
+        event_remaining is not None and type_remaining is not None
+    ) else event_remaining if event_remaining is not None else type_remaining
+
+    override = event.get("availability_badge") or "auto"
+    if override == "not_many_left" or (override == "auto" and available is not None and 0 < available < 10):
+        return "Not many left", "accent"
+    if override == "selling_fast":
+        return "Selling fast", "accent"
 
     if types and all(t.get("members_only") for t in types):
         return "Members only", "brand"
     if types and all(t.get("price_pence", 0) == 0 for t in types):
         return "Free entry", "success"
-    if remaining is not None and remaining <= 10:
-        return f"{remaining} places", "accent"
-    if remaining is not None:
-        return f"{remaining} places", "accent"
-    return "Booking open", "success"
+    return "On sale", "success"
 
 
 def event_card(event: dict) -> dict:

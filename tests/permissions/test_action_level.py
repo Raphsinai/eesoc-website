@@ -259,3 +259,42 @@ def test_published_only_events_for_a_create_only_operator(monkeypatch):
     result = asyncio.run(events.list_events(session=creator))
     assert params_seen[0]['published_only'] is True
     assert result['events'] == []
+
+
+def test_sponsor_inbox_can_be_read_without_email_send_and_is_still_permission_protected(monkeypatch):
+    """Regression: a read-only sponsor inbox was throwing a NameError/HTTP 500.
+
+    A separate email.send grant is only required when actually sending mail.
+    """
+    sponsor_reader = make_session('admin', ['sponsors.inbox'])
+    assert asyncio.run(deps.require_action('sponsors.inbox')(sponsor_reader)) is sponsor_reader
+    assert asyncio.run(deps.require_sponsors(sponsor_reader)) is sponsor_reader
+    assert not sponsor_reader.can('email.send')
+    unauthorized = make_session('admin', ['sponsors.view'])
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(deps.require_action('sponsors.inbox')(unauthorized))
+    assert err.value.status_code == 403
+
+    called = []
+    async def fake_get(path, params=None):
+        called.append(path)
+        if path == '/sponsors/listings/unannounced':
+            return [{'id': 5, 'title': 'Summer placement',
+                     'sponsor_name': 'Acme', 'location': 'London'}]
+        return []
+
+    monkeypatch.setattr(admin.database, 'get', fake_get)
+    response = asyncio.run(admin.sponsor_inbox(sponsor_reader))
+    assert response['listings'] == [
+        {'id': 5, 'title': 'Summer placement', 'sponsor': 'Acme', 'location': 'London'},
+    ]
+    assert response['notes'] == response['marketing'] == response['requests'] == response['interest'] == []
+    assert '/sponsors/listings/unannounced' in called
+
+
+def test_admin_sponsor_loader_uses_each_read_permission_instead_of_directory_permission():
+    frontend = (VIEWS / 'views' / 'AdminView.vue').read_text()
+    loader = frontend.split('async function loadSponsorInbox()', 1)[1].split('\n}\n', 1)[0]
+    assert "can('sponsors.inbox')" in loader
+    assert "can('sponsors.digest.view')" in loader
+    assert "can('sponsors.view')" not in loader

@@ -1385,8 +1385,8 @@ async def sponsor_inbox(_: AuthSession = Depends(require_sponsors)) -> dict:
     marketing = await database.get("/sponsors/marketing/all", {"status": "pending"}) or []
     requests = await database.get("/sponsors/requests/all", {"open_only": True}) or []
     interest = await database.get("/sponsors/interest/open") or []
-    if not session.can("email.send"):
-        raise HTTPException(403, "Permission required: email.send")
+    # Viewing the sponsor inbox requires sponsors.inbox (on this route), not
+    # email.send: the ability to preview work must not grant or require sending.
     listings = await database.get("/sponsors/listings/unannounced") or []
     notes = await database.get("/sponsors/notes/unread") or []
     # One line per thread, not per note: three notes about one event are one

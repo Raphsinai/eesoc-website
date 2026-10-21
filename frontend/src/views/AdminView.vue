@@ -1357,13 +1357,19 @@ const sponsorInbox = ref(null)
 const rolesDigest = ref(null)
 
 async function loadSponsorInbox() {
-  if (!can('sponsors.view')) return
+  // These are two independently revocable read permissions. A sponsor directory
+  // viewer should not get a 403 on every admin tab simply for lacking either.
+  const canInbox = can('sponsors.inbox')
+  const canDigest = can('sponsors.digest.view')
+  if (!canInbox && !canDigest) return
   try {
     const [inbox, digest] = await Promise.all([
-      api.get('/admin/sponsors/inbox'),
-      api.get('/admin/sponsors/roles-digest'),
+      canInbox ? api.get('/admin/sponsors/inbox') : Promise.resolve(null),
+      canDigest ? api.get('/admin/sponsors/roles-digest') : Promise.resolve(null),
     ])
-    sponsorInbox.value = inbox
+    sponsorInbox.value = inbox ?? (canDigest
+      ? { notes: [], marketing: [], requests: [], interest: [], listings: [] }
+      : null)
     rolesDigest.value = digest
   } catch (e) {
     error.value = e.message

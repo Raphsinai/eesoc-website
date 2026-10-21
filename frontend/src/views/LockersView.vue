@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import api from '@/api'
 import Button from '@/components/ds/Button.vue'
 import Card from '@/components/ds/Card.vue'
@@ -38,6 +38,47 @@ const all = computed(() =>
 const selected = computed(() => all.value.find((l) => l.id === sel.value) || null)
 const mine = computed(() => all.value.filter((l) => l.state === 'mine'))
 const anyInactive = computed(() => all.value.some((l) => l.state === 'inactive'))
+
+// Browser-native scrollbars are hidden on iOS. A permanently visible range
+// slider for each overflowing wall makes horizontal scrolling discoverable.
+const mapEl = ref(null)
+const wallScroll = ref({})
+const observedWalls = new Set()
+let wallObserver = null
+const wallKey = (floor, wall) => `${floor}:${wall}`
+
+function measureWalls() {
+  const elements = [...(mapEl.value?.querySelectorAll('.locker-wall__blocks') || [])]
+  const next = Object.fromEntries(elements.map((el) => [el.dataset.wallKey, {
+    max: Math.max(0, el.scrollWidth - el.clientWidth),
+    position: Math.round(el.scrollLeft),
+  }]))
+  if (JSON.stringify(next) !== JSON.stringify(wallScroll.value)) wallScroll.value = next
+  for (const el of observedWalls) {
+    if (!elements.includes(el)) { wallObserver?.unobserve(el); observedWalls.delete(el) }
+  }
+  for (const el of elements) {
+    if (!observedWalls.has(el)) { wallObserver?.observe(el); observedWalls.add(el) }
+  }
+}
+
+function scrollWall(key, position) {
+  const el = [...(mapEl.value?.querySelectorAll('.locker-wall__blocks') || [])]
+    .find((item) => item.dataset.wallKey === key)
+  if (el) { el.scrollLeft = Number(position); measureWalls() }
+}
+
+onMounted(() => {
+  if (typeof ResizeObserver !== 'undefined') wallObserver = new ResizeObserver(measureWalls)
+  window.addEventListener('resize', measureWalls)
+  nextTick(measureWalls)
+})
+onBeforeUnmount(() => {
+  wallObserver?.disconnect()
+  window.removeEventListener('resize', measureWalls)
+})
+watch(raw, () => nextTick(measureWalls))
+watch(() => available('lockers'), () => nextTick(measureWalls))
 
 // Every block is drawn at the width a block takes on the longest wall, so a
 // block is the same size wherever it stands — as it is in the building — and a
@@ -198,7 +239,7 @@ async function release(locker) {
       </div>
     </div>
 
-    <div class="locker-map" :style="{ '--blocks': widest }">
+    <div ref="mapEl" class="locker-map" :style="{ '--blocks': widest }">
       <section v-for="f in raw" :key="f.floor" class="locker-floor">
         <div style="display:flex; align-items:baseline; justify-content:space-between; gap:var(--space-6)">
           <h2 style="margin:0; font-family:var(--font-display); font-weight:700; font-size:var(--text-lg); letter-spacing:var(--tracking-heading); color:var(--text-strong)">Level {{ f.floor }}</h2>
@@ -206,7 +247,8 @@ async function release(locker) {
         </div>
         <div v-for="w in f.walls" :key="w.wall" class="locker-wall">
           <span class="locker-wall__label">{{ w.label }}</span>
-          <div class="locker-wall__blocks">
+          <div class="locker-wall__blocks" :data-wall-key="wallKey(f.floor, w.wall)"
+               @scroll.passive="measureWalls">
             <div
               v-for="b in w.blocks"
               :key="b.block"
@@ -227,6 +269,14 @@ async function release(locker) {
                 @click="pick(l)"
               >{{ l.number }}</button>
             </div>
+          </div>
+          <div v-if="wallScroll[wallKey(f.floor, w.wall)]?.max > 0" class="locker-wall__scroll-guide">
+            <span class="locker-wall__scroll-hint">Swipe sideways to see all lockers ↔</span>
+            <input class="locker-wall__scroll-range" type="range" min="0"
+                   :max="wallScroll[wallKey(f.floor, w.wall)].max"
+                   :value="wallScroll[wallKey(f.floor, w.wall)].position" step="1"
+                   :aria-label="`Scroll Level ${f.floor}, ${w.label.toLowerCase()} lockers horizontally`"
+                   @input="scrollWall(wallKey(f.floor, w.wall), $event.target.value)" />
           </div>
         </div>
       </section>
@@ -344,14 +394,17 @@ async function release(locker) {
   --block-gap: var(--space-3);
   --door-gap: var(--space-1);
   --door-min: 28px;
+  min-width: 0;
   display: grid;
   gap: var(--space-10);
 }
 .locker-floor {
+  min-width: 0;
   display: grid;
   gap: var(--space-4);
 }
 .locker-wall {
+  min-width: 0;
   display: grid;
   gap: var(--space-2);
 }
@@ -366,10 +419,43 @@ async function release(locker) {
   display: flex;
   gap: var(--block-gap);
   overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-brand) var(--surface-sunken);
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
   /* Room for the focus ring, which the scroll container would otherwise clip. */
   padding: 3px;
   margin: -3px;
 }
+/* Always-visible on touch devices: unlike system scrollbars, this slider
+   remains draggable and supports keyboard arrow keys. */
+.locker-wall__scroll-guide { display: grid; gap: 2px; min-width: 0; padding-top: var(--space-1); }
+.locker-wall__scroll-hint { font: var(--type-2xs); color: var(--text-muted); }
+.locker-wall__scroll-range {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%; height: 22px; margin: 0; padding: 0;
+  background: transparent; cursor: ew-resize;
+}
+.locker-wall__scroll-range::-webkit-slider-runnable-track {
+  height: 6px; border: 1px solid var(--border-default);
+  border-radius: 999px; background: var(--surface-sunken);
+}
+.locker-wall__scroll-range::-webkit-slider-thumb {
+  appearance: none; -webkit-appearance: none;
+  width: 44px; height: 16px; margin-top: -6px;
+  border: 2px solid var(--border-brand);
+  border-radius: 999px; background: var(--surface-card);
+}
+.locker-wall__scroll-range::-moz-range-track {
+  height: 6px; border: 1px solid var(--border-default);
+  border-radius: 999px; background: var(--surface-sunken);
+}
+.locker-wall__scroll-range::-moz-range-thumb {
+  width: 44px; height: 16px; border: 2px solid var(--border-brand);
+  border-radius: 999px; background: var(--surface-card);
+}
+.locker-wall__scroll-range:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .locker-block {
   flex: none;
   width: calc((100% - (var(--blocks) - 1) * var(--block-gap)) / var(--blocks));

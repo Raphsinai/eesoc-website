@@ -97,7 +97,7 @@ function open(event) {
     <template v-else>
       <div
         v-if="upcoming.length"
-        style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:var(--space-6)"
+        style="display:grid; grid-template-columns:repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap:var(--space-6)"
       >
         <EventCard
           v-for="e in upcoming"
@@ -128,7 +128,7 @@ function open(event) {
       <template v-if="showPast && past.length">
         <TraceRule style="margin:var(--space-8) 0" />
         <h2 style="font:var(--type-h3); margin:0 0 var(--space-6)">Already happened</h2>
-        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:var(--space-6); opacity:.7">
+        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap:var(--space-6); opacity:.7">
           <EventCard
             v-for="e in past"
             :key="e.slug"

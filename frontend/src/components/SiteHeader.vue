@@ -282,11 +282,11 @@ router.afterEach(() => { menuOpen.value = false })
   display: contents;
 }
 
-/* 900px, not 768: the breakpoint is set by when the nav links, the search box
-   and the identity stop fitting on one row, which happens well above tablet
+/* 1100px, not 768: the breakpoint is set by when the nav links, the search box
+   and the identity stop fitting on one row, which happens on compact desktop and tablet
    width. Below it everything that was in the row moves into a dropped panel,
    so the header cannot overflow sideways and drag the page with it. */
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
   .site-header__inner {
     height: auto;
     min-height: 60px;

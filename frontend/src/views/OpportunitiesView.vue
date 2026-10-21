@@ -454,7 +454,7 @@ watch(detailId, loadPublished)
 .opps__link-list a { font: var(--type-small); color: var(--text-accent); }
 .opps__column { max-width: 860px; }
 .opps__form { gap: var(--space-6); }
-.opps__two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: var(--space-4); }
+.opps__two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: var(--space-4); }
 .opps__textarea { width: 100%; max-width: 100%; padding: var(--space-3); border: 1px solid var(--border-default); border-radius: var(--radius-sm); font: var(--type-body); background: var(--surface-card); color: var(--text-body); }
 .opps__link-row { display: flex; gap: var(--space-2); align-items: center; margin: var(--space-2) 0; }
 .opps__link-row > :first-child { flex: 1; min-width: 0; }
@@ -464,4 +464,8 @@ watch(detailId, loadPublished)
 .opps__error { font: var(--type-small); color: var(--danger); }
 .opps__success { font: var(--type-small); color: var(--text-strong); padding: var(--space-3); border-left: 3px solid var(--text-accent); }
 .opps__empty { font: var(--type-small); color: var(--text-muted); margin: 0; }
+@media (max-width: 600px) {
+  /* Avoid forcing a 425px layout viewport for the unbreakable H1 on phones. */
+  .opps__title { font-size: clamp(2rem, 8vw, var(--text-4xl)); }
+}
 </style>

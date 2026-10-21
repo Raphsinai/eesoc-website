@@ -241,6 +241,11 @@ def test_approved_changes_stay_private_until_review_and_takedown_removes_listing
     assert proposed.status_code == 200, proposed.text
     assert proposed.json()["status"] == "approved"
     assert proposed.json()["pendingRevision"]["title"] == updated["title"]
+    dashboard = admin_client.get("/admin/dashboard")
+    assert dashboard.status_code == 200, dashboard.text
+    in_queue = next(r for r in dashboard.json()["pendingOpportunities"] if r["id"] == ident)
+    assert in_queue["isRevision"] is True
+    assert in_queue["title"] == updated["title"]
     assert member_client.put(f"/me/opportunities/{ident}", json=updated).status_code == 409
     assert api.get(f"/opportunities/{ident}").json()["title"] == original_title
     assert not any(r.get("pendingRevision") for r in api.get("/opportunities").json()["opportunities"])

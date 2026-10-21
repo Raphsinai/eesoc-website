@@ -113,12 +113,14 @@ async def dashboard(session: AuthSession = Depends(require_admin)) -> dict:
     pending_opportunities = []
     if session.can("opportunities.view"):
         pending_opportunities = [
-            {"id": row["id"], "title": row["title"],
+            {"id": row["id"],
+             "title": (row.get("pending_revision") or {}).get("title") or row["title"],
              "submittedBy": row.get("submitter_email"),
-             "createdAt": row.get("created_at")}
+             "createdAt": row.get("pending_revision_at") or row.get("created_at"),
+             "isRevision": bool(row.get("pending_revision"))}
             for row in (await database.get(
-                "/opportunities", {"status": "pending", "limit": 500}
-            ) or []) if row.get("status") == "pending"
+                "/opportunities", {"limit": 500}
+            ) or []) if row.get("status") == "pending" or row.get("pending_revision")
         ]
     return {
         "academicYear": academic_year(),

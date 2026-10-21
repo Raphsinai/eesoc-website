@@ -2126,7 +2126,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             </div>
             <div v-for="item in dash.pendingOpportunities.slice(0, 5)" :key="item.id" style="display:flex; justify-content:space-between; gap:var(--space-3); flex-wrap:wrap; align-items:center">
               <div style="display:grid; gap:var(--space-1)">
-                <strong style="font:var(--type-small)">{{ item.title }}</strong>
+                <strong style="font:var(--type-small)">{{ item.title }}<template v-if="item.isRevision"> (revised listing)</template></strong>
                 <span style="font:var(--type-2xs); color:var(--text-muted)">{{ item.submittedBy || 'Member' }} · {{ new Date(item.createdAt).toLocaleDateString('en-GB') }}</span>
               </div>
               <Button variant="secondary" size="sm" @click="tab = 'opportunities'">Review</Button>

@@ -30,9 +30,12 @@ screenshots and the event/ticket types visible on the public EESoc API on
 | 9 | General - Alcoholic | £20.00 | 3049 | 1003049 |
 | 10 | General - Non-Alcoholic | £15.00 | 3047 | 1003047 |
 
-These mappings identify which records to link. **This document is not an
-instruction to seed the production or staging database automatically**; an
-authorized committee admin must apply changes through the event editor.
+Migration `084_halloween_shop_product_links.sql` backfills the four ticket
+links for this specific 2026 event, provided the ticket names and prices
+match and the committee has not already selected a link. It is idempotent and
+never overwrites an existing link. Future ticket types and unrelated events
+continue to use the admin editor.
+
 The mapping is inferred from the already documented eActivities/shop ID scheme
 and is pending a matching actual Union sale row for these particular products.
 

@@ -29,7 +29,7 @@ PUBLIC_AND_SELF_SERVICE = {
     'opportunities.py': {
         'published_opportunities', 'published_opportunity', 'my_opportunities',
         'submit_opportunity', 'upload_opportunity_image', 'resubmit_opportunity',
-        'save_announcement', 'submit_announcement', 'withdraw_my_opportunity',
+        'save_announcement', 'submit_announcement', 'withdraw_my_opportunity', 'submit_my_draft',
     },
     'passkeys.py': {
         'sign_in_options', 'sign_in', 'my_passkeys', 'add_passkey_options',

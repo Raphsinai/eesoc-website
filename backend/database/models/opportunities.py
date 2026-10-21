@@ -64,7 +64,7 @@ class OpportunityCreate(BaseModel):
 
 class Opportunity(OpportunityCreate):
     id: int
-    status: Literal["pending", "approved", "rejected", "withdrawn"] = "pending"
+    status: Literal["draft", "pending", "approved", "rejected", "withdrawn"] = "pending"
     review_notes: str | None = None
     reviewed_by: int | None = None
     reviewed_at: datetime | None = None
@@ -82,6 +82,7 @@ class Opportunity(OpportunityCreate):
     pending_revision: dict | None = None
     pending_images: list[dict] = Field(default_factory=list)
     pending_revision_at: datetime | None = None
+    publication_history: list[dict] = Field(default_factory=list)
 
 
 class OpportunityWithdraw(BaseModel):

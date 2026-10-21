@@ -176,7 +176,7 @@ def test_submitter_withdraws_with_verified_owner_and_without_committee_permissio
     alerts = []
     async def fake_post(path, body):
         sent.append((path, body))
-        return {**ROW, "status": "withdrawn", "withdrawn_at": "2026-10-21T16:10:00Z",
+        return {**ROW, "status": "draft", "withdrawn_at": "2026-10-21T16:10:00Z",
                 "pending_revision": None}
     monkeypatch.setattr(api.database, "post", fake_post)
     def dispatch(coro):
@@ -186,7 +186,7 @@ def test_submitter_withdraws_with_verified_owner_and_without_committee_permissio
     session = SimpleNamespace(user=SimpleNamespace(id=81))
     row = run(api.withdraw_my_opportunity(17, session))
     assert sent == [("/opportunities/17/withdraw", {"owner_id": 81})]
-    assert row["status"] == "withdrawn"
+    assert row["status"] == "draft"
     assert row["withdrawnAt"] == "2026-10-21T16:10:00Z"
     assert len(alerts) == 1
     assert not api._is_public({**ROW, "status": "withdrawn"})
@@ -195,3 +195,41 @@ def test_submitter_withdraws_with_verified_owner_and_without_committee_permissio
 @pytest.mark.parametrize("status", ["withdrawn", "rejected", "pending"])
 def test_withdrawn_and_unpublished_listings_are_not_public(status):
     assert not api._is_public({**ROW, "status": status})
+
+
+def test_submit_draft_requires_owner_and_queues_reapproval(monkeypatch):
+    seen = []
+    async def fake_get(path, params=None):
+        return {**ROW, "status": "draft", "submitted_by": 81, "posted_until": None}
+    async def fake_post(path, body):
+        seen.append((path, body))
+        return {**ROW, "status": "pending", "submitted_by": 81}
+    monkeypatch.setattr(api.database, "get", fake_get)
+    monkeypatch.setattr(api.database, "post", fake_post)
+    monkeypatch.setattr(api.opportunity_notifications, "dispatch", lambda coro: coro.close())
+    result = run(api.submit_my_draft(17, SimpleNamespace(user=SimpleNamespace(id=81))))
+    assert result["status"] == "pending"
+    assert seen == [("/opportunities/17/submit", {"owner_id": 81})]
+    with pytest.raises(HTTPException) as exc:
+        run(api.submit_my_draft(17, SimpleNamespace(user=SimpleNamespace(id=82))))
+    assert exc.value.status_code == 409
+
+
+def test_saving_draft_does_not_send_review_alert(monkeypatch):
+    dispatched = []
+    seen = []
+    async def fake_put(path, body):
+        seen.append((path, body))
+        return {**ROW, "status": "draft", "submitted_by": 81}
+    monkeypatch.setattr(api.database, "put", fake_put)
+    monkeypatch.setattr(api.opportunity_notifications, "dispatch", dispatched.append)
+    payload = models.OpportunityCreate(
+        title="Research opportunity", description="Detailed information about the research opportunity",
+        target_years=["2"], submitted_by=999
+    )
+    result = run(api.resubmit_opportunity(
+        17, payload, SimpleNamespace(user=SimpleNamespace(id=81))
+    ))
+    assert result["status"] == "draft"
+    assert dispatched == []
+    assert seen[0][1]["owner_id"] == 81

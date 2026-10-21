@@ -157,6 +157,8 @@ async def message_for(row: dict) -> Callable[[str], tuple[str, str, str]]:
         opportunity = await database.get(f"/opportunities/{row['opportunity_id']}")
         until = opportunity.get("posted_until") if opportunity else None
         if not opportunity or opportunity.get("status") != "approved" or (
+            row.get("id") is not None and opportunity.get("email_campaign_id") != row["id"]
+        ) or (
             until and date.fromisoformat(str(until)) < datetime.now(ZoneInfo("Europe/London")).date()
         ):
             raise Unbuildable("the linked opportunity is no longer published")

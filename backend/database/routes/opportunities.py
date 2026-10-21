@@ -30,6 +30,14 @@ COLUMNS = """
     o.announcement_subject, o.announcement_body,
     o.posted_until, o.pending_revision, o.pending_revision_at,
     COALESCE((SELECT jsonb_agg(jsonb_build_object(
+                'published_at', period.published_at,
+                'unpublished_at', period.unpublished_at,
+                'end_reason', period.end_reason,
+                'posted_until', period.posted_until)
+                ORDER BY period.published_at DESC, period.id DESC)
+              FROM public.opportunity_publication_periods period
+              WHERE period.opportunity_id = o.id), '[]'::jsonb) AS publication_history,
+    COALESCE((SELECT jsonb_agg(jsonb_build_object(
                 'id', asset.id, 'stored_name', asset.stored_name,
                 'content_type', asset.content_type)
                 ORDER BY array_position(ARRAY(
@@ -55,7 +63,7 @@ FROM = """public.opportunities o
 
 def _model(row) -> Opportunity:
     data = dict(row)
-    for key in ("links", "target_years", "images", "pending_images", "pending_revision"):
+    for key in ("links", "target_years", "images", "pending_images", "pending_revision", "publication_history"):
         if isinstance(data.get(key), str):
             data[key] = json.loads(data[key])
     return Opportunity(**data)
@@ -65,7 +73,7 @@ def _model(row) -> Opportunity:
 async def list_opportunities(
     status: str | None = None, submitted_by: int | None = None, limit: int = 200,
 ) -> list[Opportunity]:
-    if status is not None and status not in ("pending", "approved", "rejected", "withdrawn"):
+    if status is not None and status not in ("draft", "pending", "approved", "rejected", "withdrawn"):
         raise HTTPException(400, "Unknown opportunity status")
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -151,6 +159,21 @@ async def resubmit_opportunity(opportunity_id: int, item: OpportunityEdit) -> Op
         current = await conn.fetchrow("SELECT status, pending_revision, editable_after_rejection FROM public.opportunities WHERE id=$1 AND submitted_by=$2 FOR UPDATE", opportunity_id, item.owner_id)
         if not current or current['pending_revision'] is not None or current['status'] == 'pending' or (current['status'] == 'rejected' and not current['editable_after_rejection']):
             raise _review_conflict()
+        if current['status'] == 'draft':
+            # Saving a private draft never queues it for committee review.
+            await conn.execute("""UPDATE public.opportunities
+                  SET title=$3, description=$4, links=$5::jsonb,
+                      contact_email=$6, contact_phone=$7,
+                      target_years=$8::jsonb, image_ids=$9, posted_until=$10,
+                      updated_at=NOW()
+                WHERE id=$1 AND submitted_by=$2 AND status='draft'""",
+                opportunity_id, item.owner_id, item.title, item.description,
+                json.dumps([str(url) for url in item.links]),
+                str(item.contact_email) if item.contact_email else None,
+                item.contact_phone, json.dumps(item.target_years), item.image_ids,
+                item.posted_until)
+            row = await conn.fetchrow(f"SELECT {COLUMNS} FROM {FROM} WHERE o.id=$1", opportunity_id)
+            return _model(row)
         if current['status'] == 'approved':
             revision_data = item.model_dump(mode='json', exclude={'owner_id', 'submitted_by'})
             await conn.execute("UPDATE public.opportunities SET pending_revision=$3::jsonb, pending_revision_at=NOW(), updated_at=NOW() WHERE id=$1 AND submitted_by=$2", opportunity_id, item.owner_id, json.dumps(revision_data))
@@ -178,6 +201,24 @@ async def resubmit_opportunity(opportunity_id: int, item: OpportunityEdit) -> Op
     return await get_opportunity(opportunity_id)
 
 
+@router.post("/{opportunity_id}/submit")
+async def submit_draft(opportunity_id: int, payload: OpportunityWithdraw) -> Opportunity:
+    """Submitting a saved draft needs a fresh committee review, never auto-publish."""
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        row = await conn.fetchrow("""UPDATE public.opportunities
+              SET status='pending', review_notes=NULL, reviewed_by=NULL,
+                  reviewed_at=NULL, approved_at=NULL, revision=revision+1,
+                  updated_at=NOW()
+              WHERE id=$1 AND submitted_by=$2 AND status='draft'
+                AND (posted_until IS NULL
+                     OR posted_until >= (NOW() AT TIME ZONE 'Europe/London')::date)
+              RETURNING id""", opportunity_id, payload.owner_id)
+        if row is None:
+            raise _review_conflict()
+    return await get_opportunity(opportunity_id)
+
+
 @router.post("/{opportunity_id}/withdraw")
 async def withdraw_opportunity(opportunity_id: int, payload: OpportunityWithdraw) -> Opportunity:
     """Withdraw an approved listing atomically, only for its submitter.
@@ -188,18 +229,30 @@ async def withdraw_opportunity(opportunity_id: int, payload: OpportunityWithdraw
     """
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction():
+        prior = await conn.fetchrow("""SELECT email_campaign_id FROM public.opportunities
+              WHERE id=$1 AND submitted_by=$2 AND status='approved' FOR UPDATE""",
+              opportunity_id, payload.owner_id)
+        if prior is None:
+            raise _review_conflict()
         row = await conn.fetchrow(
             """UPDATE public.opportunities
-                  SET status='withdrawn', withdrawn_at=NOW(), updated_at=NOW(),
+                  SET status='draft', withdrawn_at=NOW(), updated_at=NOW(),
+                      approved_at=NULL, email_campaign_id=NULL,
+                      announcement_subject=NULL, announcement_body=NULL,
                       pending_revision=NULL, pending_revision_at=NULL,
-                      editable_after_rejection=FALSE
+                      review_notes=NULL, editable_after_rejection=FALSE
                 WHERE id=$1 AND submitted_by=$2 AND status='approved'
                 RETURNING id, email_campaign_id""",
             opportunity_id, payload.owner_id,
         )
         if row is None:
             raise _review_conflict()
-        if row["email_campaign_id"] is not None:
+        await conn.execute("""UPDATE public.opportunity_publication_periods
+              SET unpublished_at=NOW(), end_reason='submitter'
+              WHERE opportunity_id=$1 AND unpublished_at IS NULL""", opportunity_id)
+        # Drop the old queue entry's ability to send, preserving campaign
+        # history and preventing stale announcements after future reapproval.
+        if prior["email_campaign_id"] is not None:
             await conn.execute(
                 """UPDATE public.email_campaigns
                       SET status='dismissed',
@@ -207,7 +260,7 @@ async def withdraw_opportunity(opportunity_id: int, payload: OpportunityWithdraw
                     WHERE id=$1 AND opportunity_id=$2
                       AND kind='opportunity_announcement'
                       AND status IN ('awaiting_approval', 'scheduled')""",
-                row["email_campaign_id"], opportunity_id,
+                prior["email_campaign_id"], opportunity_id,
             )
     return await get_opportunity(opportunity_id)
 
@@ -225,6 +278,13 @@ async def takedown_opportunity(opportunity_id: int, review: OpportunityReview) -
             (review.notes or '').strip() or None, review.allow_edit)
         if result != 'UPDATE 1':
             raise _review_conflict()
+        await conn.execute("""UPDATE public.opportunity_publication_periods
+              SET unpublished_at=NOW(), end_reason='committee'
+              WHERE opportunity_id=$1 AND unpublished_at IS NULL""", opportunity_id)
+        await conn.execute("""UPDATE public.email_campaigns
+              SET status='dismissed', error='Linked opportunity taken down by committee.'
+              WHERE opportunity_id=$1 AND kind='opportunity_announcement'
+                AND status IN ('awaiting_approval', 'scheduled')""", opportunity_id)
     return await get_opportunity(opportunity_id)
 
 
@@ -258,6 +318,10 @@ async def review_opportunity(opportunity_id: int, review: OpportunityReview) -> 
                     json.dumps(revision['target_years']), revision['image_ids'], date.fromisoformat(revision['posted_until']) if revision.get('posted_until') else None,
                     review.reviewed_by, (review.notes or '').strip() or None,
                     review.campaign_subject, review.campaign_body)
+                await conn.execute("""UPDATE public.opportunity_publication_periods
+                      SET posted_until=$2 WHERE opportunity_id=$1
+                        AND unpublished_at IS NULL""", opportunity_id,
+                    date.fromisoformat(revision['posted_until']) if revision.get('posted_until') else None)
             else:
                 await conn.execute("""UPDATE public.opportunities SET pending_revision=NULL,
                     pending_revision_at=NULL, reviewed_by=$2, reviewed_at=NOW(),
@@ -274,7 +338,7 @@ async def review_opportunity(opportunity_id: int, review: OpportunityReview) -> 
                       announcement_subject=CASE WHEN $2::varchar = 'approved' THEN $6 ELSE NULL END,
                       announcement_body=CASE WHEN $2::varchar = 'approved' THEN $7 ELSE NULL END
                 WHERE id=$1 AND status='pending'
-                RETURNING id;""",
+                RETURNING id, approved_at, posted_until;""",
             opportunity_id, review.decision, review.reviewed_by,
             review.notes.strip() if review.notes and review.notes.strip() else None,
             review.allow_edit,
@@ -286,6 +350,10 @@ async def review_opportunity(opportunity_id: int, review: OpportunityReview) -> 
             if exists is None:
                 raise HTTPException(404, "No such opportunity")
             raise _review_conflict()
+        if review.decision == "approved":
+            await conn.execute("""INSERT INTO public.opportunity_publication_periods
+                  (opportunity_id, published_at, posted_until) VALUES ($1,$2,$3)""",
+                opportunity_id, row["approved_at"], row["posted_until"])
     return {"opportunity": (await get_opportunity(opportunity_id)).model_dump(mode="json"),
             "email_campaign_id": None}
 

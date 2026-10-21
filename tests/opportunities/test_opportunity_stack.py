@@ -283,7 +283,7 @@ def test_approved_changes_stay_private_until_review_and_takedown_removes_listing
     assert api.get(f"/opportunities/{ident}").status_code == 404
 
 
-def test_owner_can_withdraw_approved_opportunity_and_cancel_pending_revision(
+def test_owner_can_withdraw_to_draft_and_republish_only_after_new_approval(
     api, member_client, admin_client, superuser_client,
 ):
     original = submission()
@@ -303,14 +303,30 @@ def test_owner_can_withdraw_approved_opportunity_and_cancel_pending_revision(
     assert superuser_client.post(f"/me/opportunities/{ident}/withdraw").status_code == 409
     withdrawn = member_client.post(f"/me/opportunities/{ident}/withdraw")
     assert withdrawn.status_code == 200, withdrawn.text
-    assert withdrawn.json()["status"] == "withdrawn"
+    assert withdrawn.json()["status"] == "draft"
     assert withdrawn.json()["withdrawnAt"] is not None
     assert withdrawn.json()["pendingRevision"] is None
     assert api.get(f"/opportunities/{ident}").status_code == 404
     assert all(row["id"] != ident for row in api.get("/opportunities").json()["opportunities"])
-    assert own(member_client, ident)["status"] == "withdrawn"
+    assert own(member_client, ident)["status"] == "draft"
     assert member_client.post(f"/me/opportunities/{ident}/withdraw").status_code == 409
-    assert member_client.put(f"/me/opportunities/{ident}", json=modified).status_code == 409
     assert admin_client.post(
         f"/admin/opportunities/{ident}/review", json={"decision": "approved"}
     ).status_code == 409
+    draft_edit = member_client.put(f"/me/opportunities/{ident}", json=modified)
+    assert draft_edit.status_code == 200, draft_edit.text
+    assert draft_edit.json()["status"] == "draft"
+    assert api.get(f"/opportunities/{ident}").status_code == 404
+    second_review = member_client.post(f"/me/opportunities/{ident}/submit")
+    assert second_review.status_code == 200, second_review.text
+    assert second_review.json()["status"] == "pending"
+    assert api.get(f"/opportunities/{ident}").status_code == 404
+    assert admin_client.post(
+        f"/admin/opportunities/{ident}/review", json={"decision": "approved"}
+    ).status_code == 200
+    history = own(member_client, ident)["publicationHistory"]
+    assert len(history) == 2
+    assert history[0]["unpublishedAt"] is None
+    assert history[1]["unpublishedAt"] is not None
+    assert history[1]["endReason"] == "submitter"
+    assert api.get(f"/opportunities/{ident}").status_code == 200

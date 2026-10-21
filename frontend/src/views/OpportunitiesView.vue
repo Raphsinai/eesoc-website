@@ -38,6 +38,9 @@ const existingImages = ref([])
 const editingId = ref(null)
 const editingNotes = ref('')
 const editingWasApproved = ref(false)
+const editingWasDraft = ref(false)
+const savingDraft = ref(false)
+const submittingDraftId = ref(null)
 const editingAnnouncement = ref(null)
 const draft = reactive({ subject: '', body: '' })
 const draftBusy = ref(false)
@@ -107,6 +110,7 @@ function startSubmit() {
   editingId.value = null
   editingNotes.value = ''
   editingWasApproved.value = false
+  editingWasDraft.value = false
   imageFiles.value = []
   existingImages.value = []
   Object.assign(form, {
@@ -183,6 +187,13 @@ async function submit() {
     } else {
       await api.post('/opportunities', payload)
     }
+    if (savingDraft.value && editingWasDraft.value) {
+      editingId.value = null
+      withdrawNotice.value = 'Draft saved. You can submit it for approval when ready.'
+      view.value = 'mine'
+      await loadMine()
+      return
+    }
     editingId.value = null
     existingImages.value = []
     Object.assign(form, {
@@ -196,29 +207,45 @@ async function submit() {
   } catch (e) {
     formError.value = e.message
   } finally {
+    savingDraft.value = false
     posting.value = false
   }
 }
 
 async function withdrawSubmission(item) {
   if (!session.authenticated || item.status !== 'approved' || withdrawingId.value !== null) return
-  if (!confirm(`Take down “${item.title}”? It will immediately disappear from the public page, any pending changes will be cancelled, and this cannot be undone. Your submission history will remain available.`)) return
+  if (!confirm(`Take down “${item.title}”? The public listing will disappear immediately and return to your private drafts. You can edit it and submit it again for committee approval. Its publication history will be kept.`)) return
   withdrawingId.value = item.id
   formError.value = ''
   withdrawNotice.value = ''
   try {
     await api.post(`/me/opportunities/${item.id}/withdraw`)
-    withdrawNotice.value = `“${item.title}” has been taken down. It is no longer public.`
+    withdrawNotice.value = `“${item.title}” is now a private draft. It needs committee approval before it can be published again.`
     await Promise.all([loadMine(), loadPublished()])
   } catch (e) { formError.value = e.message }
   finally { withdrawingId.value = null }
 }
 
+async function submitDraft(item) {
+  if (!session.authenticated || item.status !== 'draft' || submittingDraftId.value !== null) return
+  if (!confirm(`Send “${item.title}” to committee for approval? It will remain private until they approve it.`)) return
+  submittingDraftId.value = item.id
+  formError.value = ''
+  withdrawNotice.value = ''
+  try {
+    await api.post(`/me/opportunities/${item.id}/submit`)
+    withdrawNotice.value = `“${item.title}” has been sent for approval. It is not published yet.`
+    await loadMine()
+  } catch (e) { formError.value = e.message }
+  finally { submittingDraftId.value = null }
+}
+
 function editSubmission(item) {
   if (!session.authenticated) { openLogin(); return }
-  if (!((item.status === 'rejected' && item.allowEdit) || (item.status === 'approved' && !item.pendingRevision))) return
+  if (!((item.status === 'rejected' && item.allowEdit) || (item.status === 'approved' && !item.pendingRevision) || item.status === 'draft')) return
   editingId.value = item.id
   editingWasApproved.value = item.status === 'approved'
+  editingWasDraft.value = item.status === 'draft'
   editingNotes.value = item.status === 'rejected' ? item.reviewNotes || '' : ''
   imageFiles.value = []
   existingImages.value = [...item.images]
@@ -365,7 +392,7 @@ watch(detailId, loadPublished)
       <Card v-for="item in mine" :key="item.id" variant="outline">
         <div class="opps__row">
           <h3>{{ item.title }}</h3>
-          <Badge :tone="item.status === 'approved' ? 'success' : item.status === 'rejected' ? 'danger' : 'neutral'">{{ item.status === 'withdrawn' ? 'Taken down' : item.status }}</Badge>
+          <Badge :tone="item.status === 'approved' ? 'success' : item.status === 'rejected' ? 'danger' : 'neutral'">{{ item.status === 'draft' || item.status === 'withdrawn' ? 'Draft' : item.status }}</Badge>
         </div>
         <p class="opps__meta">Submitted {{ date(item.createdAt) }} · For {{ item.targetYears.map(yearName).join(', ') }}</p>
         <p class="opps__description">{{ item.description }}</p>
@@ -374,7 +401,21 @@ watch(detailId, loadPublished)
         <p v-if="item.status === 'approved' && item.postedUntil && item.postedUntil < todayLondon" class="opps__meta">This opportunity has expired and is no longer publicly listed.</p>
         <p v-if="item.reviewNotes" class="opps__review"><strong>Admin notes:</strong> {{ item.reviewNotes }}</p>
         <p v-if="item.status === 'pending'" class="opps__meta">Waiting for admin review. Only you and the admins can see this.</p>
-        <p v-if="item.status === 'withdrawn'" class="opps__meta">Taken down {{ date(item.withdrawnAt) }} by the submitter. This opportunity is no longer public, and its history is retained.</p>
+        <p v-if="item.status === 'draft' || item.status === 'withdrawn'" class="opps__meta">Private draft. This opportunity is not on the website. Submit it for a new committee review when ready.</p>
+        <div v-if="item.status === 'draft' || item.status === 'withdrawn'" class="opps__actions">
+          <Button size="sm" variant="secondary" @click="editSubmission(item)">Edit draft</Button>
+          <Button size="sm" :disabled="submittingDraftId !== null" @click="submitDraft(item)">{{ submittingDraftId === item.id ? 'Submitting…' : 'Send for approval' }}</Button>
+        </div>
+        <details v-if="item.publicationHistory?.length" class="opps__history">
+          <summary>Publication history ({{ item.publicationHistory.length }})</summary>
+          <ul>
+            <li v-for="(period, i) in item.publicationHistory" :key="i">
+              Published {{ date(period.publishedAt) }} —
+              {{ period.unpublishedAt ? `Taken down ${date(period.unpublishedAt)}` : (period.postedUntil && period.postedUntil < todayLondon ? `Expired ${date(period.postedUntil)}` : 'Currently published') }}
+              <template v-if="period.endReason"> ({{ period.endReason === 'submitter' ? 'by submitter' : 'by committee' }})</template>
+            </li>
+          </ul>
+        </details>
         <template v-if="item.status === 'rejected'">
           <p v-if="item.allowEdit" class="opps__meta">An admin has allowed revisions. Edit the details based on the feedback and submit them for another review.</p>
           <p v-else class="opps__meta">This submission is closed. You can make a new submission instead.</p>
@@ -416,8 +457,8 @@ watch(detailId, loadPublished)
     </section>
 
     <section v-else-if="view === 'submit'" class="opps__column">
-      <h2 class="opps__heading">{{ editingId ? (editingWasApproved ? 'Edit published opportunity' : 'Edit rejected opportunity') : 'Submit an opportunity' }}</h2>
-      <p class="opps__intro">{{ editingId ? (editingWasApproved ? 'Your proposed changes will go to committee approval. The current approved listing stays public, unchanged, until those changes are approved or its deadline passes.' : 'An admin allowed revisions. Change the details using their notes, then resubmit for a new approval.') : 'You must be signed in. Your submission will not be public until it has been approved by an admin. Contact details you enter will be shown on the public listing if approved.' }}</p>
+      <h2 class="opps__heading">{{ editingId ? (editingWasDraft ? 'Edit draft opportunity' : editingWasApproved ? 'Edit published opportunity' : 'Edit rejected opportunity') : 'Submit an opportunity' }}</h2>
+      <p class="opps__intro">{{ editingId ? (editingWasDraft ? 'Your edits stay private. Save the draft, then submit it separately when you want committee approval.' : editingWasApproved ? 'Your proposed changes will go to committee approval. The current approved listing stays public, unchanged, until those changes are approved or its deadline passes.' : 'An admin allowed revisions. Change the details using their notes, then resubmit for a new approval.') : 'You must be signed in. Your submission will not be public until it has been approved by an admin. Contact details you enter will be shown on the public listing if approved.' }}</p>
       <p v-if="editingId && editingNotes" class="opps__review"><strong>Admin feedback to address:</strong> {{ editingNotes }}</p>
       <form class="opps__form" @submit.prevent="submit">
         <Field label="Title" required><Input v-model="form.title" required maxlength="180" placeholder="e.g. Summer research programme" /></Field>
@@ -455,7 +496,7 @@ watch(detailId, loadPublished)
         </Field>
         <p v-if="formError" class="opps__error" role="alert">{{ formError }}</p>
         <div class="opps__actions">
-          <Button :disabled="posting" type="submit">{{ posting ? 'Submitting…' : editingId ? (editingWasApproved ? 'Send changes for approval' : 'Resubmit for approval') : 'Send for approval' }}</Button>
+          <Button :disabled="posting" type="submit" @click="savingDraft = editingWasDraft">{{ posting ? 'Saving…' : editingWasDraft ? 'Save draft' : editingId ? (editingWasApproved ? 'Send changes for approval' : 'Resubmit for approval') : 'Send for approval' }}</Button>
           <Button :disabled="posting" variant="ghost" type="button" @click="view = 'list'">Cancel</Button>
         </div>
       </form>
@@ -471,6 +512,9 @@ watch(detailId, loadPublished)
 .opps__heading { font: var(--type-h3); color: var(--text-strong); margin: 0; }
 .opps__intro { font: var(--type-body); color: var(--text-muted); line-height: 1.6; max-width: 72ch; margin: 0; }
 .opps__rule { margin: var(--space-8) 0; }
+.opps__history { font: var(--type-small); color: var(--text-muted); }
+.opps__history summary { cursor: pointer; }
+.opps__history li { margin-top: var(--space-2); }
 .opps__actions, .opps__years, .opps__row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
 .opps__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 310px), 1fr)); gap: var(--space-5); margin-top: var(--space-5); }
 .opps__listing { overflow: hidden; }

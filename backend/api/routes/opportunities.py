@@ -74,6 +74,14 @@ def _view(row: dict, *, private: bool = False, committee: bool = False) -> dict:
         out.update({
             "status": row["status"],
             "withdrawnAt": row.get("withdrawn_at"),
+            "publicationHistory": [
+                {
+                    "publishedAt": period["published_at"],
+                    "unpublishedAt": period.get("unpublished_at"),
+                    "postedUntil": period.get("posted_until"),
+                    "endReason": period.get("end_reason"),
+                } for period in row.get("publication_history") or []
+            ],
             "pendingRevision": (
                 {
                     "title": row["pending_revision"]["title"],
@@ -224,6 +232,8 @@ async def resubmit_opportunity(
     row = await database.put(f"/opportunities/{opportunity_id}", {
         **payload.model_dump(mode="json"), "owner_id": session.user.id,
     })
+    if row["status"] == "draft":
+        return _view(row, private=True)
     opportunity_notifications.dispatch(opportunity_notifications.alert_admins(
         row["title"], f"Opportunity resubmitted: {row['title']}",
         f"Revised submission #{row.get('revision', 1)} from "
@@ -231,6 +241,25 @@ async def resubmit_opportunity(
         f"{settings.site_origin.rstrip('/')}/admin?tab=opportunities",
     ))
     opportunity_notifications.dispatch(opportunity_notifications.alert_submitter(row, resubmitted=True))
+    return _view(row, private=True)
+
+
+@router.post("/me/opportunities/{opportunity_id}/submit", dependencies=[Depends(verify_csrf)])
+async def submit_my_draft(
+    opportunity_id: int, session: AuthSession = Depends(require_session),
+) -> dict:
+    current = await database.get(f"/opportunities/{opportunity_id}")
+    if current is None or current.get("submitted_by") != session.user.id or current.get("status") != "draft":
+        raise HTTPException(409, "Only your draft can be submitted for review")
+    from models.opportunities import OpportunityCreate
+    _validate_posted_until(OpportunityCreate(**current))
+    row = await database.post(f"/opportunities/{opportunity_id}/submit", {"owner_id": session.user.id})
+    opportunity_notifications.dispatch(opportunity_notifications.alert_admins(
+        row["title"], f"Opportunity awaiting renewed approval: {row['title']}",
+        f"{row.get('submitter_email') or 'A member'} has resubmitted a previously published opportunity. "
+        "The opportunity remains private until a new committee approval.",
+        f"{settings.site_origin.rstrip('/')}/admin?tab=opportunities",
+    ))
     return _view(row, private=True)
 
 
@@ -247,7 +276,7 @@ async def withdraw_my_opportunity(
     opportunity_notifications.dispatch(opportunity_notifications.alert_admins(
         row["title"], f"Opportunity taken down by submitter: {row['title']}",
         f"{row.get('submitter_email') or 'A member'} removed their opportunity. "
-        "Its public page and any pending revisions are now unavailable.",
+        "It is back in private drafts, and republication requires new approval.",
         f"{settings.site_origin.rstrip('/')}/admin?tab=opportunities",
     ))
     return _view(row, private=True)

@@ -184,7 +184,10 @@ def test_private_action_buttons_in_core_views_are_gated():
             action = click.group(1)
             # Pure navigation/local dismiss, reset, or own-card edit do not
             # require an administrative grant; the destination may have one.
-            local = ('tab =', 'router.push(', 'saveMyCard', 'resetDraft', 'copyUrl(',
+            # changeEventPage only slices the already permission-scoped event
+            # list locally; it neither requests additional data nor mutates it.
+            local = ('tab =', 'router.push(', 'changeEventPage(',
+                     'saveMyCard', 'resetDraft', 'copyUrl(',
                      'resetEditPermissions', 'resetNewPermissions', 'resetSponsor',
                      'closeCompose', 'stopScan', 'dismissResult', 'adding = false',
                      'refresh', 'showAll =', "emit('open-email'")

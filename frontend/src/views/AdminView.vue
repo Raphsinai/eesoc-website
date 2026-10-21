@@ -79,6 +79,36 @@ watch(
 
 const dash = ref(null)
 const events = ref([])
+// The API returns the complete (permission-scoped) list, but showing every
+// event beside the editor makes the Events tab needlessly long on a phone.
+// Sort without mutating the API array so other views can still find by id.
+const EVENT_PAGE_SIZE = 3
+const eventPage = ref(0)
+const eventSearch = ref('')
+const orderedEvents = computed(() => [...events.value].sort((a, b) => {
+  const aTime = Date.parse(a.starts_at) || 0
+  const bTime = Date.parse(b.starts_at) || 0
+  return bTime - aTime || Number(b.id) - Number(a.id)
+}))
+const filteredEvents = computed(() => {
+  const query = eventSearch.value.trim().toLowerCase()
+  return query
+    ? orderedEvents.value.filter(e => `${e.title} ${e.slug} ${e.category}`.toLowerCase().includes(query))
+    : orderedEvents.value
+})
+const eventPageCount = computed(() => Math.max(1, Math.ceil(filteredEvents.value.length / EVENT_PAGE_SIZE)))
+const activeEventPage = computed(() => Math.min(eventPage.value, eventPageCount.value - 1))
+const pagedEvents = computed(() => filteredEvents.value.slice(
+  activeEventPage.value * EVENT_PAGE_SIZE,
+  (activeEventPage.value + 1) * EVENT_PAGE_SIZE,
+))
+watch(eventSearch, () => { eventPage.value = 0 })
+watch(eventPageCount, count => {
+  if (eventPage.value >= count) eventPage.value = count - 1
+})
+function changeEventPage(delta) {
+  eventPage.value = Math.max(0, Math.min(eventPageCount.value - 1, activeEventPage.value + delta))
+}
 const products = ref([])
 const links = ref([])
 const pages = ref([])
@@ -494,10 +524,12 @@ async function saveEvent() {
               : null,
         })),
     }
+    const createdNew = !editingId.value
     if (editingId.value) await api.put(`/admin/events/${editingId.value}`, payload)
     else await api.post('/admin/events', payload)
     flash(editingId.value ? 'Event updated.' : 'Event created.')
     resetDraft()
+    if (createdNew) { eventPage.value = 0; eventSearch.value = '' }
     await load()
   } catch (e) {
     error.value = e.message
@@ -2207,11 +2239,23 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
       <!-- ============================== EVENTS ============================= -->
       <template v-if="tab === 'events'">
         <div class="admin-cols admin-cols--wide">
-          <div style="display:grid; gap:var(--space-3)">
-            <Card v-for="e in events" :key="e.id" variant="outline">
-              <div style="display:flex; justify-content:space-between; gap:var(--space-4); flex-wrap:wrap; align-items:center">
-                <div>
-                  <div style="display:flex; gap:var(--space-2); align-items:center">
+          <div class="admin-event-list" data-testid="admin-events-list">
+            <div class="admin-event-list__heading">
+              <div>
+                <h2>Events</h2>
+                <span>Latest event date first · {{ orderedEvents.length }} total</span>
+              </div>
+              <span v-if="filteredEvents.length" data-testid="admin-events-range">
+                {{ activeEventPage * EVENT_PAGE_SIZE + 1 }}–{{ Math.min((activeEventPage + 1) * EVENT_PAGE_SIZE, filteredEvents.length) }} of {{ filteredEvents.length }}{{ eventSearch ? ' matches' : '' }}
+              </span>
+            </div>
+            <Input v-if="orderedEvents.length > EVENT_PAGE_SIZE" v-model="eventSearch"
+                   aria-label="Find an event" placeholder="Find an event by name or category…" />
+            <p v-if="!filteredEvents.length" class="admin-event-list__empty">{{ eventSearch ? 'No matching events.' : 'No events yet.' }}</p>
+            <Card v-for="e in pagedEvents" :key="e.id" variant="outline" class="admin-event-card" data-testid="admin-event-card">
+              <div class="admin-event-card__layout">
+                <div class="admin-event-card__summary">
+                  <div class="admin-event-card__badges">
                     <strong style="font:var(--type-h5)">{{ e.title }}</strong>
                     <Badge :tone="e.published ? 'success' : 'neutral'">{{ e.published ? 'Live' : 'Draft' }}</Badge>
                     <Badge v-if="e.industry" tone="accent">Industry</Badge>
@@ -2224,7 +2268,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                     {{ (e.ticket_types || []).map((t) => t.name).join(', ') || 'no ticket types' }}
                   </p>
                 </div>
-                <div style="display:flex; gap:var(--space-2); flex-wrap:wrap; align-items:center">
+                <div class="admin-event-card__controls">
                   <label v-if="e.can_badge" style="display:flex; gap:var(--space-2); align-items:center; font:var(--type-2xs); color:var(--text-muted)">
                     What's On label
                     <select
@@ -2261,6 +2305,11 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 </div>
               </div>
             </Card>
+            <nav v-if="filteredEvents.length > EVENT_PAGE_SIZE" class="admin-event-list__pages" aria-label="Event list pages">
+              <Button size="sm" variant="secondary" :disabled="activeEventPage === 0" @click="changeEventPage(-1)">Previous</Button>
+              <span aria-live="polite">Page {{ activeEventPage + 1 }} of {{ eventPageCount }}</span>
+              <Button size="sm" variant="secondary" :disabled="activeEventPage === eventPageCount - 1" @click="changeEventPage(1)">Next</Button>
+            </nav>
           </div>
 
           <Card v-if="can('events.create') || can('events.edit')" variant="offset" class="event-editor">
@@ -3887,6 +3936,28 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
   background: var(--white, #fff);
 }
 
+/* The event list previously had an implicit auto-sized grid track.
+   Long event titles, badges, and the inline select forced that track over
+   500px wide on phones, even though the editor itself could fit. The admin
+   frame clipped the excess, making it look as though the form was spilling. */
+.admin-event-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-3); min-width: 0; }
+.admin-event-list__heading { min-width: 0; display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
+.admin-event-list__heading h2 { font: var(--type-h4); margin: 0 0 var(--space-1); }
+.admin-event-list__heading span { font: var(--type-2xs); color: var(--text-muted); }
+.admin-event-list__empty { font: var(--type-small); color: var(--text-muted); margin: 0; }
+.admin-event-list > .ees-input { max-width: 100%; min-width: 0; }
+.admin-event-card { min-width: 0; max-width: 100%; }
+.admin-event-card__layout { display: flex; flex-wrap: wrap; gap: var(--space-4); justify-content: space-between; align-items: center; min-width: 0; }
+.admin-event-card__summary { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
+.admin-event-card__badges { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); min-width: 0; }
+.admin-event-card__badges > * { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.admin-event-card__controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); min-width: 0; max-width: 100%; }
+.admin-event-card__controls > *, .admin-event-card__controls label { max-width: 100%; min-width: 0; }
+.admin-event-card__controls label { flex-wrap: wrap; overflow-wrap: anywhere; }
+.admin-event-card__controls .ees-select { min-width: 0; max-width: 100%; }
+.admin-event-list__pages { min-width: 0; display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); }
+.admin-event-list__pages span { font: var(--type-2xs); color: var(--text-muted); text-align: center; }
+
 /* The event editor sits beside the event list on desktop, but is a single
    column on phones. Explicit minmax(0, ...) tracks and shrinkable children
    prevent form controls (particularly datetime-local and ticket fields) from
@@ -3904,14 +3975,6 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
 .event-editor__ticket-fields { display: grid; grid-template-columns: minmax(0, 2fr) repeat(3, minmax(0, 1fr)); gap: var(--space-2); }
 .event-editor__actions { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 
-@media (max-width: 680px) {
-  /* Preserve usable editing space rather than spending 64px on page gutters. */
-  .admin { padding: var(--space-6) var(--space-3); }
-  .event-editor.ees-card__pad { padding: var(--space-4); }
-  .event-editor__pair { grid-template-columns: minmax(0, 1fr); }
-  .event-editor__ticket-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .event-editor__ticket-fields > :nth-child(-n+2) { grid-column: 1 / -1; }
-}
 
 /* Fixed page frame. Everything inside must be able to shrink, or a wide tab
    (the event editor, the product tables) pushes the container past its
@@ -3961,6 +4024,15 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
   .admin-cols--sidebar {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+@media (max-width: 680px) {
+  /* Preserve usable editing space rather than spending 64px on page gutters. */
+  .admin { padding: var(--space-6) var(--space-3); }
+  .event-editor.ees-card__pad { padding: var(--space-4); }
+  .event-editor__pair { grid-template-columns: minmax(0, 1fr); }
+  .event-editor__ticket-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .event-editor__ticket-fields > :nth-child(-n+2) { grid-column: 1 / -1; }
 }
 .inbox-group {
   display: grid;

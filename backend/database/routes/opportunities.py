@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException
 
 from models.opportunities import (
     Opportunity, OpportunityCreate, OpportunityReview,
-    OpportunityEdit, AnnouncementDraft, AnnouncementSubmit,
+    OpportunityEdit, OpportunityWithdraw, AnnouncementDraft, AnnouncementSubmit,
 )
 from postgres import get_pool
 
@@ -25,7 +25,7 @@ COLUMNS = """
     o.id, o.submitted_by, o.title, o.description, o.links,
     o.contact_email, o.contact_phone, o.target_years, o.image_ids,
     o.status, o.review_notes, o.reviewed_by, o.reviewed_at,
-    o.approved_at, o.email_campaign_id, o.created_at,
+    o.approved_at, o.withdrawn_at, o.email_campaign_id, o.created_at,
     o.editable_after_rejection, o.revision, o.updated_at,
     o.announcement_subject, o.announcement_body,
     o.posted_until, o.pending_revision, o.pending_revision_at,
@@ -65,7 +65,7 @@ def _model(row) -> Opportunity:
 async def list_opportunities(
     status: str | None = None, submitted_by: int | None = None, limit: int = 200,
 ) -> list[Opportunity]:
-    if status is not None and status not in ("pending", "approved", "rejected"):
+    if status is not None and status not in ("pending", "approved", "rejected", "withdrawn"):
         raise HTTPException(400, "Unknown opportunity status")
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -175,6 +175,40 @@ async def resubmit_opportunity(opportunity_id: int, item: OpportunityEdit) -> Op
         )
         if row is None:
             raise _review_conflict()
+    return await get_opportunity(opportunity_id)
+
+
+@router.post("/{opportunity_id}/withdraw")
+async def withdraw_opportunity(opportunity_id: int, payload: OpportunityWithdraw) -> Opportunity:
+    """Withdraw an approved listing atomically, only for its submitter.
+
+    Never delete the submission or its original approval history. Clear pending
+    edits so a committee review cannot accidentally republish the listing, and
+    dismiss a queued/scheduled announcement in the same transaction.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        row = await conn.fetchrow(
+            """UPDATE public.opportunities
+                  SET status='withdrawn', withdrawn_at=NOW(), updated_at=NOW(),
+                      pending_revision=NULL, pending_revision_at=NULL,
+                      editable_after_rejection=FALSE
+                WHERE id=$1 AND submitted_by=$2 AND status='approved'
+                RETURNING id, email_campaign_id""",
+            opportunity_id, payload.owner_id,
+        )
+        if row is None:
+            raise _review_conflict()
+        if row["email_campaign_id"] is not None:
+            await conn.execute(
+                """UPDATE public.email_campaigns
+                      SET status='dismissed',
+                          error='Opportunity withdrawn by its submitter.'
+                    WHERE id=$1 AND opportunity_id=$2
+                      AND kind='opportunity_announcement'
+                      AND status IN ('awaiting_approval', 'scheduled')""",
+                row["email_campaign_id"], opportunity_id,
+            )
     return await get_opportunity(opportunity_id)
 
 

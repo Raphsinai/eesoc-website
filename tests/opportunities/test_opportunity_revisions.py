@@ -169,3 +169,29 @@ def test_queue_refuses_announcement_after_takedown_or_expiry(monkeypatch, status
            'subject': 'Opportunity', 'body': 'A meaningful announcement'}
     with pytest.raises(campaigns.Unbuildable):
         run(campaigns.message_for(row))
+
+
+def test_submitter_withdraws_with_verified_owner_and_without_committee_permission(monkeypatch):
+    sent = []
+    alerts = []
+    async def fake_post(path, body):
+        sent.append((path, body))
+        return {**ROW, "status": "withdrawn", "withdrawn_at": "2026-10-21T16:10:00Z",
+                "pending_revision": None}
+    monkeypatch.setattr(api.database, "post", fake_post)
+    def dispatch(coro):
+        alerts.append(coro)
+        coro.close()
+    monkeypatch.setattr(api.opportunity_notifications, "dispatch", dispatch)
+    session = SimpleNamespace(user=SimpleNamespace(id=81))
+    row = run(api.withdraw_my_opportunity(17, session))
+    assert sent == [("/opportunities/17/withdraw", {"owner_id": 81})]
+    assert row["status"] == "withdrawn"
+    assert row["withdrawnAt"] == "2026-10-21T16:10:00Z"
+    assert len(alerts) == 1
+    assert not api._is_public({**ROW, "status": "withdrawn"})
+
+
+@pytest.mark.parametrize("status", ["withdrawn", "rejected", "pending"])
+def test_withdrawn_and_unpublished_listings_are_not_public(status):
+    assert not api._is_public({**ROW, "status": status})

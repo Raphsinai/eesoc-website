@@ -29,6 +29,8 @@ const error = ref('')
 const formError = ref('')
 const submitted = ref(false)
 const posting = ref(false)
+const withdrawingId = ref(null)
+const withdrawNotice = ref('')
 const view = ref('list')
 const filter = ref('')
 const imageFiles = ref([])
@@ -198,6 +200,20 @@ async function submit() {
   }
 }
 
+async function withdrawSubmission(item) {
+  if (!session.authenticated || item.status !== 'approved' || withdrawingId.value !== null) return
+  if (!confirm(`Take down “${item.title}”? It will immediately disappear from the public page, any pending changes will be cancelled, and this cannot be undone. Your submission history will remain available.`)) return
+  withdrawingId.value = item.id
+  formError.value = ''
+  withdrawNotice.value = ''
+  try {
+    await api.post(`/me/opportunities/${item.id}/withdraw`)
+    withdrawNotice.value = `“${item.title}” has been taken down. It is no longer public.`
+    await Promise.all([loadMine(), loadPublished()])
+  } catch (e) { formError.value = e.message }
+  finally { withdrawingId.value = null }
+}
+
 function editSubmission(item) {
   if (!session.authenticated) { openLogin(); return }
   if (!((item.status === 'rejected' && item.allowEdit) || (item.status === 'approved' && !item.pendingRevision))) return
@@ -343,12 +359,13 @@ watch(detailId, loadPublished)
       <h2 class="opps__heading">My submissions</h2>
       <p v-if="submitted" class="opps__success" role="status">Submitted for admin review. You can check its status here.</p>
       <p v-if="draftNotice" class="opps__success" role="status">{{ draftNotice }}</p>
+      <p v-if="withdrawNotice" class="opps__success" role="status">{{ withdrawNotice }}</p>
       <p v-if="formError" class="opps__error" role="alert">{{ formError }}</p>
       <p v-if="mineLoading">Loading your submissions…</p>
       <Card v-for="item in mine" :key="item.id" variant="outline">
         <div class="opps__row">
           <h3>{{ item.title }}</h3>
-          <Badge :tone="item.status === 'approved' ? 'success' : item.status === 'rejected' ? 'danger' : 'accent'">{{ item.status }}</Badge>
+          <Badge :tone="item.status === 'approved' ? 'success' : item.status === 'rejected' ? 'danger' : 'neutral'">{{ item.status === 'withdrawn' ? 'Taken down' : item.status }}</Badge>
         </div>
         <p class="opps__meta">Submitted {{ date(item.createdAt) }} · For {{ item.targetYears.map(yearName).join(', ') }}</p>
         <p class="opps__description">{{ item.description }}</p>
@@ -357,13 +374,17 @@ watch(detailId, loadPublished)
         <p v-if="item.status === 'approved' && item.postedUntil && item.postedUntil < todayLondon" class="opps__meta">This opportunity has expired and is no longer publicly listed.</p>
         <p v-if="item.reviewNotes" class="opps__review"><strong>Admin notes:</strong> {{ item.reviewNotes }}</p>
         <p v-if="item.status === 'pending'" class="opps__meta">Waiting for admin review. Only you and the admins can see this.</p>
+        <p v-if="item.status === 'withdrawn'" class="opps__meta">Taken down {{ date(item.withdrawnAt) }} by the submitter. This opportunity is no longer public, and its history is retained.</p>
         <template v-if="item.status === 'rejected'">
           <p v-if="item.allowEdit" class="opps__meta">An admin has allowed revisions. Edit the details based on the feedback and submit them for another review.</p>
           <p v-else class="opps__meta">This submission is closed. You can make a new submission instead.</p>
           <div v-if="item.allowEdit"><Button size="sm" variant="secondary" @click="editSubmission(item)">Edit & resubmit</Button></div>
         </template>
         <template v-if="item.status === 'approved'">
-          <div v-if="!item.pendingRevision" class="opps__actions"><Button size="sm" variant="secondary" @click="editSubmission(item)">Edit listing</Button></div>
+          <div class="opps__actions">
+            <Button v-if="!item.pendingRevision" size="sm" variant="secondary" :disabled="withdrawingId !== null" @click="editSubmission(item)">Edit listing</Button>
+            <Button size="sm" variant="danger" :disabled="withdrawingId !== null" @click="withdrawSubmission(item)">{{ withdrawingId === item.id ? 'Taking down…' : 'Take down' }}</Button>
+          </div>
           <router-link v-if="!item.postedUntil || item.postedUntil >= todayLondon" :to="`/opportunities/${item.id}`" class="opps__link">View published listing ↗</router-link>
           <div v-if="!item.emailCampaignId" class="opps__actions">
             <Badge tone="accent">Announcement draft</Badge>

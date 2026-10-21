@@ -73,6 +73,7 @@ def _view(row: dict, *, private: bool = False, committee: bool = False) -> dict:
     if private or committee:
         out.update({
             "status": row["status"],
+            "withdrawnAt": row.get("withdrawn_at"),
             "pendingRevision": (
                 {
                     "title": row["pending_revision"]["title"],
@@ -230,6 +231,25 @@ async def resubmit_opportunity(
         f"{settings.site_origin.rstrip('/')}/admin?tab=opportunities",
     ))
     opportunity_notifications.dispatch(opportunity_notifications.alert_submitter(row, resubmitted=True))
+    return _view(row, private=True)
+
+
+@router.post("/me/opportunities/{opportunity_id}/withdraw", dependencies=[Depends(verify_csrf)])
+async def withdraw_my_opportunity(
+    opportunity_id: int,
+    session: AuthSession = Depends(require_session),
+) -> dict:
+    """The signed-in owner can remove their approved listing immediately."""
+    row = await database.post(
+        f"/opportunities/{opportunity_id}/withdraw",
+        {"owner_id": session.user.id},
+    )
+    opportunity_notifications.dispatch(opportunity_notifications.alert_admins(
+        row["title"], f"Opportunity taken down by submitter: {row['title']}",
+        f"{row.get('submitter_email') or 'A member'} removed their opportunity. "
+        "Its public page and any pending revisions are now unavailable.",
+        f"{settings.site_origin.rstrip('/')}/admin?tab=opportunities",
+    ))
     return _view(row, private=True)
 
 

@@ -30,7 +30,8 @@ def test_waitlist_when_full_and_admin_can_disable_reenable(admin_client, member_
             response = api.get(f'/events/{slug}')
             assert response.status_code == 200, response.text
             return response.json()
-        assert view()['status'] == 'Free entry'
+        # A free ticket with only one seat triggers the <10 low-stock label.
+        assert view()['status'] == 'Not many left'
         taken = member_client.post(f'/events/{slug}/reserve', json={
             'ticket_type_id': ticket_id, 'quantity': 1,
         })

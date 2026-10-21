@@ -25,7 +25,7 @@ ALLOWED_FIELDS = {
     "soldOut", "published", "salesState", "salesOpenAt",
     # detail-only
     "description", "capacity", "remaining", "holdHours", "ticketTypes",
-    "myReservations",
+    "myReservations", "waitlistAvailable",  # explicit public waitlist join state
     # new in this section
     "mapUrl", "meetingUrl", "meetingUrlPrivate", "targetYears",
     # added since, public by design: the doors-close time (section 14) and the

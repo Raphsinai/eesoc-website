@@ -42,6 +42,7 @@ from utils.present import (
     london,
     sales_state,
     ticket_sale_state,
+    waitlist_available,
 )
 from utils.year import academic_year
 
@@ -246,6 +247,7 @@ async def get_event(
             "description": event.get("description", ""),
             "capacity": event.get("capacity"),
             "remaining": event.get("remaining"),
+            "waitlistAvailable": waitlist_available(event),
             "holdHours": event.get("hold_hours"),
             "mapUrl": event.get("map_url"),
             "meetingUrl": event.get("meeting_url") if show_meeting_url else None,
@@ -504,7 +506,10 @@ async def reserve(
             "quantity": reservation["quantity"],
             "expiresAt": reservation["expires_at"],
         },
-        "next": _next_step(ticket, is_member, as_guest, reservation["status"]),
+        "next": _next_step(
+            ticket, is_member, as_guest, reservation["status"],
+            imperial_account=is_imperial(address),
+        ),
         "membershipWarning": membership_warning,
     }
 
@@ -547,7 +552,9 @@ async def _send_held_confirmation(
             # A member's Union purchase is matched on their login; everybody
             # else has to tell us the order number, and the email is where they
             # find that out.
-            needs_order_number=not is_member,
+            # Imperial users (even if not yet in the EESoc membership feed)
+            # should wait for the next Union sync before using the fallback.
+            needs_order_number=not is_member and not is_imperial(address),
             doors_close=format_doors_close(starts, event.get("doors_close_at")),
         )
     except Exception:  # noqa: BLE001
@@ -598,7 +605,8 @@ async def _send_guest_code(address: str) -> None:
 
 
 def _next_step(
-    ticket: dict, is_member: bool, as_guest: bool = False, status: str = "held"
+    ticket: dict, is_member: bool, as_guest: bool = False, status: str = "held",
+    imperial_account: bool = False,
 ) -> dict:
     if not ticket.get("requires_purchase", True):
         if status == "confirmed":
@@ -615,13 +623,14 @@ def _next_step(
                 "soon as the Union's records show your membership."
             ),
         }
-    if as_guest and is_member:
+    if as_guest and (is_member or imperial_account):
         return {
             "action": "buy",
             "message": (
                 "Held for you. Buy the ticket on the Union shop with the same "
-                "Imperial account and we'll confirm it automatically. We've "
-                "emailed you a code so you can check on it."
+                "Imperial account. We check purchases each morning: allow at least "
+                "24 hours after buying for confirmation. If it is still unconfirmed, "
+                "sign in using the code we've emailed and submit your order number."
             ),
         }
     if as_guest:
@@ -632,13 +641,14 @@ def _next_step(
                 "code we've just emailed to sign in and enter your order number."
             ),
         }
-    if is_member:
+    if is_member or imperial_account:
         return {
             "action": "buy",
             "message": (
                 "Buy the ticket on the Union shop with the same Imperial account. "
-                "We check purchases each morning and confirm your place "
-                "automatically — no need to send us anything."
+                "Purchases sync each morning: allow at least 24 hours after "
+                "buying for automatic confirmation. If it is still unconfirmed, "
+                "you can submit your order number from the booking page."
             ),
         }
     return {
@@ -670,6 +680,7 @@ async def my_reservations(session: AuthSession = Depends(require_session)) -> di
                     r["status"] == "held"
                     and r.get("requires_purchase", True)
                     and session.user.member_id is None
+                    and not is_imperial(str(session.user.email))
                     and not r.get("order_number")
                 ),
             }
@@ -839,6 +850,8 @@ async def join_waitlist(
     if event is None or not event["published"]:
         raise HTTPException(404, "No such event")
     _require_sales_open(event)
+    if not event.get("waitlist_enabled", True) or event.get("signup_url") or not event.get("ticket_types"):
+        raise HTTPException(409, "The waitlist is not available for this event.")
 
     if session:
         user_id = session.user.id

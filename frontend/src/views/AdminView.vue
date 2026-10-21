@@ -525,6 +525,21 @@ async function saveEventAvailabilityBadge(e, badge) {
   }
 }
 
+async function saveEventWaitlistEnabled(e, enabled) {
+  busy.value = true
+  error.value = ''
+  try {
+    await api.patch(`/admin/events/${e.id}/waitlist-enabled`, { waitlist_enabled: enabled })
+    flash(enabled ? `Waitlist enabled for ${e.title}.` : `Waitlist disabled for ${e.title}.`)
+    await load()
+  } catch (err) {
+    error.value = err.message
+    await load()
+  } finally {
+    busy.value = false
+  }
+}
+
 async function removeEvent(e) {
   if (!confirm(`Delete "${e.title}"? Bookings go with it.`)) return
   await api.del(`/admin/events/${e.id}`)
@@ -2223,6 +2238,19 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                       <option value="not_many_left">Not many left</option>
                       <option value="selling_fast">Selling fast</option>
                     </select>
+                  </label>
+                  <label
+                    v-if="e.can_waitlist"
+                    style="display:flex; gap:var(--space-2); align-items:center; font:var(--type-2xs); color:var(--text-muted)"
+                  >
+                    <input
+                      type="checkbox"
+                      :checked="e.waitlist_enabled !== false"
+                      :disabled="busy"
+                      :aria-label="`Allow waitlist for ${e.title}`"
+                      @change="saveEventWaitlistEnabled(e, $event.target.checked)"
+                    />
+                    Allow waitlist when full
                   </label>
                   <Button v-if="e.can_publish" size="sm" variant="ghost" @click="togglePublished(e)">{{ e.published ? 'Unpublish' : 'Publish' }}</Button>
                   <Button v-if="e.can_book" size="sm" variant="secondary" @click="router.push(`/admin/events/${e.id}`)">Bookings</Button>

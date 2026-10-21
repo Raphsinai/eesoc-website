@@ -976,8 +976,9 @@ async def send_booking_held(
     else:
         what_next = (
             "Buy the ticket on the Union shop with the same Imperial account. "
-            "We check purchases each morning and confirm your place "
-            "automatically — there is nothing to send us."
+            "We check purchases each morning; allow at least 24 hours after "
+            "purchase for confirmation. If it has still not confirmed, use "
+            "your booking page to submit the Union order number."
         )
 
     lines = [

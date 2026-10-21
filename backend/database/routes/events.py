@@ -41,7 +41,7 @@ def _target_years_text(years: list[int]) -> str:
 EVENT_COLUMNS = """
     id, slug, title, category, description, image_url, venue, starts_at, ends_at,
     doors_close_at,
-    capacity, availability_badge, hold_hours, published, sponsorship_claimable,
+    capacity, availability_badge, waitlist_enabled, hold_hours, published, sponsorship_claimable,
     requested_by_sponsor_id, academic_year, created_by, created_at, updated_at,
     sales_open_at, sales_announced_at, purchase_url, industry, signup_url,
     map_url, meeting_url, meeting_url_private, target_years,
@@ -429,6 +429,24 @@ async def get_event(event_id: int) -> EventDetail:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             f"SELECT {EVENT_COLUMNS} FROM public.events WHERE id = $1;", event_id
+        )
+        if row is None:
+            raise HTTPException(404, "No such event")
+        return await _detail(conn, row)
+
+
+@router.patch("/events/{event_id}/waitlist-enabled")
+async def update_event_waitlist_enabled(
+    event_id: int,
+    waitlist_enabled: bool = Body(embed=True),
+) -> EventDetail:
+    """Stop/start new queue joins without touching existing queue positions."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"""UPDATE public.events SET waitlist_enabled=$2, updated_at=NOW()
+                  WHERE id=$1 RETURNING {EVENT_COLUMNS};""",
+            event_id, waitlist_enabled,
         )
         if row is None:
             raise HTTPException(404, "No such event")

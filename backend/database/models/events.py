@@ -67,6 +67,7 @@ class Event(BaseModel):
     capacity: int | None = None
     # Standalone admin action: an event edit must never reset this setting.
     availability_badge: Literal["auto", "not_many_left", "selling_fast"] = "auto"
+    waitlist_enabled: bool = True
     hold_hours: int = 48
     published: bool = False
     # When tickets go on sale. None = not announced yet, which the site

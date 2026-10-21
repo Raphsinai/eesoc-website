@@ -296,6 +296,7 @@ async def list_all_events(
         {**e, "can_edit": session.can("events.edit") and may_edit_event(session, e),
          "can_delete": session.can("events.delete") and may_edit_event(session, e),
          "can_badge": session.can("events.availability_badge.edit") and may_edit_event(session, e),
+         "can_waitlist": session.can("events.waitlist.manage") and may_edit_event(session, e),
          "can_publish": session.can("events.publish") and may_edit_event(session, e),
          "can_book": session.can("events.bookings.view") and may_manage_booking(session, e), "sponsors": sponsors.get(e["id"], [])}
         for e in events
@@ -411,6 +412,26 @@ async def update_event(
     updated = await database.put(f"/events/{event_id}", body)
     await _sync_on_sale_email(event_id)
     return updated
+
+
+@router.patch(
+    "/events/{event_id}/waitlist-enabled",
+    dependencies=[Depends(require_action("events.waitlist.manage")), Depends(verify_csrf)],
+)
+async def set_event_waitlist_enabled(
+    event_id: int,
+    waitlist_enabled: bool = Body(embed=True),
+    session: AuthSession = Depends(require_admin),
+) -> dict:
+    """Independently revocable per-event waitlist enrolment, scope-protected."""
+    event = await database.get(f"/events/{event_id}")
+    if event is None:
+        raise HTTPException(404, "No such event")
+    assert_event_scope(session, event)
+    return await database.patch(
+        f"/events/{event_id}/waitlist-enabled",
+        {"waitlist_enabled": waitlist_enabled},
+    )
 
 
 @router.patch(

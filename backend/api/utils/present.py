@@ -137,6 +137,19 @@ def next_ticket_opening(types: list[dict]) -> datetime | None:
     )
 
 
+def waitlist_available(event: dict) -> bool:
+    """Whether a sold-out event can currently accept a person onto its queue.
+
+    Match the public page and event card. A closed sale, external sign-up or
+    unticketed event cannot offer a waitlist, even if the admin toggle is on.
+    """
+    return bool(
+        event.get("published") and event.get("waitlist_enabled", True)
+        and not event.get("signup_url") and event.get("ticket_types")
+        and event.get("sold_out") and sales_state(event)[0] == "open"
+    )
+
+
 def event_status(event: dict) -> tuple[str, str]:
     """The badge on an event card: (label, tone).
 
@@ -146,7 +159,7 @@ def event_status(event: dict) -> tuple[str, str]:
     if not event.get("published"):
         return "Draft", "neutral"
     if event.get("sold_out"):
-        return "Sold out", "danger"
+        return ("Waitlist", "accent") if waitlist_available(event) else ("Sold out", "danger")
 
     # No ticket types at all = nothing to book. A drop-in event is not
     # "on sale soon", it is simply free to turn up to, and saying otherwise

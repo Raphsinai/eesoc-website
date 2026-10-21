@@ -33,6 +33,20 @@ const busy = ref(false)
 const message = ref('')
 const membershipWarning = ref('')
 const orderNumbers = ref({})
+const expandedOrderForms = ref({})
+// Imperial student email is different from EESoc membership. A student can
+// automatically match their Union order even before the society membership feed
+// catches up, so do not use session.isMember to decide which guidance to show.
+const imperialStudent = computed(() => /@(ic|imperial)\.ac\.uk$/i.test(session.user?.email || ''))
+function toggleOrderForm(id) {
+  expandedOrderForms.value = {
+    ...expandedOrderForms.value,
+    [id]: !expandedOrderForms.value[id],
+  }
+}
+const waitlistPreferredType = ref('')
+const waitlistMessage = ref('')
+const waitlistJoined = ref(false)
 
 // Guest booking. Signed-out visitors can hold a ticket; we just need to know
 // who they are, and their shortcode if they are at Imperial (that is what lets
@@ -124,7 +138,12 @@ async function load() {
 }
 
 onMounted(load)
-watch(() => route.params.slug, load)
+watch(() => route.params.slug, () => {
+  waitlistJoined.value = false
+  waitlistMessage.value = ''
+  waitlistPreferredType.value = ''
+  load()
+})
 
 const selected = computed(
   () => (event.value?.ticketTypes || []).find((t) => t.id === chosen.value) || null,
@@ -241,6 +260,38 @@ async function cancel(reservation) {
   }
 }
 
+const canJoinWaitlist = computed(() => {
+  if (!event.value?.waitlistAvailable || busy.value || waitlistJoined.value || !available('bookings')) return false
+  if (session.authenticated) return true
+  if (!guest.value.email.trim().includes('@')) return false
+  return !guestIsImperial.value || Boolean(guest.value.shortcode.trim())
+})
+
+async function joinWaitlist() {
+  if (!canJoinWaitlist.value) return
+  busy.value = true
+  error.value = ''
+  waitlistMessage.value = ''
+  try {
+    const payload = { ticket_type_id: waitlistPreferredType.value || null, quantity: 1 }
+    if (!session.authenticated) {
+      payload.guest = {
+        email: guest.value.email.trim(),
+        first_name: guest.value.first_name.trim() || null,
+        last_name: guest.value.last_name.trim() || null,
+        shortcode: guest.value.shortcode.trim() || null,
+      }
+    }
+    const result = await api.post(`/events/${route.params.slug}/waitlist`, payload)
+    waitlistJoined.value = true
+    waitlistMessage.value = result.message
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
+}
+
 async function submitOrder(reservation) {
   const value = (orderNumbers.value[reservation.id] || '').trim()
   if (!value) return
@@ -251,6 +302,7 @@ async function submitOrder(reservation) {
       order_number: value,
     })
     message.value = res.message
+    expandedOrderForms.value = { ...expandedOrderForms.value, [reservation.id]: false }
     await load()
   } catch (e) {
     error.value = e.message
@@ -499,7 +551,9 @@ const bookingClosesText = computed(() => {
         </Card>
 
         <Card v-else variant="offset">
-          <h2 style="margin:0 0 var(--space-5); font:var(--type-h4)">Book a place</h2>
+          <h2 style="margin:0 0 var(--space-5); font:var(--type-h4)">
+            {{ event.waitlistAvailable ? 'Join the waitlist' : event.soldOut ? 'Event is full' : 'Book a place' }}
+          </h2>
 
           <!-- The whole panel goes, not just the button. Leaving the ticket
                picker up would let somebody choose a ticket and pick a quantity
@@ -576,6 +630,44 @@ const bookingClosesText = computed(() => {
           <p v-if="bookingClosesText" class="booking-closes">
             Booking closes {{ bookingClosesText }}
           </p>
+          <div v-if="event.waitlistAvailable" data-testid="event-waitlist" style="display:grid; gap:var(--space-4)">
+            <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
+              This event is full. Join the waitlist and we'll email you if a place becomes available.
+              Joining doesn't guarantee a ticket.
+            </p>
+            <Field label="Preferred ticket type (optional)" help="We'll try this first, but may offer another type if that's all that becomes available.">
+              <select v-model="waitlistPreferredType" class="ees-select" :disabled="waitlistJoined">
+                <option value="">Any ticket type</option>
+                <option v-for="t in event.ticketTypes" :key="t.id" :value="t.id">{{ t.name }} — {{ t.price }}</option>
+              </select>
+            </Field>
+            <template v-if="!session.authenticated">
+              <Field label="Email for the waitlist">
+                <Input v-model="guest.email" type="email" autocomplete="email" placeholder="you@ic.ac.uk" :disabled="waitlistJoined" />
+              </Field>
+              <Field v-if="guestIsImperial" label="Imperial shortcode" help="The bit before @ic.ac.uk — needed to match your Union membership.">
+                <Input v-model="guest.shortcode" autocomplete="username" placeholder="ab1234" :disabled="waitlistJoined" />
+              </Field>
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:var(--space-3)">
+                <Field label="First name"><Input v-model="guest.first_name" autocomplete="given-name" :disabled="waitlistJoined" /></Field>
+                <Field label="Surname"><Input v-model="guest.last_name" autocomplete="family-name" :disabled="waitlistJoined" /></Field>
+              </div>
+            </template>
+            <Button block data-testid="join-waitlist" :disabled="!canJoinWaitlist" @click="joinWaitlist">
+              {{ waitlistJoined ? 'Joined waitlist' : busy ? 'Joining…' : 'Join waitlist' }}
+            </Button>
+            <p v-if="waitlistMessage" role="status" style="margin:0; font:var(--type-small); color:var(--text-strong)">{{ waitlistMessage }}</p>
+            <p v-if="error" role="alert" style="margin:0; font:var(--type-small); color:var(--danger)">{{ error }}</p>
+          </div>
+
+          <div v-else-if="event.soldOut" data-testid="event-fully-booked" class="sales-notice booking-closed">
+            <p style="margin:0; font:var(--type-small); color:var(--text-strong)">Tickets are sold out.</p>
+            <p style="margin:var(--space-2) 0 0; font:var(--type-small); color:var(--text-muted)">
+              The waitlist is not available for this event. Any tickets you already booked are shown below.
+            </p>
+          </div>
+
+          <template v-else>
           <p v-if="!session.authenticated" style="margin:0 0 var(--space-4); font:var(--type-small); color:var(--text-muted)">
             Log in to book. Members and guests both welcome.
           </p>
@@ -691,7 +783,7 @@ const bookingClosesText = computed(() => {
           <p v-else style="margin:0; font:var(--type-small); color:var(--text-muted)">
             No tickets on sale for this one — just turn up.
           </p>
-
+          </template>
           </template>
 
           <template v-if="event.myReservations?.length">
@@ -738,17 +830,56 @@ const bookingClosesText = computed(() => {
               <!-- A guest sees this booking because this browser made it, which
                    is not proof of who they are. Changing it needs the code. -->
               <p v-if="!session.authenticated" style="margin:0; font:var(--type-2xs); color:var(--text-muted)">
-                Booked from this browser. To cancel it or add an order number,
-                <a href="#" @click.prevent="emit('need-login')">sign in</a>
-                with the code we emailed you.
+                Booked from this browser.
+                <a href="#" @click.prevent="emit('need-login')">Sign in</a>
+                with the code we emailed you to check confirmation or manage this booking.
+                If you paid through your Imperial account, allow 24 hours for Union purchases to sync
+                before submitting an order number.
               </p>
 
-              <template v-if="session.authenticated && r.status === 'held' && r.requiresPurchase && !session.isMember && !r.orderNumber">
-                <Field label="Union order number" help="From your receipt, e.g. AB99ZZ4.">
-                  <Input v-model="orderNumbers[r.id]" placeholder="Order number" />
-                </Field>
-                <Button size="sm" :disabled="busy" @click="submitOrder(r)">Submit order number</Button>
-              </template>
+              <p
+                v-if="session.authenticated && r.status === 'held' && r.requiresPurchase && r.orderNumber"
+                data-testid="order-number-received"
+                style="margin:0; font:var(--type-small); color:var(--text-muted)"
+              >
+                Order number received. We’ll recheck it against the next Union sales sync.
+                Your booking will confirm automatically if it matches.
+              </p>
+
+              <div
+                v-if="session.authenticated && r.status === 'held' && r.requiresPurchase && !r.orderNumber"
+                data-testid="order-number-help"
+                style="display:grid; gap:var(--space-3); padding:var(--space-3); background:var(--surface-sunken)"
+              >
+                <p v-if="imperialStudent" style="margin:0; font:var(--type-small); color:var(--text-muted)">
+                  <strong>Already bought your Union ticket?</strong> Imperial purchases are checked each morning.
+                  Allow at least <strong>24 hours after purchase</strong> for your booking to confirm automatically.
+                  If it still hasn't confirmed after a day, you can submit the order number from your Union receipt.
+                </p>
+                <p v-else style="margin:0; font:var(--type-small); color:var(--text-muted)">
+                  If you purchased with a different Union account, we may need the order number
+                  from your receipt to match your booking. You can add it below.
+                </p>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  :aria-expanded="Boolean(expandedOrderForms[r.id])"
+                  :disabled="busy"
+                  data-testid="order-number-toggle"
+                  @click="toggleOrderForm(r.id)"
+                >
+                  {{ imperialStudent ? 'Still unconfirmed after 24 hours? Submit order number' : 'Add Union order number' }}
+                  {{ expandedOrderForms[r.id] ? '−' : '+' }}
+                </Button>
+                <div v-if="expandedOrderForms[r.id]" data-testid="order-number-form" style="display:grid; gap:var(--space-3)">
+                  <Field label="Union order number" help="From your Union receipt, e.g. AB99ZZ4.">
+                    <Input v-model="orderNumbers[r.id]" placeholder="Order number" />
+                  </Field>
+                  <Button size="sm" :disabled="busy || !orderNumbers[r.id]?.trim()" @click="submitOrder(r)">
+                    Submit order number
+                  </Button>
+                </div>
+              </div>
 
               <Button v-if="session.authenticated" size="sm" variant="ghost" :disabled="busy" @click="cancel(r)">Cancel</Button>
             </div>

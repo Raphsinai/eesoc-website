@@ -34,6 +34,7 @@ GROUPS = {
             'events.create': 'Create events',
             'events.edit': 'Edit event details',
             'events.availability_badge.edit': 'Set the public What’s On availability label',
+            'events.waitlist.manage': 'Enable or disable joining event waitlists',
             'events.publish': 'Publish or unpublish events',
             'events.delete': 'Delete events',
         },

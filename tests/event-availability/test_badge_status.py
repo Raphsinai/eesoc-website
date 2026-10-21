@@ -60,7 +60,7 @@ def test_only_the_active_tickets_count_and_the_global_cap_is_respected():
 
 
 @pytest.mark.parametrize('other, expected', [
-    ({ 'sold_out': True }, ('Sold out', 'danger')),
+    ({ 'sold_out': True }, ('Waitlist', 'accent')),
     ({ 'sales_open_at': None }, ('On sale soon', 'neutral')),
     ({ 'sales_open_at': iso(1) }, None),
     ({ 'reservations_close_at': iso(-1) }, ('Booking closed', 'neutral')),

@@ -33,6 +33,7 @@ GROUPS = {
         'Event management': {
             'events.create': 'Create events',
             'events.edit': 'Edit event details',
+            'events.photo_short_name.edit': 'Edit an event photo short name',
             'events.availability_badge.edit': 'Set the public What’s On availability label',
             'events.waitlist.manage': 'Enable or disable joining event waitlists',
             'events.publish': 'Publish or unpublish events',
@@ -154,6 +155,7 @@ GROUPS = {
             'resources.import': 'Import resources',
         },
         'Photo print studio': {
+            'photos.print': 'Record an event photo print',
             'photos.view': 'View photo print sets',
             'photos.upload': 'Upload photos for prints',
             'photos.create': 'Create photo print drafts',

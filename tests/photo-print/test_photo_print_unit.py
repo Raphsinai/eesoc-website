@@ -36,8 +36,10 @@ def test_print_dimensions_qr_and_safe_margins(image_bytes, count, orientation, s
     with Image.open(BytesIO(result)) as image:
         assert image.format == "PNG"
         assert image.size == size
-        assert image.getpixel((0, 0)) == (255, 255, 255)
-        assert image.getpixel((size[0] - 1, size[1] - 1)) == (255, 255, 255)
+        # The new design uses EESoc navy with gold lines: white only inside the QR.
+        for x,y in ((0, 0), (size[0]-1, size[1]-1)):
+            r,g,b = image.getpixel((x,y))
+            assert b > g > r and b < 150
         assert image.info["dpi"][0] == pytest.approx(300, abs=1)
         assert image.getpixel((100, 450)) != (255, 255, 255)
 

@@ -54,6 +54,7 @@ class Event(BaseModel):
     id: int | None = None
     slug: str
     title: str
+    photo_short_name: str | None = None
     category: str | None = None
     description: str = ""
     image_url: str | None = None

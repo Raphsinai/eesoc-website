@@ -27,7 +27,7 @@ log = logging.getLogger("api.photos")
 
 
 class CreatePhotos(BaseModel):
-    title: str = Field(min_length=1, max_length=100)
+    event_id: int = Field(gt=0)
     orientation: Literal["portrait", "landscape"] = "portrait"
     image_ids: list[int] = Field(min_length=1, max_length=4)
 
@@ -47,7 +47,10 @@ def _present(row: dict) -> dict:
     ]
     result = {
         "id": row["id"],
+        "eventId": row.get("event_id"),
         "title": row["title"],
+        "printLabel": row.get("print_label") or row["title"],
+        "printedAt": row.get("printed_at"),
         "orientation": row["orientation"],
         "status": row["status"],
         "createdAt": row["created_at"],
@@ -74,6 +77,7 @@ async def _print(row: dict) -> Response:
     photos = await asyncio.gather(*(storage.load(i["stored_name"]) for i in images))
     image = await asyncio.to_thread(
         photo_print.render, photos, row["title"], _page_url(row), row["orientation"],
+        row.get("print_label"),
     )
     return Response(
         image, media_type="image/png",
@@ -116,6 +120,41 @@ async def download_photos(token: str) -> Response:
             "Content-Disposition": 'attachment; filename="eesoc-photos.zip"',
         },
     )
+
+
+def _can_select_event(session: AuthSession, event: dict) -> bool:
+    """Unpublished events need explicit event-read and correct event scope."""
+    return bool(
+        event.get("published")
+        or (
+            session.can("events.view")
+            and (session.can("events.scope.all")
+                 or (session.can("events.scope.industry") and event.get("industry")))
+        )
+    )
+
+
+@router.get(
+    "/admin/photos/events", dependencies=[Depends(require_action("photos.view"))],
+)
+async def photo_event_choices(session: AuthSession = Depends(require_session)) -> dict:
+    rows = await database.get("/photo-sets/events") or []
+    events = [
+        {
+            "id": event["id"], "title": event["title"],
+            "photoShortName": event.get("photo_short_name"),
+            "startsAt": event["starts_at"], "published": event["published"],
+            "canEditShortName": session.can("events.photo_short_name.edit")
+               and (session.can("events.scope.all")
+                    or (session.can("events.scope.industry") and event.get("industry"))),
+        }
+        for event in rows if _can_select_event(session, event)
+    ]
+    last = await database.get("/photo-sets/last-printed") or {}
+    last_id = last.get("event_id")
+    if last_id not in {event["id"] for event in events}:
+        last_id = None
+    return {"events": events, "lastPrintedEventId": last_id}
 
 
 @router.get(
@@ -197,13 +236,14 @@ async def create_set(
 ) -> dict:
     if len(set(payload.image_ids)) != len(payload.image_ids):
         raise HTTPException(400, "Select different photos")
-    if not payload.title.strip():
-        raise HTTPException(400, "Enter a title")
+    event = await database.get(f"/events/{payload.event_id}")
+    if event is None or not _can_select_event(session, event):
+        # Do not disclose details of unpublished, unauthorised events.
+        raise HTTPException(404, "Event is not available for photo prints")
     row = await database.post(
         "/photo-sets",
         {
             **payload.model_dump(),
-            "title": payload.title.strip(),
             "token": secrets.token_urlsafe(24),
             "created_by": session.user.id,
         },
@@ -219,6 +259,18 @@ async def publish_set(set_id: int) -> dict:
     row = await database.post(f"/photo-sets/{set_id}/publish")
     if not row:
         raise HTTPException(404, "Photo set not found")
+    return _present(row)
+
+
+@router.post(
+    "/admin/photos/sets/{set_id}/printed",
+    dependencies=[Depends(require_action("photos.print")), Depends(verify_csrf)],
+)
+async def record_photo_print(set_id: int) -> dict:
+    """Store the most recently printed event across phones and committee users."""
+    row = await database.post(f"/photo-sets/{set_id}/printed")
+    if not row:
+        raise HTTPException(404, "Published photo set not found")
     return _present(row)
 
 

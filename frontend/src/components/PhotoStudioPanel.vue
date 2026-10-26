@@ -1,14 +1,24 @@
 <script setup>
 // Mobile photo booth: Sony -> iPhone -> EESoc -> AirPrint/SELPHY.
 // One photo per request avoids the nginx 12 MB body cap with four Sony originals.
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import api from '@/api'
 import { can } from '@/stores/session'
 import Button from '@/components/ds/Button.vue'
 import Card from '@/components/ds/Card.vue'
 
 const selections = ref([])
-const title = ref('EESoc memories')
+const events = ref([])
+const selectedEventId = ref(null)
+const shortName = ref('')
+const savingShortName = ref(false)
+const eventsLoading = ref(false)
+const selectedEvent = computed(() =>
+  events.value.find(event => event.id === selectedEventId.value) || null)
+watch(selectedEventId, () => {
+  shortName.value = selectedEvent.value?.photoShortName || ''
+})
+
 const orientation = ref('portrait')
 const busy = ref(false)
 const error = ref('')
@@ -20,6 +30,8 @@ const previewUrl = ref('')
 const printFile = ref(null)
 
 const canStart = computed(() => can('photos.view') && can('photos.upload') && can('photos.create'))
+const canCreatePrint = computed(() => canStart.value && !!selectedEvent.value)
+
 const printUrl = computed(() => !active.value ? '' :
   active.value.status === 'published'
     ? active.value.printUrl
@@ -114,7 +126,58 @@ async function loadSets() {
     error.value = e.message
   }
 }
-onMounted(loadSets)
+async function loadEvents() {
+  if (!can('photos.view')) return
+  eventsLoading.value = true
+  try {
+    const response = await api.get('/admin/photos/events')
+    events.value = response.events || []
+    // The server remembers the last print event across committee phones.
+    // If it was removed, choose the calendar event closest to today.
+    const previous = Number(selectedEventId.value)
+    const last = Number(response.lastPrintedEventId)
+    if (events.value.some(event => event.id === previous)) return
+    if (events.value.some(event => event.id === last)) {
+      selectedEventId.value = last
+    } else {
+      const now = Date.now()
+      const byDistance = [...events.value].sort((a, b) =>
+        Math.abs(new Date(a.startsAt).getTime()-now) -
+        Math.abs(new Date(b.startsAt).getTime()-now))
+      selectedEventId.value = byDistance[0]?.id ?? null
+    }
+    shortName.value = selectedEvent.value?.photoShortName || ''
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    eventsLoading.value = false
+  }
+}
+
+async function saveShortName() {
+  const event = selectedEvent.value
+  if (!event?.canEditShortName || savingShortName.value) return
+  savingShortName.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const result = await api.patch('/admin/events/' + event.id + '/photo-short-name', {
+      photo_short_name: shortName.value.trim() || null,
+    })
+    events.value = events.value.map(candidate => candidate.id === event.id
+      ? { ...candidate, photoShortName: result.photo_short_name } : candidate)
+    notice.value = 'Photo short name saved for this event.'
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    savingShortName.value = false
+  }
+}
+
+onMounted(() => {
+  loadEvents()
+  loadSets()
+})
 
 async function openSet(set) {
   active.value = set
@@ -129,7 +192,9 @@ async function makePreview() {
     const response = await fetch(printUrl.value, { credentials: 'same-origin' })
     if (!response.ok) throw new Error('Could not generate print preview')
     const blob = await response.blob()
-    printFile.value = new File([blob], 'eesoc-photo-print.png', { type: 'image/png' })
+    const filename = (active.value?.printLabel || active.value?.title || 'EESoc')
+      .replace(/[^a-z0-9_-]+/gi, '-').slice(0, 55)
+    printFile.value = new File([blob], filename + '.png', { type: 'image/png' })
     previewUrl.value = URL.createObjectURL(blob)
   } catch (e) {
     error.value = e.message
@@ -137,7 +202,7 @@ async function makePreview() {
 }
 
 async function createDraft() {
-  if (!canStart.value || busy.value || !selections.value.length) return
+  if (!canCreatePrint.value || busy.value || !selections.value.length) return
   busy.value = true
   error.value = ''
   notice.value = ''
@@ -163,7 +228,7 @@ async function createDraft() {
     }
     progress.value = 'Building your photo print...'
     const set = await api.post('/admin/photos/sets', {
-      title: title.value.trim() || 'EESoc memories',
+      event_id: selectedEventId.value,
       orientation: orientation.value,
       image_ids: ids,
     })
@@ -214,19 +279,40 @@ async function mutate(set, operation) {
     busy.value = false
   }
 }
-async function sharePrint() {
-  if (!printFile.value) return
-  if (navigator.canShare?.({ files: [printFile.value] }) && navigator.share) {
-    // This call happens directly in the click handler: Safari requires a user
-    // gesture to expose the native Share / AirPrint sheet.
-    try {
-      await navigator.share({ files: [printFile.value] })
-    } catch (e) {
-      if (e.name !== 'AbortError') error.value = e.message
-    }
-  } else {
-    window.open(printUrl.value, '_blank', 'noopener')
+async function recordPrinted(set) {
+  if (!set || !can('photos.print')) return
+  // This is an operator print intent, not a hardware receipt.
+  const updated = await api.post('/admin/photos/sets/' + set.id + '/printed')
+  if (active.value?.id === set.id) active.value = updated
+  await loadSets()
+  if (set.eventId) {
+    selectedEventId.value = set.eventId
+    await loadEvents()
   }
+  notice.value = 'Print opened. The next set will default to ' + set.title + '.'
+}
+
+async function sharePrint() {
+  if (!printFile.value || !active.value || !can('photos.print')) return
+  const set = active.value
+  try {
+    if (navigator.canShare?.({ files: [printFile.value] }) && navigator.share) {
+      // Trigger the native sheet directly on click, as iOS requires.
+      await navigator.share({ files: [printFile.value] })
+    } else {
+      window.open(printUrl.value, '_blank', 'noopener')
+    }
+    await recordPrinted(set)
+  } catch (e) {
+    if (e.name !== 'AbortError') error.value = e.message
+  }
+}
+
+function openFullSizePrint() {
+  // The anchor opens the image in a new tab without losing the operator
+  // gesture; record that print path too for cross-device event preselection.
+  if (!active.value || !can('photos.print')) return
+  recordPrinted(active.value).catch(e => { error.value = e.message })
 }
 async function shareLink() {
   if (!active.value?.url) return
@@ -254,7 +340,33 @@ async function shareLink() {
 
     <Card v-if="canStart" variant="outline">
       <div class="photo-studio__block">
-        <div class="photo-studio__heading"><strong>1. Select 1–4 photos</strong><small>JPEG from Imaging Edge Mobile is ideal; photos from your iPhone work too.</small></div>
+        <div class="photo-studio__heading">
+          <strong>1. Choose the event</strong>
+          <small>Defaults to the event most recently sent to print, across committee devices.</small>
+        </div>
+        <label class="photo-studio__event-select">Event
+          <select v-model.number="selectedEventId" :disabled="busy || eventsLoading">
+            <option v-if="!events.length" :value="null">{{ eventsLoading ? 'Loading events…' : 'No available events' }}</option>
+            <option v-for="event in events" :key="event.id" :value="event.id">
+              {{ event.title }} · {{ new Date(event.startsAt).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' }) }}
+            </option>
+          </select>
+        </label>
+        <div v-if="selectedEvent" class="photo-studio__event-summary">
+          <span>Heading on print: <strong>{{ selectedEvent.photoShortName || selectedEvent.title }}</strong></span>
+          <span v-if="selectedEvent.photoShortName" class="muted">Full event name stays on the digital photo page.</span>
+        </div>
+        <div v-if="selectedEvent?.canEditShortName" class="photo-studio__short-name">
+          <label>Optional photo short name
+            <input v-model="shortName" type="text" maxlength="64"
+                   placeholder="e.g. Halloween Social" :disabled="busy || savingShortName">
+          </label>
+          <Button size="sm" variant="secondary"
+                  :disabled="busy || savingShortName || shortName.trim() === (selectedEvent.photoShortName || '')"
+                  @click="saveShortName">Save photo short name</Button>
+        </div>
+        <div class="photo-studio__heading">
+          <strong>2. Select 1–4 photos</strong><small>JPEG from Imaging Edge Mobile is ideal; photos from your iPhone work too.</small></div>
         <label class="photo-studio__picker">
           <span>+ Add photos ({{ selections.length }}/4)</span>
           <input type="file" multiple accept="image/*" :disabled="busy || selections.length >= 4" @change="pick">
@@ -271,9 +383,6 @@ async function shareLink() {
           </div>
         </div>
         <div class="photo-studio__controls">
-          <label>Print title
-            <input v-model="title" maxlength="100" type="text" placeholder="EESoc memories">
-          </label>
           <label>Print orientation
             <select v-model="orientation">
               <option value="portrait">Portrait · 4×6</option>
@@ -282,7 +391,7 @@ async function shareLink() {
           </label>
         </div>
         <p class="muted photo-studio__hint">The digital photo set keeps all 1–4 photos separately, at high resolution. The print is a branded collage; photos are centre-cropped to fit. The QR link becomes available after publishing.</p>
-        <Button :disabled="busy || !selections.length" @click="createDraft">{{ busy ? (progress || 'Working…') : '2. Create photo print draft' }}</Button>
+        <Button :disabled="busy || !selections.length || !selectedEvent" @click="createDraft">{{ busy ? (progress || 'Working…') : '3. Create event photo draft' }}</Button>
       </div>
     </Card>
     <p v-else class="muted">Your committee permissions do not include creating photo prints. Ask an administrator to grant <code>photos.view</code>, <code>photos.upload</code> and <code>photos.create</code>.</p>
@@ -290,16 +399,16 @@ async function shareLink() {
     <Card v-if="active" variant="outline">
       <div class="photo-studio__block">
         <div class="photo-studio__heading">
-          <strong>2. Review &amp; print</strong>
-          <small>{{ active.title }} · {{ active.count }} photo{{ active.count === 1 ? '' : 's' }} · {{ active.status }}</small>
+          <strong>Review &amp; print</strong>
+          <small>{{ active.printLabel }} · {{ active.count }} photo{{ active.count === 1 ? '' : 's' }} · {{ active.status }}</small>
         </div>
         <img v-if="previewUrl" :src="previewUrl" alt="EESoc collage preview with QR code" class="photo-studio__print-preview">
         <p v-else class="muted">Preparing print preview…</p>
         <div class="photo-studio__actions">
           <Button v-if="active.status === 'draft' && can('photos.publish')" :disabled="busy" @click="mutate(active, 'publish')">3. Publish &amp; enable QR</Button>
-          <Button v-if="active.status === 'published' && previewUrl" :disabled="busy" @click="sharePrint">Share / AirPrint</Button>
+          <Button v-if="active.status === 'published' && previewUrl && can('photos.print')" :disabled="busy" @click="sharePrint">Share / AirPrint</Button>
           <Button v-if="active.status === 'published'" variant="secondary" @click="shareLink">Copy QR link</Button>
-          <a v-if="active.status === 'published' && previewUrl" class="photo-studio__link" :href="printUrl" target="_blank" rel="noopener">Open full-size print</a>
+          <a v-if="active.status === 'published' && previewUrl && can('photos.print')" class="photo-studio__link" :href="printUrl" target="_blank" rel="noopener" @click="openFullSizePrint">Open full-size print</a>
           <a v-if="active.url" class="photo-studio__link" :href="active.url" target="_blank" rel="noopener">Open guest gallery</a>
           <Button v-if="active.status === 'published' && can('photos.unpublish')" variant="ghost" :disabled="busy" @click="mutate(active, 'unpublish')">Unpublish</Button>
           <Button v-if="can('photos.delete')" variant="danger" :disabled="busy" @click="mutate(active, 'delete')">Delete set</Button>
@@ -340,6 +449,21 @@ async function shareLink() {
 .photo-studio__choice-controls { display: flex; align-items: center; justify-content: space-around; padding: 4px; }
 .photo-studio__choice-controls button { border: 0; background: transparent; padding: 8px; cursor: pointer; font-size: 18px; color: var(--text-body); }
 .photo-studio__choice-controls button:disabled { opacity: .25; }
+ .photo-studio__event-select, .photo-studio__short-name label {
+  display: grid; gap: var(--space-2); font-size: var(--text-sm); font-weight: 700;
+}
+.photo-studio__event-select select, .photo-studio__short-name input {
+  width: 100%; min-width: 0; color: var(--text-body); font-size: 16px;
+  background: var(--surface-page); border: 1px solid var(--border-default);
+  padding: 12px; border-radius: var(--radius-sm);
+}
+.photo-studio__event-summary {
+  display: grid; gap: 5px; border-left: 3px solid var(--gold-400);
+  padding: var(--space-2) var(--space-3); background: var(--surface-accent-subtle);
+  font-size: var(--text-sm);
+}
+.photo-studio__short-name { display: grid; justify-items: start; gap: var(--space-2); }
+.photo-studio__short-name label { width: 100%; }
 .photo-studio__controls { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,220px),1fr)); gap: var(--space-3); }
 .photo-studio__controls label { display: grid; gap: var(--space-2); font-size: var(--text-sm); font-weight: 700; }
 .photo-studio__controls input, .photo-studio__controls select { padding: 12px; min-width: 0; width: 100%; background: var(--surface-page); border: 1px solid var(--border-default); border-radius: var(--radius-sm); color: var(--text-body); font-size: 16px; }

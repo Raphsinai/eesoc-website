@@ -417,6 +417,27 @@ async def update_event(
 
 
 @router.patch(
+    "/events/{event_id}/photo-short-name",
+    dependencies=[Depends(require_action("events.photo_short_name.edit")), Depends(verify_csrf)],
+)
+async def edit_photo_short_name(
+    event_id: int,
+    photo_short_name: str | None = Body(default=None, embed=True, max_length=64),
+    session: AuthSession = Depends(require_admin),
+) -> dict:
+    """One independently protected event field; no general event-edit grant needed."""
+    event = await database.get(f"/events/{event_id}")
+    if event is None:
+        raise HTTPException(404, "No such event")
+    assert_event_scope(session, event)
+    result = await database.patch(
+        f"/events/{event_id}/photo-short-name",
+        {"photo_short_name": photo_short_name.strip() or None if photo_short_name else None},
+    )
+    return result
+
+
+@router.patch(
     "/events/{event_id}/waitlist-enabled",
     dependencies=[Depends(require_action("events.waitlist.manage")), Depends(verify_csrf)],
 )

@@ -39,7 +39,7 @@ def _target_years_text(years: list[int]) -> str:
 
 
 EVENT_COLUMNS = """
-    id, slug, title, category, description, image_url, venue, starts_at, ends_at,
+    id, slug, title, photo_short_name, category, description, image_url, venue, starts_at, ends_at,
     doors_close_at,
     capacity, availability_badge, waitlist_enabled, hold_hours, published, sponsorship_claimable,
     requested_by_sponsor_id, academic_year, created_by, created_at, updated_at,
@@ -429,6 +429,27 @@ async def get_event(event_id: int) -> EventDetail:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             f"SELECT {EVENT_COLUMNS} FROM public.events WHERE id = $1;", event_id
+        )
+        if row is None:
+            raise HTTPException(404, "No such event")
+        return await _detail(conn, row)
+
+
+@router.patch("/events/{event_id}/photo-short-name")
+async def update_photo_short_name(
+    event_id: int,
+    photo_short_name: str | None = Body(embed=True, max_length=64),
+) -> EventDetail:
+    """Independent photo label edit; no event/ticket fields are rewritten."""
+    pool = await get_pool()
+    label = photo_short_name.strip() if photo_short_name else None
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"""UPDATE public.events
+                   SET photo_short_name=$2, updated_at=NOW()
+                 WHERE id=$1
+             RETURNING {EVENT_COLUMNS};""",
+            event_id, label or None,
         )
         if row is None:
             raise HTTPException(404, "No such event")

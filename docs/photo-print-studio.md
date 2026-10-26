@@ -1,81 +1,100 @@
-# EESoc photo print studio (Sony A7 III + Canon SELPHY CP1500)
+# EESoc event photo print studio (Sony A7 III + Canon SELPHY CP1500)
 
 The event-day shortcut is `/photo-studio` (also **Committee admin → Photo prints**).
-It works from a phone browser; no printer server, laptop, paid editing software,
-external QR service or third-party gallery is required.
+Works on iPhone: no laptop, printer server, paid editing software, external
+QR provider or third-party gallery required.
 
 ## Event-day procedure
 
-1. On the Sony A7 III, shoot photos as usual. Transfer the JPEGs to your
-   iPhone with Sony Imaging Edge Mobile / the camera's smartphone transfer
-   function. For best downloads, prefer **Original** rather than 2M. If
-   shooting RAW+JPEG, transfer the JPEG.
-2. Sign into the EESoc website on your phone and open **Photo print studio**.
-   Choose 1–4 photos, rearrange them with the arrows, enter a title and select
-   portrait or landscape 6×4.
-3. Create the draft. Every photo uploads individually, so four 8 MB JPEGs
-   don't exceed the site's 12 MB *per-request* limit. The studio stores
-   metadata-stripped, high-resolution JPEGs for guests; it **does not** reuse
-   ordinary 1600px website image optimisation.
-4. Preview the branded collage. With permission to publish, confirm that
-   participants agree to sharing, then **Publish & enable QR**. The QR
-   opens an unlisted gallery at `/photos/<random token>`.
-5. Tap **Share / AirPrint** and choose **Print** in the iOS share sheet.
-   Choose the Canon SELPHY CP1500 on the same Wi-Fi or use the printer's
-   direct Wi-Fi, with 4×6 print media and the matching print orientation.
-   If AirPrint's share option is missing, **Open full-size print** and print
-   that image via Photos/Files or the Canon SELPHY Photo Layout app.
-   Always test-scan a freshly printed QR before offering prints to guests.
-6. Scanning a print's QR gives the guest the original photo files individually
-   plus a **Download all** ZIP; no EESoc account is required.
+1. Shoot on Sony A7 III, then transfer JPEGs to iPhone using Imaging Edge
+   Mobile / the Sony smartphone transfer function. Select **Original**
+   quality where possible, rather than the smaller 2M version.
+2. Open the photo studio in your logged-in committee account. The **event most
+   recently sent to print on any committee device is automatically selected**.
+   If nothing has been printed yet, the event closest to today is suggested.
+   You can switch to another event before each set.
+3. The print heading comes from the official EESoc event title. To use a
+   shorter label on printed cards (e.g., **Halloween** instead of **EESoc
+   Halloween Social 2026**), edit the selected event's **Photo short name**,
+   either in the studio or from the event's edit panel under Committee admin.
+   Photo short names are optional and independently permission-protected.
+   The digital gallery still shows the full event title. Historical prints
+   keep their own event-name snapshots if the event is later renamed.
+4. Choose 1–4 photos, rearrange them with the arrows and select portrait or
+   landscape 6×4. Create a draft. Every photo uploads individually, so four
+   Sony JPEGs do not exceed the nginx 12 MB *per-request* limit. Digital
+   photos retain high resolution and are stripped of EXIF/GPS metadata.
+5. Preview the **premium navy/blue-and-gold design**, using the website's
+   official EESoc pins logo and its exact brand blue and gold. The print uses
+   1200 × 1800 / 1800 × 1200 pixels at 300 DPI. The code keeps its light,
+   high-contrast quiet zone for reliable scanning.
+6. When participants agree their photos can be shared, **Publish & enable
+   QR**. The random, unlisted gallery URL becomes active. Guests can
+   download all original-quality JPEGs, individually or as a ZIP.
+7. On iPhone tap **Share / AirPrint** and choose **Print**. Select Canon
+   SELPHY CP1500 on the same Wi-Fi network (or its direct Wi-Fi), with
+   4×6-inch photo media. **Open full-size print** is a fallback if AirPrint
+   is not offered; print it via Photos/Files or Canon SELPHY Photo Layout.
+   Test-scan the printed QR card before giving it to a guest.
 
-The generated 300 DPI 6×4 PNG contains actual EESoc branding, a layout for
-1–4 photos, a title, and a QR whose URL is generated from the environment's
-`SITE_ORIGIN`. **Staging QR codes intentionally point at staging**. Only
-print production QR cards for a real event after production deployment.
+The website records the event when the operator completes the Share/Print
+action. This records **print intent**, not a hardware receipt from the Canon.
+That event becomes the default for the next visitor to the photo studio,
+including on a different committee device.
 
-## Permission grants and privacy
+## Appearance
 
-Grant the specific actions needed under **Photo print studio** in committee
-permission management. `photos.view`, `photos.upload` and `photos.create`
-are needed for the uploader and draft preview. `photos.publish` lets an
-operator activate guest QR links. `photos.unpublish` and `photos.delete`
-allow staff to revoke the gallery or delete the photo set. Admins and
-superusers get access under their existing presets.
+- Brand colours match the EESoc website: navy `#071D47`,
+  blue `#1049B1` and gold `#E7B570`.
+- Official pins wordmark: `frontend/public/assets/logo-wordmark-pins.svg`.
+  A lighter-on-navy transparent raster is pre-rendered from this source
+  and committed at `backend/api/assets/eesoc-pins-light.png`.
+- Gold silkscreen border, restrained circuitry accents, and thin gold
+  photo frames. No plain white page background; only the QR panel is pale.
+- Main print heading: the event's short name when configured, otherwise
+  the full event title. No generic “EESoc memories” or “EESoc photo print.”
+- Original full event title stays on the guest gallery.
+- QR is generated from the environment-specific `SITE_ORIGIN`:
+  **staging prints link to staging**, not production.
 
-Photo sets are **unlisted, not private**: possession of a valid QR link is
-sufficient to view and download. The gallery itself disappears when
-unpublished, and removing a set also deletes its stored photos. Do not upload
-photos without the subjects' permission; do not assume that copies already
-downloaded or saved from the original image URLs can be retracted.
+## Committee permissions and privacy
 
-Uploaded files are re-encoded as high-quality JPEG, with EXIF location and
-other metadata removed. They may be downscaled only above 6000px on the longest
-edge. Guests receive separate images, not merely the print collage.
+Permission keys are independently selectable in Committee admin:
 
-The API has named permission checks, CSRF on mutation routes, image type and
-size validation, and random unguessable tokens. Failed multi-photo draft
-uploads are cleaned up by a temporary-upload cancellation endpoint, scoped to
-the uploading user. Different photo sets cannot reuse upload records.
+- `photos.view` — see sets and event picker
+- `photos.upload` — upload photographs
+- `photos.create` — create photo-set drafts, tied to actual events
+- `photos.publish` / `photos.unpublish` — activate and revoke QR pages
+- `photos.print` — record a shared print for the last-event default
+- `photos.delete` — remove photos and QR set
+- `events.photo_short_name.edit` — change the event-specific short label,
+  subject to the normal event scope permissions
 
-## Implementation and testing
+Event photo selectors show public events and, where the caller has an event
+read grant and scope, unpublished drafts. Creating a photo set always verifies
+event visibility and snapshots the authoritative event name in the database.
+Setting the short name is a **dedicated PATCH** operation, not a side effect
+of the ordinary event editing form.
 
-- API routes: `backend/api/routes/photos.py`
-- Database adapter: `backend/database/routes/photos.py`
-- Migration: `backend/database/migrations/090_photo_print_studio.sql`
+Photo galleries are **unlisted, not private**. Any holder of a valid QR can
+read/download. An unpublished set returns 404; deleting it removes associated
+media. Downloaded copies cannot be retracted.
+
+## Code and tests
+
+- API: `backend/api/routes/photos.py` and
+  `backend/api/routes/admin.py` (event photo short name)
+- Database: `backend/database/routes/photos.py`,
+  `backend/database/routes/events.py`, migrations 090/091
 - Print renderer: `backend/api/services/photo_print.py`
-- Vue UI: `frontend/src/components/PhotoStudioPanel.vue`
-- Gallery: `frontend/src/views/PhotoGalleryView.vue`
-- Automated tests: `tests/photo-print`, `tests/photo-studio`, `tests/permissions`
-
-Run backend tests:
+- Official logo rasteriser: `scripts/render-photo-pins.py`
+  (optional developer dependency `resvg-py`, not required in production)
+- Studio: `frontend/src/components/PhotoStudioPanel.vue`
+- Guest page: `frontend/src/views/PhotoGalleryView.vue`
 
 ```sh
 .venv/bin/python -m pytest -q tests/photo-print tests/photo-studio tests/permissions
-```
-
-Build frontend:
-
-```sh
 cd frontend && npm run build
 ```
+
+Only deploy to `eesoc.com` after explicit production promotion approval.

@@ -342,7 +342,7 @@ async function reconcile() {
 
 // -------------------------------------------------------------- events -----
 const blank = () => ({
-  slug: '', title: '', category: 'Social', description: '', image_url: '', venue: '',
+  slug: '', title: '', photo_short_name: '', category: 'Social', description: '', image_url: '', venue: '',
   starts_at: '', ends_at: '', doors_close_at: '', capacity: null, published: false,
   // Holds are whole days ending at midnight London time (section 17); the
   // form edits days and sends hold_hours = days × 24.
@@ -473,12 +473,32 @@ function resetDraft() {
   editingId.value = null
 }
 
+async function savePhotoShortName() {
+  if (!editingId.value || !can('events.photo_short_name.edit')) return
+  busy.value = true
+  error.value = ''
+  try {
+    const updated = await api.patch(
+      '/admin/events/' + editingId.value + '/photo-short-name',
+      { photo_short_name: (draft.photo_short_name || '').trim() || null },
+    )
+    draft.photo_short_name = updated.photo_short_name || ''
+    flash('Event photo short name saved.')
+    await load()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
+}
+
 async function saveEvent() {
   busy.value = true
   error.value = ''
   try {
+    const { photo_short_name, ...standardEventFields } = draft
     const payload = {
-      ...draft,
+      ...standardEventFields,
       capacity: draft.capacity || null,
       // datetime-local is the browser's own clock; send the instant in UTC.
       starts_at: new Date(draft.starts_at).toISOString(),
@@ -2324,6 +2344,13 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             </h2>
             <div class="event-editor__form">
               <Field label="Title"><Input v-model="draft.title" /></Field>
+              <template v-if="editingId && can('events.photo_short_name.edit')">
+                <Field label="Photo short name" help="Optional. Replaces the full event name only on new photo print designs. The guest gallery keeps the full title.">
+                  <Input v-model="draft.photo_short_name" maxlength="64" placeholder="e.g. Halloween Social" />
+                </Field>
+                <Button size="sm" variant="secondary" :disabled="busy || !can('events.photo_short_name.edit')"
+                        @click="savePhotoShortName">Save photo short name</Button>
+              </template>
               <Field label="Slug" help="Used in the URL."><Input v-model="draft.slug" /></Field>
               <div class="event-editor__pair">
                 <Field label="Category"><Input v-model="draft.category" /></Field>

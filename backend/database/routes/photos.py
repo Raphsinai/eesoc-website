@@ -16,7 +16,8 @@ from postgres import get_pool
 router = APIRouter(prefix="/photo-sets")
 
 COLUMNS = """
-    s.id, s.token, s.title, s.orientation, s.status,
+    s.id, s.token, s.title, s.print_label, s.event_id, s.printed_at,
+    s.orientation, s.status,
     s.created_by, s.created_at, s.published_at,
     COALESCE(jsonb_agg(
         jsonb_build_object(
@@ -42,6 +43,32 @@ def _serialise(row) -> dict:
     if isinstance(result.get("images"), str):
         result["images"] = json.loads(result["images"])
     return result
+
+
+@router.get("/events")
+async def photo_events() -> list[dict]:
+    """Minimal event selector; external API filters private drafts by scope."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT id, title, photo_short_name, starts_at, published, industry
+                 FROM public.events
+                 ORDER BY starts_at DESC, id DESC LIMIT 500;"""
+        )
+    return [dict(row) for row in rows]
+
+
+@router.get("/last-printed")
+async def last_printed() -> dict:
+    """Event of the most recently initiated print, across committee devices."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT event_id FROM public.photo_sets
+                WHERE printed_at IS NOT NULL AND event_id IS NOT NULL
+                ORDER BY printed_at DESC, id DESC LIMIT 1;"""
+        )
+    return {"event_id": row["event_id"] if row else None}
 
 
 @router.get("")
@@ -80,14 +107,25 @@ async def create_set(payload: PhotoSetCreate) -> dict:
         if len(rows) != len(ids):
             raise HTTPException(400, "Some photos are unavailable or already used")
         try:
+            # Resolve the event title and optional label in the DB transaction,
+            # not from client-supplied arbitrary text. Snapshot names so past
+            # prints never silently change when an event is renamed.
+            event = await conn.fetchrow(
+                """SELECT title, photo_short_name FROM public.events
+                     WHERE id=$1 FOR SHARE;""",
+                payload.event_id,
+            )
+            if event is None:
+                raise HTTPException(404, "Event not found")
             row = await conn.fetchrow(
                 """
                 INSERT INTO public.photo_sets
-                    (token, title, orientation, created_by)
-                VALUES ($1, $2, $3, $4)
+                    (token, title, print_label, event_id, orientation, created_by)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 RETURNING id;
                 """,
-                payload.token, payload.title.strip(), payload.orientation, payload.created_by,
+                payload.token, event["title"], event["photo_short_name"],
+                payload.event_id, payload.orientation, payload.created_by,
             )
             for position, image_id in enumerate(ids):
                 await conn.execute(
@@ -166,6 +204,20 @@ async def publish(set_id: int) -> dict:
         )
     if row is None:
         raise HTTPException(404, "Photo set not found")
+    return await get_set(set_id)
+
+
+@router.post("/{set_id}/printed")
+async def record_print(set_id: int) -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """UPDATE public.photo_sets SET printed_at=NOW()
+                 WHERE id=$1 AND status='published' RETURNING id;""",
+            set_id,
+        )
+    if row is None:
+        raise HTTPException(404, "Published photo set not found")
     return await get_set(set_id)
 
 

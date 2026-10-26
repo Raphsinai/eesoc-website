@@ -40,6 +40,8 @@ const CheckinView = () => import('@/views/CheckinView.vue')
 const TicketView = () => import('@/views/TicketView.vue')
 const AccountView = () => import('@/views/AccountView.vue')
 const PasskeySetupView = () => import('@/views/PasskeySetupView.vue')
+const PhotoStudioView = () => import('@/views/PhotoStudioView.vue')
+const PhotoGalleryView = () => import('@/views/PhotoGalleryView.vue')
 
 const routes = [
   // `title` is the page half of eesoc.com's "<Page> | EESoc - Imperial College
@@ -78,6 +80,10 @@ const routes = [
   { path: '/admin', name: 'admin', component: AdminView, meta: { title: 'Committee admin', requires: 'committee', noindex: true } },
   // The door. 'committee' covers anybody on the roster, role or not — the API
   // checks the same thing.
+  { path: '/photo-studio', name: 'photo-studio', component: PhotoStudioView,
+    meta: { title: 'Photo print studio', requires: 'committee', noindex: true } },
+  { path: '/photos/:token', name: 'photo-gallery', component: PhotoGalleryView,
+    meta: { title: 'Your photos', noindex: true } },
   { path: '/checkin', name: 'checkin', component: CheckinView, meta: { title: 'Door check-in', requires: 'committee', noindex: true } },
   { path: '/checkin/:eventId', name: 'checkin-event', component: CheckinView, meta: { title: 'Door check-in', requires: 'committee', noindex: true } },
   // A ticket. Public — the token in the URL is the credential.

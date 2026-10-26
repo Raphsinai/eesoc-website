@@ -153,6 +153,14 @@ GROUPS = {
             'resources.entries.move': 'Reorder resource entries',
             'resources.import': 'Import resources',
         },
+        'Photo print studio': {
+            'photos.view': 'View photo print sets',
+            'photos.upload': 'Upload photos for prints',
+            'photos.create': 'Create photo print drafts',
+            'photos.publish': 'Publish photo print sets and links',
+            'photos.unpublish': 'Unpublish photo print sets',
+            'photos.delete': 'Delete photo print sets and images',
+        },
         'Shared uploads': {
             'files.view': 'Browse uploaded files',
             'files.upload': 'Upload files',

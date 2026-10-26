@@ -213,13 +213,80 @@ def _shrink(data: bytes, content_type: str) -> tuple[bytes, str]:
         return data, content_type
 
 
-async def save(upload: UploadFile, purpose: str = "general") -> dict:
+def _normalise_photo(data: bytes) -> tuple[bytes, str]:
+    """Keep full-resolution Sony JPEG detail while removing GPS and all EXIF.
+
+    Do not reuse the website's normal 1600px media optimisation: people scanning
+    a photo print need a decent digital download, not a thumbnail.
+    """
+    from io import BytesIO
+
+    from PIL import Image, ImageOps, UnidentifiedImageError
+
+    try:
+        with Image.open(BytesIO(data)) as source:
+            image = ImageOps.exif_transpose(source)
+            image.load()
+            if image.width < 400 or image.height < 400:
+                raise ValueError("Photo must be at least 400 pixels on each side")
+            if image.width * image.height > 60_000_000:
+                raise ValueError("Photo exceeds the 60 megapixel limit")
+            if max(image.size) > 6000:
+                image.thumbnail((6000, 6000), Image.Resampling.LANCZOS)
+            if image.mode in ("RGBA", "LA", "P"):
+                alpha = image.convert("RGBA")
+                white = Image.new("RGBA", image.size, (255, 255, 255, 255))
+                image = Image.alpha_composite(white, alpha)
+            output = BytesIO()
+            image.convert("RGB").save(
+                output, format="JPEG", quality=91, optimize=True,
+                progressive=True, subsampling=0,
+            )
+            return output.getvalue(), "image/jpeg"
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+        raise HTTPException(400, f"Invalid photo: {exc}") from exc
+
+
+async def load(stored_name: str) -> bytes:
+    """Read only a DB-derived image key for print and download rendering."""
+    if using_s3():
+        from botocore.exceptions import BotoCoreError, ClientError
+        try:
+            response = await asyncio.to_thread(
+                _s3().get_object, Bucket=S3_BUCKET, Key=stored_name
+            )
+            def _read_and_close():
+                with response["Body"] as stream:
+                    return stream.read()
+
+            return await asyncio.to_thread(_read_and_close)
+        except (BotoCoreError, ClientError) as exc:
+            log.warning("Could not read photo object: %s", exc)
+            raise HTTPException(503, "Photo storage is temporarily unavailable") from exc
+
+    path = (MEDIA_ROOT / stored_name).resolve()
+    if not path.is_relative_to(MEDIA_ROOT.resolve()):
+        raise HTTPException(400, "Invalid photo key")
+    try:
+        return await asyncio.to_thread(path.read_bytes)
+    except FileNotFoundError as exc:
+        raise HTTPException(503, "Photo image is temporarily unavailable") from exc
+
+
+async def save(upload: UploadFile, purpose: str = "general", *, photo_mode: bool = False) -> dict:
     """Persist an uploaded file; returns the metadata row to record."""
     data, content_type, size = await _read_checked(upload)
 
     original = SAFE_NAME.sub("-", Path(upload.filename or "upload").name)[:120]
 
-    if content_type in RECODE_TO_WEBP:
+    if photo_mode:
+        if content_type not in ("image/jpeg", "image/png", "image/webp"):
+            raise HTTPException(400, "Photos must be JPEG, PNG or WebP")
+        # Full-size, metadata-stripped JPEG. Normal media uploads still use WebP
+        # at 1600px. Sony originals should not silently become thumbnails.
+        data, content_type = await asyncio.to_thread(_normalise_photo, data)
+        size = len(data)
+    elif content_type in RECODE_TO_WEBP:
         # CPU-bound, so off the event loop.
         data, content_type = await asyncio.to_thread(_shrink, data, content_type)
         size = len(data)
@@ -245,9 +312,10 @@ async def save(upload: UploadFile, purpose: str = "general") -> dict:
                 Key=object_key,
                 Body=data,
                 ContentType=content_type,
-                # Long cache: keys are random and never reused, so a stored object
-                # is immutable.
-                CacheControl="public, max-age=31536000, immutable",
+                # EESoc event photos may be unpublished or deleted: no public
+                # long-term caching. Other website assets remain immutable.
+                CacheControl=("private, no-store" if photo_mode else
+                              "public, max-age=31536000, immutable"),
             )
         except (ClientError, EndpointConnectionError, BotoCoreError) as exc:
             log.warning("Object store unreachable while saving an upload: %s", exc)

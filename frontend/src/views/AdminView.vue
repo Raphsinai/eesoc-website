@@ -18,6 +18,7 @@ import TraceRule from '@/components/ds/TraceRule.vue'
 import PasskeyLinkMade from '@/components/PasskeyLinkMade.vue'
 import PermissionSelector from '@/components/PermissionSelector.vue'
 import OpportunitiesAdminPanel from '@/components/OpportunitiesAdminPanel.vue'
+import PhotoStudioPanel from '@/components/PhotoStudioPanel.vue'
 import WhatsAppGroupPicker from '@/components/WhatsAppGroupPicker.vue'
 import WhatsAppLink from '@/components/WhatsAppLink.vue'
 import WhatsAppPost from '@/components/WhatsAppPost.vue'
@@ -36,6 +37,7 @@ const TABS = [
   ['overdue', 'Unpaid bookings', 'bookingish'],
   ['resources', 'Resources', 'resources'],
   ['opportunities', 'Opportunities', 'opportunities.view'],
+  ['photos', 'Photo prints', 'photoish'],
   ['files', 'Files', 'files.view'],
   ['committee', 'Committee', 'committee.view'],
   ['links', 'Union products', 'products.view'],
@@ -56,6 +58,7 @@ function allowed(need) {
   if (need === 'lockerish') return can('lockers.inventory.view') || can('lockers.allowances.view') || can('lockers.holders.view')
   if (need === 'emailish') return anyPermission('email.')
   if (need === 'whatsappish') return anyPermission('whatsapp.')
+  if (need === 'photoish') return anyPermission('photos.')
   return can(need)
 }
 
@@ -2035,6 +2038,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
       <div style="display:flex; gap:var(--space-4); align-items:center">
         <!-- Every committee member can work the door, role or not. -->
         <Button v-if="(hasAdminArea) && (can('events.checkin.view'))" size="sm" variant="secondary" @click="router.push('/checkin')">Door check-in</Button>
+        <Button v-if="can('photos.view')" size="sm" variant="secondary" @click="router.push('/photo-studio')">Photo print studio</Button>
         <span v-if="dash" style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">
           {{ dash.academicYear }} · {{ dash.environment }}
         </span>
@@ -2058,6 +2062,8 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
 
       <p v-if="notice" style="font:var(--type-small); color:var(--text-muted)">{{ notice }}</p>
       <p v-if="error" style="font:var(--type-small); color:var(--danger)">{{ error }}</p>
+
+      <PhotoStudioPanel v-if="tab === 'photos'" />
 
       <!-- ========================== OPPORTUNITIES ========================== -->
       <OpportunitiesAdminPanel

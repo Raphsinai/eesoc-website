@@ -112,16 +112,19 @@ def test_draft_has_no_public_link():
 
 
 def test_database_adapter_jsonb_decoding():
-    # Backend API and DB adapter each have a distinct 'models' package;
-    # import the adapter in its own process as the deployed services do.
-    import subprocess
+    # The database adapter runs in a separate container. CI's test-host Python
+    # intentionally lacks asyncpg, so execute only this pure helper function.
+    import ast
+    import json
 
-    code = (
-        "from routes.photos import _serialise; import json; "
-        "raw = json.dumps([{'id': 1}]); "
-        "print(_serialise({'images': raw})['images'][0]['id'])"
+    path = ROOT / "backend/database/routes/photos.py"
+    tree = ast.parse(path.read_text())
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_serialise"
     )
-    result = subprocess.check_output([
-        sys.executable, "-c", code,
-    ], cwd=ROOT / "backend/database")
-    assert result.strip() == b"1"
+    module = ast.Module(body=[function], type_ignores=[])
+    namespace = {"json": json}
+    exec(compile(module, str(path), "exec"), namespace)
+    result = namespace["_serialise"]({"id": 12, "images": '[{"id": 3}, {"id": 4}]'})
+    assert [image["id"] for image in result["images"]] == [3, 4]

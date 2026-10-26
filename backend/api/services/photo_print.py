@@ -14,6 +14,7 @@ GOLD = "#E7B570"
 IVORY = "#F5F3EE"
 SOFT = "#D8E3FA"
 QUIET = "#FDF8F0"
+QR_FRAME_PADDING = 5  # The QR itself retains its four-module quiet zone.
 LOGO = Path(__file__).resolve().parent.parent / "assets" / "eesoc-pins-light.png"
 
 
@@ -117,7 +118,7 @@ def _paste_photo(page: Image.Image, photo: bytes, rect: tuple[int, int, int, int
 
 def _draw_qr(page: Image.Image, url: str, x: int, y: int, size: int) -> None:
     # A compact, quiet frame: the QR retains its encoded quiet zone for scanning.
-    inset = 12
+    inset = QR_FRAME_PADDING
     panel = size + 2 * inset
     d = ImageDraw.Draw(page)
     d.rounded_rectangle((x, y, x+panel-1, y+panel-1), radius=11,
@@ -167,7 +168,7 @@ def _footer(page: Image.Image, url: str, footer_top: int, pad: int,
     d.line((pad, footer_top+12, w-pad, footer_top+12), fill=GOLD, width=2)
 
     qrsize = 145 if portrait else 132
-    panel = qrsize + 24
+    panel = qrsize + 2 * QR_FRAME_PADDING
     qr_top = footer_top + (15 if portrait else 12)
     _draw_qr(page, url, w-pad-panel, qr_top, qrsize)
 

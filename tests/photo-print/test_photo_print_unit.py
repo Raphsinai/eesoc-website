@@ -71,7 +71,8 @@ def test_print_has_aligned_header_and_discreet_footer(
 
     assert len(qr_positions) == 1
     qr_x, qr_y, qr_size = qr_positions[0]
-    qr_panel = qr_size + 24
+    assert photo_print.QR_FRAME_PADDING == 5
+    qr_panel = qr_size + 2 * photo_print.QR_FRAME_PADDING
     assert qr_size <= 145
     assert qr_x + qr_panel == size[0] - 67
     assert qr_y + qr_panel < size[1] - 33

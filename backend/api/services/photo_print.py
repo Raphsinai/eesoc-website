@@ -4,7 +4,6 @@ from __future__ import annotations
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import qrcode
@@ -117,59 +116,67 @@ def _paste_photo(page: Image.Image, photo: bytes, rect: tuple[int, int, int, int
 
 
 def _draw_qr(page: Image.Image, url: str, x: int, y: int, size: int) -> None:
-    panel = size + 34
+    # A compact, quiet frame: the QR retains its encoded quiet zone for scanning.
+    inset = 12
+    panel = size + 2 * inset
     d = ImageDraw.Draw(page)
-    d.rounded_rectangle((x, y, x+panel-1, y+panel-1), radius=15,
-                        fill=QUIET, outline=GOLD, width=3)
+    d.rounded_rectangle((x, y, x+panel-1, y+panel-1), radius=11,
+                        fill=QUIET, outline=GOLD, width=2)
     qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M,
                        box_size=9, border=4)
     qr.add_data(url)
     qr.make(fit=True)
     image = qr.make_image(fill_color=NAVY, back_color=QUIET).convert("RGB")
     image = image.resize((size, size), Image.Resampling.NEAREST)
-    page.paste(image, (x+17, y+17))
+    page.paste(image, (x+inset, y+inset))
 
 
 def _header(page: Image.Image, title: str, orientation: str, pad: int) -> int:
     w, _ = page.size
     d = ImageDraw.Draw(page)
     portrait = orientation == "portrait"
-    header = 350 if portrait else 219
-    d.text((pad+8, 82 if portrait else 61),
+    header = 220 if portrait else 197
+    d.text((pad+8, 64 if portrait else 41),
            "IMPERIAL COLLEGE LONDON  /  ELECTRICAL ENGINEERING SOCIETY",
            font=_font(18 if portrait else 21), fill=GOLD)
+
+    # On both print orientations the event title and pins sit on the same row.
+    row_center = 147 if portrait else 125
     with Image.open(LOGO) as source:
         pins = source.convert("RGBA")
-        pins.thumbnail((370 if portrait else 390, 85), Image.Resampling.LANCZOS)
-    if portrait:
-        page.paste(pins, (w-pad-pins.width, 121), pins)
-        event_y, font_size, maxwidth = 213, 62, w-pad*2-15
-    else:
-        page.paste(pins, (w-pad-pins.width, 109), pins)
-        event_y, font_size, maxwidth = 109, 54, w-pad*2-pins.width-56
-    label, font = _fit_title(d, title, maxwidth, font_size)
-    d.text((pad+8, event_y), label, font=font, fill=IVORY)
-    line_y = header-24 if portrait else header-17
-    d.line((pad, line_y, w-pad, line_y), fill=GOLD, width=3)
+        pins.thumbnail((325 if portrait else 390, 86), Image.Resampling.LANCZOS)
+    logo_x = w-pad-pins.width
+    page.paste(pins, (logo_x, round(row_center - pins.height/2)), pins)
+
+    title_x = pad+8
+    label, font = _fit_title(d, title, logo_x-title_x-30,
+                             58 if portrait else 56)
+    bbox = d.textbbox((0, 0), label, font=font)
+    # Align visible glyph centres, not Pillow's font ascender origin.
+    title_y = round(row_center - (bbox[1]+bbox[3])/2)
+    d.text((title_x, title_y), label, font=font, fill=IVORY)
+    d.line((pad, header-12, w-pad, header-12), fill=GOLD, width=2)
     return header
 
 
 def _footer(page: Image.Image, url: str, footer_top: int, pad: int,
             orientation: str) -> None:
-    w, h = page.size
+    w, _ = page.size
     d = ImageDraw.Draw(page)
     portrait = orientation == "portrait"
-    d.line((pad, footer_top+22, w-pad, footer_top+22), fill=GOLD, width=3)
-    qrsize = 198 if portrait else 170
-    panel = qrsize+34
-    _draw_qr(page, url, w-pad-panel, footer_top+35, qrsize)
-    start = footer_top + (75 if portrait else 65)
-    d.text((pad+8, start), "YOUR PHOTOS, TO KEEP.",
-           font=_font(33 if portrait else 35, bold=True), fill=IVORY)
-    d.text((pad+8, start+65), "SCAN THE CODE TO VIEW & DOWNLOAD",
-           font=_font(22 if portrait else 26), fill=GOLD)
-    d.text((pad+8, start+106), urlsplit(url).netloc,
-           font=_font(21 if portrait else 24), fill=SOFT)
+    d.line((pad, footer_top+12, w-pad, footer_top+12), fill=GOLD, width=2)
+
+    qrsize = 145 if portrait else 132
+    panel = qrsize + 24
+    qr_top = footer_top + (15 if portrait else 12)
+    _draw_qr(page, url, w-pad-panel, qr_top, qrsize)
+
+    # This is a discreet printed reference, not a second headline.
+    caption = "your photos, online"
+    font = _font(26 if portrait else 27)
+    bbox = d.textbbox((0, 0), caption, font=font)
+    caption_y = round(qr_top + panel/2 - (bbox[1]+bbox[3])/2)
+    d.text((pad+8, caption_y), caption, font=font, fill=SOFT)
 
 
 def render(
@@ -185,7 +192,7 @@ def render(
     page = _background(w, h)
     pad = 67
     header = _header(page, print_label or title, orientation, pad)
-    footer = 304 if orientation == "portrait" else 276
+    footer = 220 if orientation == "portrait" else 205
     photo_y = header + 5
     photo_bottom = h-footer
     for data, rect in zip(photos, layout(

@@ -7,7 +7,7 @@ import sys
 
 import pytest
 from fastapi import HTTPException
-from PIL import Image
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend" / "api"))
@@ -42,6 +42,52 @@ def test_print_dimensions_qr_and_safe_margins(image_bytes, count, orientation, s
             assert b > g > r and b < 150
         assert image.info["dpi"][0] == pytest.approx(300, abs=1)
         assert image.getpixel((100, 450)) != (255, 255, 255)
+
+
+@pytest.mark.parametrize("orientation,size,row_center", [
+    ("portrait", (1200, 1800), 147),
+    ("landscape", (1800, 1200), 125),
+])
+def test_print_has_aligned_header_and_discreet_footer(
+    monkeypatch, image_bytes, orientation, size, row_center,
+):
+    drawn_text = []
+    qr_positions = []
+    original_text = ImageDraw.ImageDraw.text
+    original_qr = photo_print._draw_qr
+
+    def record_text(draw, xy, text, *args, **kwargs):
+        drawn_text.append((text, xy, kwargs.get("font")))
+        return original_text(draw, xy, text, *args, **kwargs)
+
+    def record_qr(page, url, x, y, qr_size):
+        qr_positions.append((x, y, qr_size))
+        return original_qr(page, url, x, y, qr_size)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", record_text)
+    monkeypatch.setattr(photo_print, "_draw_qr", record_qr)
+    photo_print.render([image_bytes], "Full event name", "https://eesoc.com/photos/sample",
+                       orientation, print_label="Short event")
+
+    assert len(qr_positions) == 1
+    qr_x, qr_y, qr_size = qr_positions[0]
+    qr_panel = qr_size + 24
+    assert qr_size <= 145
+    assert qr_x + qr_panel == size[0] - 67
+    assert qr_y + qr_panel < size[1] - 33
+
+    title, = [entry for entry in drawn_text if entry[0] == "Short event"]
+    caption, = [entry for entry in drawn_text if entry[0] == "your photos, online"]
+    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+
+    def text_center(entry):
+        content, xy, font = entry
+        bbox = probe.textbbox((0, 0), content, font=font)
+        return xy[1] + (bbox[1] + bbox[3]) / 2
+
+    assert abs(text_center(title) - row_center) <= 1
+    assert abs(text_center(caption) - (qr_y + qr_panel / 2)) <= 1
+    assert all(entry[0] != "YOUR PHOTOS, TO KEEP." for entry in drawn_text)
 
 
 @pytest.mark.parametrize("count", range(1, 5))

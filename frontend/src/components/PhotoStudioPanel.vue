@@ -19,7 +19,7 @@ const active = ref(null)
 const previewUrl = ref('')
 const printFile = ref(null)
 
-const canStart = computed(() => can('photos.upload') && can('photos.create'))
+const canStart = computed(() => can('photos.view') && can('photos.upload') && can('photos.create'))
 const printUrl = computed(() => !active.value ? '' :
   active.value.status === 'published'
     ? active.value.printUrl
@@ -285,7 +285,7 @@ async function shareLink() {
         <Button :disabled="busy || !selections.length" @click="createDraft">{{ busy ? (progress || 'Working…') : '2. Create photo print draft' }}</Button>
       </div>
     </Card>
-    <p v-else class="muted">Your committee permissions do not include creating photo prints. Ask an administrator to grant <code>photos.upload</code> and <code>photos.create</code>.</p>
+    <p v-else class="muted">Your committee permissions do not include creating photo prints. Ask an administrator to grant <code>photos.view</code>, <code>photos.upload</code> and <code>photos.create</code>.</p>
 
     <Card v-if="active" variant="outline">
       <div class="photo-studio__block">

@@ -28,7 +28,7 @@ def _font(size: int, bold: bool = False) -> ImageFont.ImageFont:
     try:
         return ImageFont.truetype(path, size)
     except OSError:
-        return ImageFont.load_default()
+        return ImageFont.load_default(size=size)
 
 
 def _fit_title(draw: ImageDraw.ImageDraw, title: str, maxwidth: int, size: int) -> tuple[str, ImageFont.ImageFont]:

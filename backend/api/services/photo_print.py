@@ -7,6 +7,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import qrcode
+import regex
 
 NAVY = "#071D47"
 BLUE = "#1049B1"
@@ -16,6 +17,8 @@ SOFT = "#D8E3FA"
 QUIET = "#FDF8F0"
 QR_FRAME_PADDING = 5  # The QR itself retains its four-module quiet zone.
 LOGO = Path(__file__).resolve().parent.parent / "assets" / "eesoc-pins-light.png"
+EMOJI_FONT = Path(__file__).resolve().parent.parent / "assets" / "fonts" / "NotoColorEmoji.ttf"
+EMOJI_CLUSTER = regex.compile(r"[\p{Extended_Pictographic}\p{Regional_Indicator}\u20e3]")
 
 
 @lru_cache(maxsize=48)
@@ -30,19 +33,82 @@ def _font(size: int, bold: bool = False) -> ImageFont.ImageFont:
         return ImageFont.load_default(size=size)
 
 
+@lru_cache(maxsize=1)
+def _emoji_font() -> ImageFont.FreeTypeFont:
+    # Noto Color Emoji's CBDT glyphs are only available at this native size.
+    return ImageFont.truetype(EMOJI_FONT, 109)
+
+
+@lru_cache(maxsize=512)
+def _emoji_tile(cluster: str, size: int) -> Image.Image:
+    """Rasterise one complete emoji grapheme in colour, then scale for the title."""
+    font = _emoji_font()
+    bbox = font.getbbox(cluster)
+    tile = Image.new("RGBA", (bbox[2]-bbox[0], bbox[3]-bbox[1]))
+    ImageDraw.Draw(tile).text((-bbox[0], -bbox[1]), cluster,
+                              font=font, embedded_color=True)
+    visible = tile.getbbox()
+    if visible is None:
+        raise ValueError(f"No glyph available for emoji {cluster!r}")
+    tile = tile.crop(visible)
+    height = max(1, round(size * 0.88))
+    width = max(1, round(tile.width * height / tile.height))
+    return tile.resize((width, height), Image.Resampling.LANCZOS)
+
+
+def _title_runs(title: str) -> list[tuple[str, bool]]:
+    """Group text and isolate entire emoji graphemes, including ZWJ sequences."""
+    runs: list[tuple[str, bool]] = []
+    for cluster in regex.findall(r"\X", title):
+        is_emoji = bool(EMOJI_CLUSTER.search(cluster))
+        if not is_emoji and runs and not runs[-1][1]:
+            runs[-1] = (runs[-1][0] + cluster, False)
+        else:
+            runs.append((cluster, is_emoji))
+    return runs
+
+
+def _title_width(draw: ImageDraw.ImageDraw, title: str,
+                 font: ImageFont.ImageFont) -> float:
+    return sum(
+        _emoji_tile(run, font.size).width if is_emoji
+        else draw.textlength(run, font=font)
+        for run, is_emoji in _title_runs(title)
+    )
+
+
 def _fit_title(
     draw: ImageDraw.ImageDraw, title: str, maxwidth: int, size: int,
 ) -> tuple[str, ImageFont.ImageFont]:
     title = " ".join(title.split()) or "EESoc"
     font = _font(size, bold=True)
-    while draw.textbbox((0, 0), title, font=font)[2] > maxwidth and size > 25:
+    while _title_width(draw, title, font) > maxwidth and size > 25:
         size -= 2
         font = _font(size, bold=True)
-    if draw.textbbox((0, 0), title, font=font)[2] > maxwidth:
-        while title and draw.textbbox((0, 0), title + "...", font=font)[2] > maxwidth:
-            title = title[:-1]
-        title += "..."
+    if _title_width(draw, title, font) > maxwidth:
+        # Never truncate mid-emoji: skin tones, flags and joined sequences
+        # consist of multiple code points but form one visible glyph.
+        clusters = regex.findall(r"\X", title)
+        while clusters and _title_width(draw, "".join(clusters) + "...", font) > maxwidth:
+            clusters.pop()
+        title = "".join(clusters).rstrip() + "..."
     return title, font
+
+
+def _draw_title(page: Image.Image, title: str,
+                font: ImageFont.ImageFont, x: int, center_y: int) -> None:
+    draw = ImageDraw.Draw(page)
+    pen_x = float(x)
+    for run, is_emoji in _title_runs(title):
+        if is_emoji:
+            tile = _emoji_tile(run, font.size)
+            page.paste(tile, (round(pen_x), round(center_y - tile.height/2)), tile)
+            pen_x += tile.width
+        else:
+            bbox = draw.textbbox((0, 0), run, font=font)
+            text_y = round(center_y - (bbox[1] + bbox[3]) / 2)
+            draw.text((round(pen_x), text_y), run, font=font, fill=IVORY)
+            pen_x += draw.textlength(run, font=font)
 
 
 def layout(count: int, area: tuple[int, int, int, int], gap: int = 18) -> list[tuple[int, int, int, int]]:
@@ -152,10 +218,7 @@ def _header(page: Image.Image, title: str, orientation: str, pad: int) -> int:
     title_x = pad+8
     label, font = _fit_title(d, title, logo_x-title_x-30,
                              58 if portrait else 56)
-    bbox = d.textbbox((0, 0), label, font=font)
-    # Align visible glyph centres, not Pillow's font ascender origin.
-    title_y = round(row_center - (bbox[1]+bbox[3])/2)
-    d.text((title_x, title_y), label, font=font, fill=IVORY)
+    _draw_title(page, label, font, title_x, row_center)
     d.line((pad, header-12, w-pad, header-12), fill=GOLD, width=2)
     return header
 

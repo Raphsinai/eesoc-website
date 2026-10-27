@@ -7,7 +7,7 @@ import sys
 
 import pytest
 from fastapi import HTTPException
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend" / "api"))
@@ -89,6 +89,64 @@ def test_print_has_aligned_header_and_discreet_footer(
     assert abs(text_center(title) - row_center) <= 1
     assert abs(text_center(caption) - (qr_y + qr_panel / 2)) <= 1
     assert all(entry[0] != "YOUR PHOTOS, TO KEEP." for entry in drawn_text)
+
+
+@pytest.mark.parametrize("emoji", ["🎃", "❤️", "🇬🇧", "👩🏽‍🎓", "1️⃣"])
+def test_emoji_glyphs_render_in_colour(emoji):
+    tile = photo_print._emoji_tile(emoji, 56)
+    assert tile.mode == "RGBA"
+    assert tile.getbbox() is not None
+    assert 20 <= tile.width <= 85
+    assert tile.height == round(56 * 0.88)
+    # A missing-glyph rectangle from a plain text font is monochrome;
+    # the bundled Noto glyph has real colour pixels.
+    assert any(
+        max(r, g, b) - min(r, g, b) > 40
+        for r, g, b, a in tile.getdata() if a > 180
+    )
+
+
+@pytest.mark.parametrize("orientation", ["portrait", "landscape"])
+def test_event_print_preserves_emoji_in_short_label(image_bytes, orientation):
+    url = "https://eesoc.com/photos/emoji-test"
+    result = photo_print.render(
+        [image_bytes], "Full event name", url, orientation,
+        print_label="Graduation 👩🏽‍🎓 🇬🇧",
+    )
+    plain = photo_print.render(
+        [image_bytes], "Full event name", url, orientation,
+        print_label="Graduation ",
+    )
+    with Image.open(BytesIO(result)) as image, Image.open(BytesIO(plain)) as baseline:
+        assert image.format == "PNG"
+        # The text and background remain the same; the colour glyphs add pixels
+        # to the title line even after full print composition.
+        emoji_row = (0, 90, image.width, 185)
+        assert ImageChops.difference(
+            image.crop(emoji_row), baseline.crop(emoji_row),
+        ).getbbox() is not None
+
+
+def test_emoji_title_truncation_never_splits_grapheme():
+    import regex
+
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    sequence = "👩🏽‍🎓"
+    title = (sequence + " ") * 40
+    fitted, font = photo_print._fit_title(draw, title, 290, 58)
+    assert fitted.endswith("...")
+    assert photo_print._title_width(draw, fitted, font) <= 290
+    assert all(
+        grapheme.isspace() or grapheme == sequence
+        for grapheme in regex.findall(r"\X", fitted[:-3])
+    )
+
+
+def test_unicode_titles_without_emoji_still_fit():
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    fitted, font = photo_print._fit_title(draw, "Électricité — 2026", 650, 58)
+    assert fitted == "Électricité — 2026"
+    assert photo_print._title_width(draw, fitted, font) <= 650
 
 
 @pytest.mark.parametrize("count", range(1, 5))

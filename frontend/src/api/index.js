@@ -59,7 +59,8 @@ async function request(method, path, body, params) {
   const url = `${BASE}${path}${qs ? (path.includes('?') ? '&' : '?') + qs : ''}`
 
   const headers = {}
-  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  const isMultipart = typeof FormData !== 'undefined' && body instanceof FormData
+  if (body !== undefined && !isMultipart) headers['Content-Type'] = 'application/json'
 
   // Only unsafe methods need the token; sending it on GETs is noise.
   if (!['GET', 'HEAD'].includes(method)) {
@@ -71,7 +72,7 @@ async function request(method, path, body, params) {
     method,
     headers,
     credentials: 'same-origin',
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined ? undefined : isMultipart ? body : JSON.stringify(body),
   })
 
   if (res.status === 204) return null

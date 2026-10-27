@@ -30,6 +30,7 @@ from routes.opportunities import router as opportunities_router
 from routes.passkeys import admin_router as passkey_links_router
 from routes.passkeys import router as passkeys_router
 from routes.photos import router as photos_router
+from routes.product_sales import router as product_sales_router
 from routes.resources import import_seed
 from routes.resources import router as resources_router
 from routes.search import router as search_router
@@ -173,6 +174,7 @@ app.include_router(whatsapp_router)
 app.include_router(checkin_router)
 app.include_router(passkeys_router)
 app.include_router(photos_router)
+app.include_router(product_sales_router)
 app.include_router(passkey_links_router)
 
 

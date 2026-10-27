@@ -17,3 +17,9 @@ qrcode==8.0
 # origin, relying party, signature, counter. Cryptography is not something to
 # hand-roll. 3.0.1 rejects malformed attestation formats that 3.0.0 accepted.
 webauthn==3.0.1
+
+# Read-only XLSX parser for committee-uploaded Union sales exports.
+openpyxl==3.1.5
+
+# Legacy .xls sales exports from the Union reporting system.
+xlrd==2.0.2

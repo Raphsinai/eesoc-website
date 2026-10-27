@@ -50,6 +50,8 @@ GROUPS = {
             'events.bookings.view': 'View attendee bookings',
             'events.bookings.export': 'Export attendee CSV',
             'events.bookings.add': 'Add complimentary or manual tickets',
+            'events.bookings.import.view': 'View uploaded product sales and review queues',
+            'events.bookings.import': 'Upload product sales for automatic matching',
             'events.bookings.capacity_override': 'Add tickets exceeding event or ticket capacity',
             'events.bookings.confirm': 'Confirm a booking as paid',
             'events.bookings.order_number.edit': 'Edit reservation order numbers',

@@ -1222,6 +1222,17 @@ async def committee_ticket(req: CommitteeTicket) -> Reservation:
     """
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction():
+        import_row = None
+        if req.import_row_id is not None:
+            import_row = await conn.fetchrow("""SELECT r.status, r.quantity,
+                    r.ticket_type_id, i.event_id FROM public.product_sales_import_rows r
+                    JOIN public.product_sales_imports i ON i.id=r.import_id
+                    WHERE r.id=$1 FOR UPDATE OF r""", req.import_row_id)
+            if (import_row is None or import_row['status'] != 'unreserved' or
+                import_row['ticket_type_id'] != req.ticket_type_id or
+                import_row['event_id'] != req.event_id or
+                import_row['quantity'] != req.quantity):
+                raise HTTPException(409, 'Imported sale already handled, or ticket details do not match')
         event = await conn.fetchrow(
             "SELECT id, capacity FROM public.events WHERE id = $1 FOR UPDATE;",
             req.event_id,
@@ -1274,6 +1285,11 @@ async def committee_ticket(req: CommitteeTicket) -> Reservation:
             req.added_by,
             req.send_confirmation,
         )
+        if req.import_row_id is not None:
+            await conn.execute("""UPDATE public.product_sales_import_rows
+                SET status='ticket_added', reservation_id=$2, reviewed_by=$3,
+                    reviewed_at=NOW(), detail='Committee-created ticket from imported sale'
+                WHERE id=$1""", req.import_row_id, row['id'], req.added_by)
         # Insert audit in the same transaction so an unlogged override can never commit.
         await conn.execute("""INSERT INTO public.action_audit
             (actor_user_id, action, entity_type, entity_id, after_data)

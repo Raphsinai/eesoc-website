@@ -226,6 +226,7 @@ class CommitteeTicket(BaseModel):
     added_by: int | None = None
     send_confirmation: bool = True
     override_capacity: bool = False
+    import_row_id: int | None = None
     booked_as_guest: bool = False
 
 

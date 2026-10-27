@@ -11,6 +11,7 @@ import Card from '@/components/ds/Card.vue'
 import Field from '@/components/ds/Field.vue'
 import Input from '@/components/ds/Input.vue'
 import TraceRule from '@/components/ds/TraceRule.vue'
+import ProductSalesImportPanel from '@/components/ProductSalesImportPanel.vue'
 import { can } from '@/stores/session'
 
 const route = useRoute()
@@ -306,6 +307,8 @@ function csv() {
         <Button v-if="can('email.announce_event')" variant="secondary" :disabled="!counts.booked" @click="emailGroup('booked')">Email everyone booked</Button>
         <Button v-if="can('email.announce_event')" variant="ghost" :disabled="!counts.waitlist" @click="emailGroup('waitlist')">Email the waitlist</Button>
       </div>
+
+      <ProductSalesImportPanel v-if="can('events.bookings.import.view')" :event-id="Number(route.params.id)" @refresh="load" />
 
       <div class="add-ticket">
         <Button v-if="(!adding) && (can('events.bookings.add'))" variant="secondary" :disabled="!data.summary.length" @click="openAdd">Add a ticket for someone</Button>

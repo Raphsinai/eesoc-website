@@ -9,6 +9,7 @@ log = logging.getLogger("database")
 import migrate
 from postgres import connect, disconnect, get_pool
 from routes.auth import router as auth_router
+from routes.audit import router as audit_router
 from routes.checkin import router as checkin_router
 from routes.email import router as email_router
 from routes.jobs import router as jobs_router
@@ -53,6 +54,7 @@ app = FastAPI(
 )
 
 app.include_router(auth_router)
+app.include_router(audit_router)
 app.include_router(union_router)
 app.include_router(events_router)
 app.include_router(lockers_router)
@@ -65,6 +67,37 @@ app.include_router(checkin_router)
 app.include_router(passkeys_router)
 app.include_router(photos_router)
 app.include_router(whatsapp_router)
+
+
+@app.middleware('http')
+async def audit_adapter_write(request, call_next):
+    if request.method not in ('POST', 'PUT', 'PATCH', 'DELETE') or request.url.path == '/audit/actions':
+        return await call_next(request)
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        try:
+            route = request.scope.get('route')
+            path = getattr(route, 'path', '(unmatched)')
+            actor_raw = request.headers.get('x-audit-actor-id')
+            actor_id = int(actor_raw) if actor_raw else None
+            # No body, query parameters, cookies, emails, codes or headers.
+            metadata = {'route': path, 'method': request.method,
+                        'status': status, 'request_id': request.headers.get('x-audit-request-id'),
+                        'origin': request.headers.get('x-audit-origin', 'internal-job'),
+                        'acting_as_id': request.headers.get('x-audit-acting-as-id')}
+            import json
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute("""INSERT INTO public.action_audit
+                    (actor_user_id, action, entity_type, entity_id, after_data)
+                    VALUES ($1,$2,'adapter_write',0,$3::jsonb)""",
+                    actor_id, request.method + ' ' + path, json.dumps(metadata))
+        except Exception:
+            log.exception('Failed to journal adapter mutation %s', request.method)
 
 
 @app.get("/health")

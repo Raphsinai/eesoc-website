@@ -9,9 +9,10 @@ only one the browser can reach, and the only one that enforces authorisation.
 
 import asyncio
 import logging
+from uuid import uuid4
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from clients import database, union
@@ -43,6 +44,7 @@ from services import storage
 from services import sync as sync_service
 from utils import email as mailer
 from utils.year import academic_year
+from utils.deps import current_session
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("api")
@@ -172,6 +174,43 @@ app.include_router(checkin_router)
 app.include_router(passkeys_router)
 app.include_router(photos_router)
 app.include_router(passkey_links_router)
+
+
+@app.middleware('http')
+async def audit_api_mutation(request: Request, call_next):
+    if request.method not in ('POST', 'PUT', 'PATCH', 'DELETE'):
+        return await call_next(request)
+    request_id = uuid4().hex
+    session = None
+    try:
+        session = await current_session(request)
+    except Exception:
+        # Authentication itself decides whether to reject the request. A logging
+        # lookup failure must not become an authentication bypass.
+        log.exception('Unable to resolve audit actor for write')
+    actor_id = (session.impersonator.id if session and session.impersonator
+                else session.user.id if session else None)
+    acting_as_id = session.user.id if session and session.impersonator else None
+    status = 500
+    with database.audit_context(actor_id, acting_as_id, request_id):
+        try:
+            response = await call_next(request)
+            status = response.status_code
+            return response
+        finally:
+            route = request.scope.get('route')
+            path = getattr(route, 'path', '(unmatched)')
+            entry = {
+                'actor_user_id': actor_id,
+                'action': request.method + ' ' + path,
+                'meta': {'request_id': request_id, 'method': request.method,
+                         'route': path, 'status': status,
+                         'acting_as_id': acting_as_id},
+            }
+            try:
+                await database.post('/audit/actions', entry)
+            except Exception:
+                log.exception('Unable to journal API write request %s', request_id)
 
 
 @app.get("/health")

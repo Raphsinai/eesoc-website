@@ -1099,6 +1099,12 @@ def _is_standing(email: str | None) -> bool:
     return bool(configured) and str(email or "").strip().lower() == configured
 
 
+@router.get('/audit', dependencies=[Depends(require_action('access.audit.view'))])
+async def audit_actions(limit: int = 100, session: AuthSession = Depends(require_admin)) -> dict:
+    rows = await database.get('/audit/actions', {'limit': min(max(limit, 1), 200)}) or []
+    return {'actions': rows}
+
+
 @router.get("/admins", dependencies=[Depends(require_action("access.view"))])
 async def list_admins(session: AuthSession = Depends(require_admin)) -> dict:
     """Who holds what.

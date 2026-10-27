@@ -11,6 +11,8 @@ rejects them.
 from __future__ import annotations
 
 from typing import Any
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 import httpx
 from fastapi import HTTPException
@@ -18,6 +20,22 @@ from fastapi import HTTPException
 from config import settings
 
 _client: httpx.AsyncClient | None = None
+_actor_id: ContextVar[int | None] = ContextVar('audit_actor_id', default=None)
+_acting_as: ContextVar[int | None] = ContextVar('audit_acting_as', default=None)
+_request_id: ContextVar[str | None] = ContextVar('audit_request_id', default=None)
+
+
+@contextmanager
+def audit_context(actor_id: int | None, acting_as_id: int | None, request_id: str):
+    tokens = (_actor_id.set(actor_id), _acting_as.set(acting_as_id),
+              _request_id.set(request_id))
+    try:
+        yield
+    finally:
+        _request_id.reset(tokens[2])
+        _acting_as.reset(tokens[1])
+        _actor_id.reset(tokens[0])
+
 
 
 def client() -> httpx.AsyncClient:
@@ -43,7 +61,17 @@ def _clean(params: dict | None) -> dict | None:
 
 
 async def _request(method: str, path: str, **kwargs) -> Any:
-    res = await client().request(method, path, **kwargs)
+    # Internal adapter endpoints receive the resolved actor, not untrusted
+    # browser-supplied identity headers. No request body or credentials logged.
+    headers = dict(kwargs.pop('headers', {}) or {})
+    if _request_id.get() is not None:
+        headers['X-Audit-Request-Id'] = _request_id.get()
+        headers['X-Audit-Origin'] = 'api-request'
+    if _actor_id.get() is not None:
+        headers['X-Audit-Actor-Id'] = str(_actor_id.get())
+    if _acting_as.get() is not None:
+        headers['X-Audit-Acting-As-Id'] = str(_acting_as.get())
+    res = await client().request(method, path, headers=headers, **kwargs)
     if res.status_code == 404:
         # 404 is "no such row" throughout the adapter; callers decide whether
         # that is an error or an empty result.

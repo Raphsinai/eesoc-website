@@ -45,6 +45,7 @@ const TABS = [
   ['email', 'Email', 'emailish'],
   ['whatsapp', 'WhatsApp', 'whatsappish'],
   ['people', 'People', 'access.view'],
+  ['audit', 'Activity log', 'access.audit.view'],
   ['sponsors', 'Sponsors', 'sponsors.view'],
 ]
 
@@ -120,6 +121,17 @@ const uploads = ref(null)
 const overdue = ref(null)
 const orderNumbers = reactive({})
 const admins = ref([])
+const auditEntries = ref([])
+const auditBusy = ref(false)
+async function loadAudit() {
+  if (!can('access.audit.view')) return
+  auditBusy.value = true
+  try {
+    auditEntries.value = (await api.get('/admin/audit?limit=100')).actions || []
+  } catch (e) { error.value = e.message }
+  finally { auditBusy.value = false }
+}
+watch(tab, value => { if (value === 'audit') loadAudit() })
 const roleOptions = ref([])
 const newRole = ref('admin')
 const permissionOptions = ref([])
@@ -3324,6 +3336,24 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
             </Card>
           </div>
         </div>
+      </template>
+
+      <template v-if="tab === 'audit' && can('access.audit.view')">
+        <Card variant="offset" style="display:grid; gap:var(--space-4)">
+          <div style="display:flex; justify-content:space-between; gap:var(--space-3); align-items:center">
+            <h2 style="font:var(--type-h4); margin:0">Recent actions</h2>
+            <Button v-if="can('access.audit.view')" size="sm" variant="secondary" :disabled="auditBusy" @click="loadAudit">Refresh</Button>
+          </div>
+          <p style="font:var(--type-small); color:var(--text-muted); margin:0">Timestamped API actions and database-adapter writes, with the signed-in actor where available. Automated jobs are marked as system activity. Detailed before/after values appear for actions that support them.</p>
+          <div v-for="entry in auditEntries" :key="entry.id" style="border-top:1px solid var(--border-hairline);padding:var(--space-2) 0;font:var(--type-small)">
+            <div><b>{{ entry.actor_email || (entry.actor_user_id ? `User #${entry.actor_user_id}` : 'System / unauthenticated') }}</b> · {{ entry.action }}</div>
+            <div style="color:var(--text-muted)">{{ new Date(entry.at).toLocaleString() }} · {{ entry.entity_type }}{{ entry.entity_id ? ` #${entry.entity_id}` : '' }}</div>
+            <details v-if="entry.before_data || entry.after_data"><summary>Details</summary>
+              <pre style="white-space:pre-wrap;word-break:break-word;font:var(--type-2xs)">{{ JSON.stringify({ before:entry.before_data, after:entry.after_data }, null, 2) }}</pre>
+            </details>
+          </div>
+          <p v-if="!auditEntries.length" style="color:var(--text-muted)">No activity loaded yet.</p>
+        </Card>
       </template>
 
       <template v-if="tab === 'people'">

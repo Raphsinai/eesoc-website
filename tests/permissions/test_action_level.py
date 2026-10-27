@@ -343,3 +343,28 @@ def test_capacity_override_denied_before_member_creation(monkeypatch):
             8, 2, 'member@example.org', None, None, 1, None, False, True, limited,
         ))
     assert exc.value.status_code == 403
+
+
+def test_activity_log_is_separately_revocable_and_private():
+    assert 'access.audit.view' in roles.PERMISSIONS
+    assert 'access.audit.view' in roles.capabilities('superuser')
+    assert 'access.audit.view' not in roles.capabilities('admin')
+    assert 'access.audit.view' not in roles.LEGACY_GRANTS['users']
+    guard = next(code for name, method, code in _route_decorators('admin.py')
+                 if name == 'audit_actions' and method == 'get')
+    assert 'require_action(\'access.audit.view\')' in guard
+    view = (VIEWS / 'views' / 'AdminView.vue').read_text()
+    assert "['audit', 'Activity log', 'access.audit.view']" in view
+    assert "can('access.audit.view')" in view
+
+
+def test_mutation_journal_does_not_store_raw_http_bodies_or_cookies():
+    api_main = (ROOT / 'backend' / 'api' / 'main.py').read_text()
+    db_main = (ROOT / 'backend' / 'database' / 'main.py').read_text()
+    assert 'database.audit_context(actor_id, acting_as_id, request_id)' in api_main
+    assert "await database.post('/audit/actions', entry)" in api_main
+    assert 'actor_id' in db_main and 'acting_as_id' in db_main
+    assert 'request.body()' not in api_main
+    assert 'request.body()' not in db_main
+    assert 'dict(request.headers)' not in api_main
+    assert 'dict(request.headers)' not in db_main

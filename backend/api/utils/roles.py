@@ -14,6 +14,7 @@ GROUPS = {
     'Access & security': {
         'Committee access': {
             'access.view': 'View committee access',
+            'access.audit.view': 'View site activity and change history',
             'access.grant': 'Grant or change permissions',
             'access.revoke': 'Remove committee access',
             'access.impersonate': 'Sign in as another account',
@@ -258,7 +259,7 @@ EVENT_ACTIONS = EVENT_EDIT_ACTIONS | BOOKING_ACTIONS | CHECKIN_ACTIONS
 # every key into individual grants and the necessary event scope. This map is
 # ONLY for decoding old saved overrides; it is never offered in the UI.
 LEGACY_GRANTS = {
-    'users': {p for p in PERMISSIONS if p.startswith('access.')},
+    'users': {p for p in PERMISSIONS if p.startswith('access.') and p != 'access.audit.view'},
     'passkey_links': {p for p in PERMISSIONS if p.startswith('passkeys.')},
     'events': EVENT_EDIT_ACTIONS | {'events.scope.all'},
     'industry': EVENT_EDIT_ACTIONS | {'events.scope.industry'},
@@ -278,7 +279,7 @@ LEGACY_GRANTS = {
 }
 # Old committee-only check-in did not need a role. Existing roles receive door
 # access by default; custom permission holders can explicitly revoke it.
-_ADMIN = set(PERMISSIONS) - {'access.grant', 'access.revoke', 'access.impersonate', 'events.bookings.capacity_override'} - LEGACY_GRANTS['locker_allowances']
+_ADMIN = set(PERMISSIONS) - {'access.grant', 'access.revoke', 'access.impersonate', 'access.audit.view', 'events.bookings.capacity_override'} - LEGACY_GRANTS['locker_allowances']
 ROLES = {
     'superuser': {'label': 'Superuser', 'blurb': 'All actions selected by default.', 'capabilities': set(PERMISSIONS)},
     'admin': {'label': 'Admin', 'blurb': 'Read-only access list, with all other actions except access management and complimentary locker allowances.', 'capabilities': _ADMIN},

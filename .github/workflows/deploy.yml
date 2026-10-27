@@ -1,13 +1,12 @@
-# Build, test, publish — then hand over to ArgoCD.
+# Build, test and publish immutable images. Staging releases are reviewed individually.
 #
-# The workflow never touches the cluster. It commits a new image tag to the
-# STAGING overlay and Argo reconciles, so the repository always states what is
-# running and a rollback is `git revert`.
+# The workflow never touches the cluster or staging overlay. Manual staging
+# releases are performed by stage-one-feature.yml after the image builds.
+# ArgoCD reconciles committed image pins; a rollback is `git revert`.
 #
-# A push to main reaches eesoc.raphsinai.dev and stops there. eesoc.com moves
-# only when somebody runs promote.yml, which copies the SHA staging is already
-# running into the production overlay — the same image, not a rebuild, so what
-# goes live is the artifact that was actually tested.
+# A push to main only runs CI and publishes images; it never changes staging.
+# Run stage-one-feature.yml with the next commit SHA to update staging.
+# Production changes only via an explicit promote.yml workflow dispatch.
 
 name: build and deploy
 
@@ -447,79 +446,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Deploy to staging. Production is promote.yml, by hand.
-  release-staging:
-    needs: build
-    if: github.event_name == 'push'
-    runs-on: [self-hosted, Linux, X64, eesoc-ci]
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # The whole history: the pin step asks whether staging is already on
-          # a newer commit than this one.
-          fetch-depth: 0
-
-      - name: Install kustomize
-        run: |
-          curl -sfLo kustomize.tar.gz \
-            https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz
-          tar xzf kustomize.tar.gz
-          sudo mv kustomize /usr/local/bin/
-          rm kustomize.tar.gz
-
-      - name: Lowercase the owner for the registry
-        run: echo "OWNER_LC=${OWNER,,}" >> "$GITHUB_ENV"
-
-      # The staging overlay, never the base: the base is shared, so a tag there
-      # would reach production on the same sync and there would be nothing left
-      # to promote.
-      # Two pushes close together race here. The other run's pin lands first,
-      # and rebasing this pin onto it conflicts on the same lines — which left
-      # staging a commit behind on 2026-10-12 and 2026-10-15. So every attempt
-      # starts again from main as it now is and makes the edit afresh. And it
-      # never winds staging back: if main is already pinned to a commit newer
-      # than this one, that one stays.
-      - name: Pin the new image tags in staging, and commit for ArgoCD
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          overlay=deploy/k8s/overlays/staging
-          for attempt in 1 2 3 4 5; do
-            git fetch -q origin main
-            git reset -q --hard origin/main
-            pinned=$(grep -m1 'newTag:' "$overlay/kustomization.yaml" | awk '{print $2}')
-            if [ "$pinned" != "$GITHUB_SHA" ] && git merge-base --is-ancestor "$GITHUB_SHA" "$pinned" 2>/dev/null; then
-              echo "staging is already on $pinned, which is newer than $GITHUB_SHA; leaving it"
-              exit 0
-            fi
-            (
-              cd "$overlay"
-              for svc in api database union frontend garage-init whatsapp; do
-                kustomize edit set image \
-                  "ghcr.io/OWNER/eesoc-${svc}=${{ env.REGISTRY }}/${{ env.OWNER_LC }}/eesoc-${svc}:${{ github.sha }}"
-              done
-            )
-            git add "$overlay/kustomization.yaml"
-            git diff --staged --quiet && exit 0
-            git commit -q -m "staging: ${{ github.sha }} [skip ci]"
-            git push -q origin HEAD:main && exit 0
-            echo "push rejected (attempt $attempt); starting again from main"
-            sleep $((attempt * 3))
-          done
-          exit 1
-
-      - name: Say what to do next
-        run: |
-          {
-            echo "### Deployed to staging"
-            echo
-            echo "<https://eesoc.raphsinai.dev> is now running \`${GITHUB_SHA:0:8}\`."
-            echo
-            echo "Check it, then run the **promote** workflow to put the same"
-            echo "images on <https://eesoc.com>."
-          } >> "$GITHUB_STEP_SUMMARY"
+  # The build publishes immutable SHA tags. Staging is promoted a single
+  # reviewed feature commit at a time with stage-one-feature.yml. There is no
+  # automatic staging pin on a push, even if several new commits build cleanly.
 
   # ---------------------------------------------------------------- section 02
   #

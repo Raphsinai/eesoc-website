@@ -272,7 +272,7 @@ async def reconcile() -> dict:
 # -------------------------------------------------------------------- events
 
 
-@router.get("/events", dependencies=[Depends(require_any_action("events.view", "events.bookings.view"))])
+@router.get("/events", dependencies=[Depends(require_any_action("events.view", "events.bookings.view", "events.create"))])
 async def list_all_events(
     session: AuthSession = Depends(require_event_viewer),
 ) -> list[dict]:
@@ -287,6 +287,7 @@ async def list_all_events(
     # Read-only published events can appear for planning; private drafts must
     # stay inside the caller's explicitly selected event scope.
     events = [e for e in events if e.get("published") or
+              (session.can("events.create") and e.get("created_by") == session.user.id) or
               ((session.can("events.view") or session.can("events.bookings.view")) and (
                   session.can("events.scope.all") or
                   (session.can("events.scope.industry") and e.get("industry"))))]
@@ -295,7 +296,9 @@ async def list_all_events(
     for link in await database.get("/sponsors/links/confirmed") or []:
         sponsors.setdefault(link["event_id"], []).append(link["sponsor_name"])
     return [
-        {**e, "can_edit": session.can("events.edit") and may_edit_event(session, e),
+        {**e, "can_edit": (session.can("events.edit") or
+                      (session.can("events.create") and e.get("created_by") == session.user.id))
+                      and may_edit_event(session, e),
          "can_delete": session.can("events.delete") and may_edit_event(session, e),
          "can_badge": session.can("events.availability_badge.edit") and may_edit_event(session, e),
          "can_waitlist": session.can("events.waitlist.manage") and may_edit_event(session, e),
@@ -385,7 +388,7 @@ async def create_event(
         raise HTTPException(400, "An event needs a slug")
     # Somebody who may only edit industry events can only create one, or they
     # would make an event and immediately lose the ability to fix it.
-    if not session.can("events"):
+    if session.can("events.scope.industry") and not session.can("events.scope.all"):
         body["industry"] = True
     created = await database.post(
         "/events", body, params={"created_by": session.user.id}
@@ -394,17 +397,22 @@ async def create_event(
     return created
 
 
-@router.put("/events/{event_id}", dependencies=[Depends(require_action("events.edit")), Depends(verify_csrf)])
+@router.put("/events/{event_id}", dependencies=[Depends(require_any_action("events.edit", "events.create")), Depends(verify_csrf)])
 async def update_event(
     event_id: int,
     body: dict = Body(...),
     session: AuthSession = Depends(require_event_editor),
 ) -> dict:
     existing = await _editable_event(event_id, session)
+    owns_event = (session.can("events.create") and
+                  existing.get("created_by") == session.user.id)
+    if not session.can("events.edit") and not owns_event:
+        raise HTTPException(403, "You can edit only events you created without the events.edit permission")
     _assert_ticket_type_changes(session, existing, body)
     if "published" in body and bool(body["published"]) != bool(existing.get("published")) and not session.can("events.publish"):
         raise HTTPException(403, "Permission required: events.publish")
-    if not session.can("events"):
+    if (session.can("events.scope.industry") and not session.can("events.scope.all")
+            and not owns_event):
         # Clearing the flag would hand the event to the events officers and
         # lock its own author out of it, which is never what the save button
         # was meant to do.

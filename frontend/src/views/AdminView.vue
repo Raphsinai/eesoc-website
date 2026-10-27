@@ -56,7 +56,7 @@ function allowed(need) {
   if (need === 'card') return Boolean(session.committeeLogin)
   // Events and the bookings that go with them: the events officers see all of
   // it, the industry officers see it for their own events.
-  if (need === 'eventview') return can('events.view') || can('events.bookings.view')
+  if (need === 'eventview') return can('events.view') || can('events.bookings.view') || can('events.create')
   if (need === 'bookingish') return can('events.bookings.view')
   if (need === 'rolesish') return can('access.roles.create') || can('access.roles.edit')
   if (need === 'lockerish') return can('lockers.inventory.view') || can('lockers.allowances.view') || can('lockers.holders.view')
@@ -255,7 +255,7 @@ function maybe(allow, request) {
 
 async function load() {
   error.value = ''
-  const eventish = can('events.view') || can('events.bookings.view')
+  const eventish = can('events.view') || can('events.bookings.view') || can('events.create')
   try {
     const [d, ev, pr, ln, pg, ad, sp, cm, mine] = await Promise.all([
       maybe(session.isAdmin, () => api.get('/admin/dashboard')),
@@ -2339,7 +2339,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                   </label>
                   <Button v-if="e.can_publish" size="sm" variant="ghost" @click="togglePublished(e)">{{ e.published ? 'Unpublish' : 'Publish' }}</Button>
                   <Button v-if="e.can_book" size="sm" variant="secondary" @click="router.push(`/admin/events/${e.id}`)">Bookings</Button>
-                  <Button v-if="(e.can_edit) && (can('events.edit'))" size="sm" variant="ghost" @click="editEvent(e)">Edit</Button>
+                  <Button v-if="e.can_edit && (can('events.edit') || can('events.create'))" size="sm" variant="ghost" @click="editEvent(e)">Edit</Button>
                   <Button v-if="(can('email')) && (can('email.announce_event'))" size="sm" variant="secondary" title="Email people about it" @click="announceEvent(e)">Announce</Button>
                   <Button v-if="e.can_delete" size="sm" variant="danger" @click="removeEvent(e)">Delete</Button>
                   <span v-if="!e.can_edit && !e.can_book" style="font:var(--type-2xs); color:var(--text-faint)">Read-only event</span>
@@ -2726,7 +2726,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 page under Sponsors, which takes it off everyone else's list.
               </p>
               <div class="event-editor__actions">
-                <Button v-if="editingId ? can('events.edit') : can('events.create')" :disabled="busy" @click="saveEvent">{{ editingId ? 'Save changes' : 'Create event' }}</Button>
+                <Button v-if="editingId ? (can('events.edit') || can('events.create')) : can('events.create')" :disabled="busy" @click="saveEvent">{{ editingId ? 'Save changes' : 'Create event' }}</Button>
                 <Button variant="ghost" @click="resetDraft">Clear</Button>
               </div>
             </div>

@@ -80,7 +80,7 @@ def test_every_admin_route_has_named_action_guard_or_documented_self_service_exc
 def test_booking_view_can_open_calendar_without_event_edit_permission():
     decorators = list(_route_decorators('admin.py'))
     event_listing = next(code for name, _, code in decorators if name == 'list_all_events')
-    assert 'require_any_action("events.view", "events.bookings.view")' in event_listing
+    assert 'require_any_action("events.view", "events.bookings.view", "events.create")' in event_listing
 
 
 def test_action_catalogue_has_unique_keys_and_no_wildcards_or_group_grants():

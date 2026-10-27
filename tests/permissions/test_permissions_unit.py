@@ -196,3 +196,61 @@ def test_non_owner_role_editor_cannot_change_protected_superuser_defaults():
     with pytest.raises(HTTPException) as error:
         asyncio.run(admin.update_role_default('superuser', 'Other', '', ['events.view'], owner))
     assert error.value.status_code == 403
+
+
+def test_create_only_member_can_edit_own_events_but_not_others():
+    only_create = make_session('events', ['events.create'])
+    assert asyncio.run(deps.require_event_editor(only_create)) is only_create
+    assert asyncio.run(deps.require_event_viewer(only_create)) is only_create
+    assert deps.may_edit_event(only_create, {'created_by': only_create.user.id, 'industry': False})
+    assert not deps.may_edit_event(only_create, {'created_by': 999, 'industry': False})
+    assert not deps.may_edit_event(only_create, {'industry': True})
+
+
+def test_event_creator_update_denies_other_people_without_edit(monkeypatch):
+    async def fake_get(path, params=None):
+        assert path == '/events/17'
+        return {'id': 17, 'created_by': 456, 'industry': False, 'ticket_types': []}
+    async def cannot_write(*args, **kwargs):
+        pytest.fail('Must deny before writing event')
+    monkeypatch.setattr(admin.database, 'get', fake_get)
+    monkeypatch.setattr(admin.database, 'put', cannot_write)
+    session = make_session('events', ['events.create'])
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(admin.update_event(17, {'title': 'Forbidden edit'}, session))
+    assert exc.value.status_code == 403
+
+
+def test_event_creator_can_save_own_event_without_general_edit(monkeypatch):
+    current = {'id': 17, 'created_by': 135, 'industry': False, 'published': False,
+               'ticket_types': []}
+    calls = []
+    async def fake_get(path, params=None):
+        assert path == '/events/17'
+        return current
+    async def fake_put(path, body, params=None):
+        calls.append((path, body))
+        return {'id': 17, 'title': body['title']}
+    async def no_email_sync(*args):
+        return None
+    monkeypatch.setattr(admin.database, 'get', fake_get)
+    monkeypatch.setattr(admin.database, 'put', fake_put)
+    monkeypatch.setattr(admin, '_sync_on_sale_email', no_email_sync)
+    session = make_session('events', ['events.create'])
+    result = asyncio.run(admin.update_event(17, {'title': 'Own event'}, session))
+    assert result['title'] == 'Own event'
+    assert calls == [('/events/17', {'title': 'Own event', 'industry': False})]
+
+
+def test_creator_edit_preserves_independent_ticket_and_publishing_permissions(monkeypatch):
+    current = {'id': 17, 'created_by': 135, 'industry': False, 'published': False,
+               'ticket_types': []}
+    async def fake_get(*args, **kwargs): return current
+    monkeypatch.setattr(admin.database, 'get', fake_get)
+    session = make_session('events', ['events.create'])
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(admin.update_event(17, {'published': True}, session))
+    assert exc.value.status_code == 403
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(admin.update_event(17, {'ticket_types': [{'name':'New'}]}, session))
+    assert exc.value.status_code == 403

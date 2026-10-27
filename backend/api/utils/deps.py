@@ -195,7 +195,7 @@ async def require_event_editor(
     """
     if not session.is_admin:
         raise HTTPException(403, "Committee access only")
-    if not (session.can("events") or session.can("industry")):
+    if not (session.can("events.create") or session.can("events") or session.can("industry")):
         raise HTTPException(403, "You do not have access to events.")
     return session
 
@@ -203,7 +203,7 @@ async def require_event_editor(
 async def require_event_viewer(
     session: AuthSession = Depends(require_session),
 ) -> AuthSession:
-    if not any(session.can(c) for c in ("events", "industry", "bookings", "industry_bookings")):
+    if not (session.can("events.create") or any(session.can(c) for c in ("events", "industry", "bookings", "industry_bookings"))):
         raise HTTPException(403, "You do not have access to events.")
     return session
 
@@ -228,7 +228,16 @@ def assert_may_manage_booking(session: AuthSession, event: dict | None) -> None:
 
 
 def may_edit_event(session: AuthSession, event: dict | None) -> bool:
-    """`events` covers everything; `industry` covers only industry events."""
+    """Event scope plus owner-edit right inherited from events.create.
+
+    Ownership is an independent, narrow allowance: create-only officers can
+    amend their own events, never other people's. Ticket type, publish and
+    delete actions retain their independently checked permissions.
+    """
+    if (session.can("events.create") and event is not None
+            and session.user.id is not None
+            and event.get("created_by") == session.user.id):
+        return True
     if session.can("events"):
         return True
     if session.can("industry"):

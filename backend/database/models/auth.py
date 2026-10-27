@@ -68,6 +68,7 @@ class AuthSession(BaseModel):
     # the older call sites read.
     role: str | None = None
     permissions: list[str] | None = None
+    role_defaults: list[str] | None = None
     is_admin: bool = False
     member: Member | None = None
     sponsor_ids: list[int] = []

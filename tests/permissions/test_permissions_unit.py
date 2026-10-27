@@ -122,6 +122,10 @@ def test_api_saves_custom_permissions_and_refuses_self_lockout(monkeypatch):
         recorded.append((path, json, params))
     monkeypatch.setattr(admin, 'resolve_or_create_user', create)
     monkeypatch.setattr(admin.database, 'post', send)
+    async def presets_get(path):
+        assert path == '/committee-roles'
+        return roles.describe()
+    monkeypatch.setattr(admin.database, 'get', presets_get)
     owner = make_session('superuser')
     with pytest.raises(HTTPException) as err:
         asyncio.run(admin.add_admin('test-access@example.org', 'admin', [], owner))
@@ -145,6 +149,8 @@ def test_standing_superuser_access_is_immutable(monkeypatch):
 
 def test_admin_listing_exposes_defaults_and_overrides(monkeypatch):
     async def fake_get(path):
+        if path == '/committee-roles':
+            return roles.describe()
         assert path == '/auth/admins'
         return [
             {'user_id': 15, 'email': 'a@example.org', 'role': 'events', 'permissions': None},
@@ -156,3 +162,37 @@ def test_admin_listing_exposes_defaults_and_overrides(monkeypatch):
     assert response['admins'][0]['capabilities'] == sorted(roles.capabilities('events'))
     assert response['admins'][1]['capabilities'] == sorted(roles.LEGACY_GRANTS['email'])
     assert len(response['permissions']) == len(roles.PERMISSIONS)
+
+
+def test_live_role_defaults_support_custom_role_without_static_catalogue():
+    user = make_session('treasurer', None)
+    user.role_defaults = ['events.view', 'events.scope.all', 'access.roles.create']
+    assert user.can('events.view') and user.can('access.roles.create')
+    assert not user.can('events.edit')
+    user.permissions = ['email.send']
+    assert user.can('email.send') and not user.can('events.view')
+
+
+def test_standing_superuser_is_not_restricted_by_database_role_defaults(monkeypatch):
+    monkeypatch.setattr(models.settings, 'superuser_email', 'owner@example.org')
+    session = make_session('superuser', None, 'owner@example.org')
+    session.role_defaults = []
+    assert session.capabilities == roles.capabilities('superuser')
+
+
+def test_roles_create_edit_permissions_and_api_have_independent_guards():
+    assert {'access.roles.create', 'access.roles.edit'} <= roles.capabilities('superuser')
+    for named in ('admin', 'events', 'industry'):
+        assert not {'access.roles.create', 'access.roles.edit'} & roles.capabilities(named)
+    root = API / 'routes' / 'admin.py'
+    code = root.read_text()
+    assert "Depends(require_action('access.roles.create'))" in code
+    assert "Depends(require_action('access.roles.edit'))" in code
+    assert 'session.role == role_id and session.permissions is None' in code
+
+
+def test_non_owner_role_editor_cannot_change_protected_superuser_defaults():
+    owner = make_session('superuser')
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(admin.update_role_default('superuser', 'Other', '', ['events.view'], owner))
+    assert error.value.status_code == 403

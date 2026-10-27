@@ -31,10 +31,13 @@ async def admin_recipients() -> list[str]:
     Role lookup is fresh at send time so revoked access loses alerts too.
     """
     rows = await database.get("/auth/admins") or []
+    presets = {r['id']: r['capabilities'] for r in (await database.get('/committee-roles') or [])}
     recipients = {
         str(row["email"]).strip().lower()
         for row in rows
-        if "opportunities.view" in roles.effective_capabilities(row.get("role"), row.get("permissions")) and row.get("email")
+        if "opportunities.view" in roles.effective_capabilities(row.get("role"),
+            row.get("permissions") if row.get("permissions") is not None
+            else presets.get(row.get('role'), [])) and row.get("email")
     }
     if settings.superuser_email:
         recipients.add(settings.superuser_email.strip().lower())

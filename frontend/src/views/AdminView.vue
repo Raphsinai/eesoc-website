@@ -17,6 +17,7 @@ import Dialog from '@/components/ds/Dialog.vue'
 import TraceRule from '@/components/ds/TraceRule.vue'
 import PasskeyLinkMade from '@/components/PasskeyLinkMade.vue'
 import PermissionSelector from '@/components/PermissionSelector.vue'
+import RoleManagerPanel from '@/components/RoleManagerPanel.vue'
 import OpportunitiesAdminPanel from '@/components/OpportunitiesAdminPanel.vue'
 import PhotoStudioPanel from '@/components/PhotoStudioPanel.vue'
 import WhatsAppGroupPicker from '@/components/WhatsAppGroupPicker.vue'
@@ -45,6 +46,7 @@ const TABS = [
   ['email', 'Email', 'emailish'],
   ['whatsapp', 'WhatsApp', 'whatsappish'],
   ['people', 'People', 'access.view'],
+  ['roles', 'Roles', 'rolesish'],
   ['audit', 'Activity log', 'access.audit.view'],
   ['sponsors', 'Sponsors', 'sponsors.view'],
 ]
@@ -56,6 +58,7 @@ function allowed(need) {
   // it, the industry officers see it for their own events.
   if (need === 'eventview') return can('events.view') || can('events.bookings.view')
   if (need === 'bookingish') return can('events.bookings.view')
+  if (need === 'rolesish') return can('access.roles.create') || can('access.roles.edit')
   if (need === 'lockerish') return can('lockers.inventory.view') || can('lockers.allowances.view') || can('lockers.holders.view')
   if (need === 'emailish') return anyPermission('email.')
   if (need === 'whatsappish') return anyPermission('whatsapp.')
@@ -3354,6 +3357,10 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
           </div>
           <p v-if="!auditEntries.length" style="color:var(--text-muted)">No activity loaded yet.</p>
         </Card>
+      </template>
+
+      <template v-if="tab === 'roles' && (can('access.roles.create') || can('access.roles.edit'))">
+        <RoleManagerPanel />
       </template>
 
       <template v-if="tab === 'people'">

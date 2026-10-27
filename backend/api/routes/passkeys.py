@@ -455,6 +455,7 @@ def _is_standing(email: str | None) -> bool:
 def _link_refusal(
     maker_role: str | None, target_email: str, target_role: str | None,
     maker_permissions: list[str] | None = None,
+    maker_role_defaults: list[str] | None = None,
 ) -> str | None:
     """Why this maker may not give a way into this account, or None if they may.
 
@@ -464,7 +465,8 @@ def _link_refusal(
       * an account holding any committee role needs `users` too — otherwise an
         admin could link a superuser's account and open it themselves.
     """
-    caps = role_table.effective_capabilities(maker_role, maker_permissions)
+    grants = (maker_permissions if maker_permissions is not None else maker_role_defaults)
+    caps = role_table.effective_capabilities(maker_role, grants)
     if "passkeys.create" not in caps:
         return "You do not have permission to make passkey links."
     if _is_standing(target_email):
@@ -493,9 +495,14 @@ async def _live_link(token: str) -> dict:
         "superuser" if _is_standing(link.get("created_by_email"))
         else link.get("created_by_role")
     )
+    maker_defaults = None
+    if maker_role and link.get('created_by_permissions') is None and not _is_standing(link.get('created_by_email')):
+        presets = await database.get('/committee-roles') or []
+        maker_defaults = next((r['capabilities'] for r in presets if r['id'] == maker_role), [])
     refusal = _link_refusal(
         maker_role, link["email"], link.get("user_role"),
         None if _is_standing(link.get("created_by_email")) else link.get("created_by_permissions"),
+        maker_defaults,
     )
     if link.get("created_by") is None or refusal:
         log.warning(
@@ -646,7 +653,8 @@ async def create_link(
 
     user = await resolve_or_create_user(address, verified=False)
     refusal = _link_refusal(
-        session.role, user["email"], await _committee_role(user["id"]), session.permissions,
+        session.role, user["email"], await _committee_role(user["id"]),
+        session.permissions, session.role_defaults,
     )
     if refusal:
         raise HTTPException(403, refusal)

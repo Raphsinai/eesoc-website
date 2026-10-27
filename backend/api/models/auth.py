@@ -51,6 +51,7 @@ class AuthSession(BaseModel):
     user: User
     role: str | None = None
     permissions: list[str] | None = None
+    role_defaults: list[str] | None = None
     is_admin: bool = False
     member: Member | None = None
     sponsor_ids: list[int] = []
@@ -78,6 +79,12 @@ class AuthSession(BaseModel):
 
     @property
     def capabilities(self) -> frozenset[str]:
+        # Standing recovery access is intentionally independent of editable
+        # presets and cannot be narrowed by a mistaken role-default edit.
+        if _is_standing_superuser(self.user.email):
+            return frozenset(roles.PERMISSIONS)
+        if self.permissions is None and self.role_defaults is not None:
+            return roles.effective_capabilities(self.role, self.role_defaults)
         return roles.effective_capabilities(self.role, self.permissions)
 
     def can(self, capability: str) -> bool:

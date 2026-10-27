@@ -1114,6 +1114,8 @@ async def list_admins(session: AuthSession = Depends(require_admin)) -> dict:
     page only offers the controls when `canManage` says so.
     """
     people = await database.get("/auth/admins") or []
+    role_presets = await database.get('/committee-roles') or []
+    preset_by_id = {r['id']: r for r in role_presets}
     rows = [
         {**row, "standing": _is_standing(row.get("email")),
          "role": "superuser" if _is_standing(row.get("email")) else row["role"],
@@ -1138,14 +1140,68 @@ async def list_admins(session: AuthSession = Depends(require_admin)) -> dict:
         })
 
     return {
-        "admins": [{**row, "capabilities": sorted(role_table.effective_capabilities(
-            row.get("role"), None if row["standing"] else row.get("permissions")
-        ))} for row in rows],
-        "roles": role_table.describe(),
+        "admins": [{**row, "capabilities": sorted(
+            role_table.PERMISSIONS if row['standing'] else
+            role_table.effective_capabilities(
+                row.get('role'), row.get('permissions') if row.get('permissions') is not None
+                else preset_by_id.get(row.get('role'), {}).get('capabilities', []))
+        )} for row in rows],
+        "roles": role_presets,
         "permissions": role_table.describe_permissions(),
         "canManage": session.can("access.grant"),
         "superuserEmail": settings.superuser_email,
     }
+
+
+@router.get('/roles', dependencies=[Depends(require_any_action('access.roles.create', 'access.roles.edit'))])
+async def list_role_defaults(_: AuthSession = Depends(require_admin)) -> dict:
+    return {'roles': await database.get('/committee-roles') or [],
+            'permissions': role_table.describe_permissions()}
+
+
+@router.post('/roles', dependencies=[Depends(require_action('access.roles.create')), Depends(verify_csrf)])
+async def create_role_default(
+    id: str = Body(embed=True), label: str = Body(embed=True),
+    blurb: str = Body(default='', embed=True),
+    capabilities: list[str] = Body(default=[], embed=True),
+    session: AuthSession = Depends(require_admin),
+) -> dict:
+    import re
+    if not re.fullmatch(r'[a-z][a-z0-9_]{1,39}', id) or id in role_table.ROLES:
+        raise HTTPException(400, 'Role ID must be 2-40 lowercase characters and cannot be reserved')
+    if not label.strip() or len(label.strip()) > 80:
+        raise HTTPException(400, 'Role display name is required and must be at most 80 characters')
+    try:
+        checked = role_table.validate_permissions(capabilities)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return await database.post('/committee-roles', {
+        'id': id, 'label': label.strip(), 'blurb': blurb[:2000],
+        'capabilities': checked, 'actor_id': session.user.id,
+    })
+
+
+@router.put('/roles/{role_id}', dependencies=[Depends(require_action('access.roles.edit')), Depends(verify_csrf)])
+async def update_role_default(
+    role_id: str, label: str = Body(embed=True),
+    blurb: str = Body(default='', embed=True),
+    capabilities: list[str] = Body(default=[], embed=True),
+    session: AuthSession = Depends(require_admin),
+) -> dict:
+    if role_id == 'superuser':
+        raise HTTPException(403, 'The superuser recovery role cannot be edited')
+    if not label.strip() or len(label.strip()) > 80:
+        raise HTTPException(400, 'Role display name is required and must be at most 80 characters')
+    try:
+        checked = role_table.validate_permissions(capabilities)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if session.role == role_id and session.permissions is None and 'access.roles.edit' not in checked:
+        raise HTTPException(400, 'You cannot remove your own ability to edit role defaults')
+    return await database.put(f'/committee-roles/{role_id}', {
+        'label': label.strip(), 'blurb': blurb[:2000],
+        'capabilities': checked, 'actor_id': session.user.id,
+    })
 
 
 @router.post("/admins", dependencies=[Depends(require_action("access.grant")), Depends(verify_csrf)])
@@ -1165,12 +1221,14 @@ async def add_admin(
     address belonging to somebody else, so the response says when the account
     has never signed in and the page asks the granter to check it.
     """
-    if role not in role_table.ROLE_NAMES:
-        raise HTTPException(400, f"'{role}' is not a role")
     try:
         permissions = role_table.validate_permissions(permissions)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    role_presets = await database.get('/committee-roles') or []
+    preset_by_id = {r['id']: r for r in role_presets}
+    if role not in preset_by_id:
+        raise HTTPException(400, f"'{role}' is not a role")
 
     address = normalise_email(email)
     if "@" not in address:
@@ -1185,7 +1243,9 @@ async def add_admin(
 
     if _is_standing(user.get("email")) and permissions is not None:
         raise HTTPException(400, "Standing superuser permissions cannot be overridden.")
-    if user["id"] == session.user.id and "access.grant" not in role_table.effective_capabilities(role, permissions):
+    selected_grants = (permissions if permissions is not None
+                       else preset_by_id[role]['capabilities'])
+    if user["id"] == session.user.id and "access.grant" not in role_table.effective_capabilities(role, selected_grants):
         raise HTTPException(400, "You cannot remove your own ability to manage access.")
 
     await database.post(

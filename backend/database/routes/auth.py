@@ -260,6 +260,11 @@ async def get_user_session(token_hash: str) -> AuthSession:
         )
         role = access["role"] if access else None
         permissions = access["permissions"] if access else None
+        role_defaults = None
+        if role is not None:
+            role_row = await conn.fetchrow(
+                "SELECT capabilities FROM public.committee_roles WHERE id = $1", role)
+            role_defaults = list(role_row['capabilities']) if role_row else None
 
         # Who opened this session, when it is an impersonation. Returned in full
         # so the api can name them in the banner without a second round trip.
@@ -282,6 +287,7 @@ async def get_user_session(token_hash: str) -> AuthSession:
         user=User(**dict(user_row)),
         role=role,
         permissions=permissions,
+        role_defaults=role_defaults,
         is_admin=role is not None,
         member=Member(**dict(member_row)) if member_row else None,
         sponsor_ids=sponsor_ids,

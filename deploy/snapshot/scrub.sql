@@ -76,8 +76,46 @@ DO $$
 BEGIN
     IF to_regclass('public.opportunities') IS NOT NULL THEN
         DELETE FROM public.email_campaigns WHERE kind = 'opportunity_announcement';
-        TRUNCATE TABLE public.opportunities;
+        -- Migration 089 added an FK-backed history table. TRUNCATE must name
+        -- child and parent together, even when the FK uses ON DELETE CASCADE.
+        IF to_regclass('public.opportunity_publication_periods') IS NOT NULL THEN
+            TRUNCATE TABLE public.opportunity_publication_periods, public.opportunities;
+        ELSE
+            TRUNCATE TABLE public.opportunities;
+        END IF;
         DELETE FROM public.uploads WHERE purpose = 'opportunity';
+    END IF;
+END $$;
+
+-- Union sales exports (migration 093) hold original buyer names, CIDs, emails,
+-- upload filenames and fuzzy-match suggestions (JSONB, not caught by the text
+-- verifier). Keep IDs and quantities, replace every personal field.
+DO $$
+BEGIN
+    IF to_regclass('public.product_sales_imports') IS NOT NULL THEN
+        UPDATE public.product_sales_imports SET
+            filename = 'union-import-' || id || '.csv';
+    END IF;
+    IF to_regclass('public.product_sales_import_rows') IS NOT NULL THEN
+        UPDATE public.product_sales_import_rows SET
+            cid = CASE WHEN cid IS NULL THEN NULL
+                       ELSE '9' || lpad(id::text, 7, '0') END,
+            buyer_name = CASE WHEN buyer_name IS NULL THEN NULL
+                              ELSE 'Imported Buyer ' || id END,
+            email = CASE WHEN email IS NULL THEN NULL
+                         ELSE 'import' || id || '@staging.invalid' END,
+            suggestions = '[]'::jsonb,
+            detail = NULL;
+    END IF;
+END $$;
+
+-- Committee write audits (migration 092) may embed arbitrary pre/post-action
+-- JSON including email addresses and free-text notes. Never copy that history
+-- into staging; new staging actions will have their own audit records.
+DO $$
+BEGIN
+    IF to_regclass('public.action_audit') IS NOT NULL THEN
+        TRUNCATE TABLE public.action_audit;
     END IF;
 END $$;
 

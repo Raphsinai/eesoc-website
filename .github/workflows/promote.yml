@@ -50,7 +50,7 @@ concurrency:
 jobs:
   promote:
     if: inputs.mode == 'all'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, eesoc-ci]
     # Attach required reviewers to this environment in repository settings if
     # production should need a second pair of eyes. With none configured it
     # simply runs, so the workflow works either way.
@@ -62,6 +62,12 @@ jobs:
         with:
           # The whole history, so the ancestry check below can see the SHA.
           fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install YAML validator
+        run: python3 -m pip install PyYAML==6.0.2
 
       - name: Work out what to promote
         id: pick
@@ -187,7 +193,7 @@ jobs:
   # an explicitly reviewed, branch-pinned subset of frontend file changes.
   selective-frontend:
     if: inputs.mode == 'frontend-only'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, eesoc-ci]
     environment: production
     permissions:
       contents: write

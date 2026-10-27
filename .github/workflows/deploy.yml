@@ -16,6 +16,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   REGISTRY: ghcr.io
   # Deliberately NOT ${{ github.repository_owner }} directly: a Docker
@@ -26,7 +29,8 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, eesoc-ci]
     steps:
       - uses: actions/checkout@v4
 
@@ -103,13 +107,23 @@ jobs:
         if: failure()
         run: docker compose logs --tail 200
 
+      - name: Tear the smoke stack down
+        if: always()
+        run: docker compose down -v --remove-orphans
+
   # Renders both overlays and checks they stay separate. Without this a broken
   # patch target or a hostname in the wrong overlay is only discovered by
   # ArgoCD, mid-sync, against a live environment.
   manifests:
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, eesoc-ci]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install YAML validator
+        run: python3 -m pip install PyYAML==6.0.2
 
       - name: Install kustomize
         run: |
@@ -223,9 +237,13 @@ jobs:
   # per source IP and a breach bans the whole society), which is why the
   # service list names every service explicitly and never includes `union`.
   pytest:
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, eesoc-ci]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - name: Create the env files CI needs
         run: |
@@ -294,9 +312,13 @@ jobs:
   # to is the compose one (no dev server), so the specs exercise exactly what
   # a deploy will serve.
   e2e:
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, eesoc-ci]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
       - name: Create the env files CI needs
         run: |
@@ -372,7 +394,7 @@ jobs:
   build:
     needs: [test, manifests, pytest, e2e]
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, eesoc-ci]
     permissions:
       contents: read
       packages: write
@@ -429,7 +451,7 @@ jobs:
   release-staging:
     needs: build
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, eesoc-ci]
     permissions:
       contents: write
     steps:
@@ -512,9 +534,13 @@ jobs:
   # that lacks the `-- contract-step:` marker. See deploy/README.md for the
   # rule and the marker.
   migrations:
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, eesoc-ci]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - name: Install the test dependencies
         run: pip install -r backend/api/requirements-dev.txt
@@ -528,7 +554,8 @@ jobs:
   # while counting any final non-2xx answer as a failure. The script asserts
   # zero failures itself; its exit status is the job's verdict.
   rollout:
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, eesoc-ci]
     steps:
       - uses: actions/checkout@v4
 
@@ -602,9 +629,13 @@ jobs:
   # — one message per recipient, one second apart) is what makes a test-scale
   # send long enough to be interrupted.
   resumable-send:
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, eesoc-ci]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - name: Create the env files CI needs
         run: |
@@ -647,9 +678,16 @@ jobs:
   # The events test STOPS union-stub, which is exactly why it runs here and
   # never in the shared pytest job: it must not break any other suite's stack.
   sync-single-run:
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, eesoc-ci]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
       - name: Create the env files CI needs
         run: |

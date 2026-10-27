@@ -27,9 +27,11 @@ visitor ─https─> Cloudflare ─tunnel─> cloudflared (in the cluster, dials
 | Public access | Cloudflare Tunnel `eesoc-staging` (`ee536f2b-…`), connector `rke2/manifests/cloudflared.yaml` |
 | SSH | `ssh eesoc-staging` (user `raph`; jumps through pve2 over the tailnet) |
 
-The deploy flow is the same as before: a push to `main` pins new images in
-`deploy/k8s/overlays/staging`, and the ArgoCD in this VM picks the commit up
-within about three minutes. Nothing in CI knows which cluster staging is on.
+The deploy flow uses a separate manual **stage one EESoc feature** GitHub
+Actions workflow. Pushes to `main` test and publish images but do not update
+staging. The feature workflow builds the selected next commit and pins its
+images in `deploy/k8s/overlays/staging`; ArgoCD in this VM picks the pin up
+within about three minutes. CI does not need direct access to this cluster.
 
 ## Getting in
 

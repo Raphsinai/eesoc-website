@@ -10,7 +10,7 @@ Two environments, two clusters, one branch.
 | Overlay | `deploy/k8s/overlays/staging` | `deploy/k8s/overlays/production` |
 | ArgoCD app | `eesoc-website-staging`, in the staging VM's own ArgoCD | `eesoc-website` |
 | In front | Cloudflare Tunnel (`deploy/homelab/rke2/manifests/cloudflared.yaml`) | edge vhost `deploy/nginx/eesoc.com.conf` |
-| Moves when | every push to `main` | somebody runs **promote** |
+| Moves when | someone runs **stage one EESoc feature** for the next approved commit | somebody runs **promote** |
 | Database | its own, disposable | the real one |
 | Indexed by Google | no (`X-Robots-Tag` from its ingress controller) | yes |
 
@@ -19,32 +19,37 @@ because that node is shared with customers and its disk had filled up. How the
 staging VM is built, reached and kept out of the other VMs' way is in
 [`deploy/homelab/README.md`](homelab/README.md).
 
-GitOps: GitHub Actions builds and publishes images, then commits the new tag to
-the **staging** overlay. ArgoCD watches each overlay and reconciles. **CI never
-runs `kubectl`** — the repository is the only statement of what is deployed, and
-a rollback is `git revert`.
+GitOps: pushes to `main` run CI and publish immutable SHA image tags; they
+never move staging or production. The **stage one EESoc feature** workflow
+checks that the requested commit is the next unreleased feature, rebuilds its
+six service images and commits that SHA to the staging overlay. ArgoCD in the
+staging VM deploys the resulting pin. **CI never runs `kubectl`**. Production
+moves only through an explicitly approved **promote to production** dispatch.
 
 ```
-push to main ─> test ─> build & push images ─> pin tag in overlays/staging
-                                                        │
-                                          ArgoCD ─> eesoc-staging ns
-                                                        │
-                                                   ( you look at it )
-                                                        │
-                        run `promote` workflow ─> copy that same tag
-                                                   into overlays/production
-                                                        │
-                                          ArgoCD ─> eesoc ns ─> eesoc.com
+push to main ─> test ─> build & publish images (no environment moves)
+
+Run `stage one EESoc feature` with next full SHA ─> build six images
+                                                   │
+                              pin overlays/staging ─> ArgoCD ─> staging
+                                                                │
+                                                       review each feature
+                                                                │
+                         run `promote` with approval ─> pin production
+                                                                │
+                                                   ArgoCD ─> eesoc.com
 ```
 
 ## Releasing
 
-1. Merge to `main`. CI tests, builds five images tagged with the commit SHA,
-   and pins them in `overlays/staging`. Within a minute or two
-   <https://eesoc.raphsinai.dev> is running the new code.
-2. Look at it. This is the only step a machine cannot do.
-3. Actions → **promote to production** → *Run workflow*. Leave the SHA blank to
-   promote whatever staging is running.
+1. Merge feature code to `main` and let CI test and publish image tags.
+2. Actions -> **stage one EESoc feature** -> *Run workflow*, entering the full
+   SHA of the next feature commit (the workflow rejects skipped features).
+   It builds that commit, verifies regressions, and pins its six images in
+   `overlays/staging`. Wait for ArgoCD to report healthy and review
+   <https://eesoc.raphsinai.dev> before staging another feature.
+3. Only once all staged changes are approved, Actions -> **promote to production**
+   -> *Run workflow*. Leave the SHA blank to promote the currently staged build.
 
 **Promotion moves the image, not the source.** The tag staging has been running
 is copied across verbatim; nothing is rebuilt. A rebuild of the same commit can
@@ -55,7 +60,7 @@ The workflow refuses to run when it would be unsafe:
 
 | It stops if | Because |
 |---|---|
-| staging's five services are on different SHAs | a half-finished deploy; that combination has never run anywhere |
+| staging's six services are on different SHAs | a half-finished deploy; that combination has never run anywhere |
 | production is already on the requested SHA | nothing to do, and the empty commit is noise |
 | the SHA is not an ancestor of `main` | a typo'd SHA commits an image reference that does not exist, and production sits in `ImagePullBackOff` |
 | either overlay fails to render | ArgoCD would otherwise find out mid-sync, with production part-applied |

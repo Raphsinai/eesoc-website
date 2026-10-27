@@ -45,6 +45,9 @@ jobs:
           git merge-base --is-ancestor "$pinned" "$target" || { echo '::error::Cannot roll staging back with a feature release'; exit 1; }
           next=$(git rev-list --reverse --first-parent "$pinned"..origin/main -- . \
             ':(exclude).github/workflows' \
+            ':(exclude)docs' \
+            ':(exclude)deploy/README.md' \
+            ':(exclude)deploy/homelab/README.md' \
             ':(exclude)deploy/k8s/overlays/staging/kustomization.yaml' | head -n1)
           if [ -z "$next" ] || [ "$target" != "$next" ]; then
             echo "::error::Next stageable feature is ${next:-none}, not $target"
@@ -149,6 +152,9 @@ jobs:
             [ "$pinned" != "$TARGET_SHA" ] || { echo 'Already staged'; exit 0; }
             next=$(git rev-list --reverse --first-parent "$pinned"..origin/main -- . \
               ':(exclude).github/workflows' \
+              ':(exclude)docs' \
+              ':(exclude)deploy/README.md' \
+              ':(exclude)deploy/homelab/README.md' \
               ':(exclude)deploy/k8s/overlays/staging/kustomization.yaml' | head -n1)
             [ "$next" = "$TARGET_SHA" ] || { echo "::error::Staging advanced; next feature is $next"; exit 1; }
             (

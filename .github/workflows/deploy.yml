@@ -8,7 +8,7 @@
 # Run stage-one-feature.yml with the next commit SHA to update staging.
 # Production changes only via an explicit promote.yml workflow dispatch.
 
-name: build and deploy
+name: build and test
 
 on:
   push:

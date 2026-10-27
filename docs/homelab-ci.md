@@ -36,7 +36,12 @@ docker ps
 docker system df
 ```
 
-The runner is a **single persistent executor**: jobs queue rather than running
+This VM also hosts the repository-scoped `raph-site-pve-114` runner installed
+for the personal site. Both runners share the same Docker engine and therefore
+are **not security-isolated from each other**. Only run reviewed, trusted code
+in either repository; consider separate VMs if trust boundaries differ.
+
+The EESoc runner is a **single persistent executor**: its jobs queue rather than running
 concurrently. Each Docker Compose test must tear down containers and volumes
 on success or failure. CI credentials and third-party action code execute with
 access to the VM's Docker socket; do not run untrusted fork PRs here. Push

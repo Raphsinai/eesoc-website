@@ -27,6 +27,9 @@ const query = ref('')
 
 const editingOrder = ref(null)
 const editedOrder = ref('')
+const confirmingOrder = ref(null)
+const confirmationOrder = ref('')
+const confirmOverride = ref(false)
 
 const FILTERS = [
   { id: 'unpaid', label: "Hasn't bought" },
@@ -105,16 +108,42 @@ const when = (iso) =>
       })
     : '—'
 
+function startConfirmation(row) {
+  confirmingOrder.value = row.id
+  confirmationOrder.value = row.orderNumber || ''
+  confirmOverride.value = false
+}
+
+async function submitConfirmation(row) {
+  if (!confirmOverride.value && !confirmationOrder.value.trim()) {
+    error.value = 'Enter a Union order number to verify, or use the separately permitted override.'
+    return
+  }
+  if (confirmOverride.value && !confirm('Confirm this ticket without verifying a Union order? This will issue the ticket immediately.')) return
+  busy.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const response = await api.post(`/admin/reservations/${row.id}/confirm`, {
+      order_number: confirmationOrder.value.trim() || null,
+      override: confirmOverride.value,
+    })
+    notice.value = response.message || 'Confirmation updated.'
+    confirmingOrder.value = null
+    await load()
+  } catch (e) { error.value = e.message }
+  finally { busy.value = false }
+}
+
 async function act(row, action) {
   busy.value = true
   error.value = ''
   notice.value = ''
   try {
-    const body = action === 'confirm' ? { order_number: row.orderNumber || null } : undefined
-    const res = await api.post(`/admin/reservations/${row.id}/${action}`, body)
+    const res = await api.post(`/admin/reservations/${row.id}/${action}`)
     notice.value =
       res.message ||
-      { remind: 'Reminder sent.', confirm: 'Marked as bought.', cancel: 'Cancelled.' }[action]
+      { remind: 'Reminder sent.', cancel: 'Cancelled.' }[action]
     await load()
   } catch (e) {
     error.value = e.message
@@ -399,6 +428,14 @@ function csv() {
               <td>
                 <Badge v-if="!r.waitlist" :tone="tone[r.status] || 'neutral'">{{ r.status === 'held' ? 'not bought' : r.status }}</Badge>
                 <span v-else class="muted">{{ r.status }}</span>
+                <div v-if="r.orderVerification?.status === 'pending'" class="email-state"
+                     :title="`Order will be checked after ${when(r.orderVerification.check_after)} UTC if still unmatched`">
+                  Order awaiting next Union sales sync
+                </div>
+                <div v-if="r.orderVerification?.status === 'rejected'" class="email-state"
+                     style="color:var(--danger)">
+                  Order not found after the sales refresh
+                </div>
                 <div
                   v-if="emailState(r)"
                   class="email-state"
@@ -420,9 +457,30 @@ function csv() {
               <td class="muted">{{ when(r.bookedAt) }}</td>
               <td class="muted">{{ r.status === 'held' ? when(r.holdUntil) : '—' }}</td>
               <td class="actions">
+                <div v-if="confirmingOrder === r.id" class="confirmation-edit">
+                  <input v-model="confirmationOrder" class="order-edit" maxlength="128"
+                         aria-label="Union order number to verify" placeholder="Union order number"
+                         :disabled="busy" @keyup.enter="submitConfirmation(r)" />
+                  <label v-if="can('events.bookings.confirm_override')" class="confirm-override">
+                    <input v-model="confirmOverride" type="checkbox" />
+                    Override: confirm without verifying payment
+                  </label>
+                  <span v-if="confirmOverride" style="color:var(--danger);font:var(--type-small)">
+                    This immediately confirms the ticket without a Union sale match.
+                  </span>
+                  <Button v-if="can('events.bookings.confirm') || can('events.bookings.confirm_override')"
+                          size="sm" :disabled="busy || (!confirmOverride && !confirmationOrder.trim())"
+                          @click="submitConfirmation(r)">
+                    {{ confirmOverride ? 'Confirm override' : 'Verify order' }}
+                  </Button>
+                  <Button v-if="can('events.bookings.confirm') || can('events.bookings.confirm_override')"
+                          size="sm" variant="ghost" @click="confirmingOrder = null">Cancel</Button>
+                </div>
                 <template v-if="r.status === 'held'">
                   <Button v-if="can('events.bookings.remind')" size="sm" variant="secondary" :disabled="busy" @click="act(r, 'remind')">Remind</Button>
-                  <Button v-if="can('events.bookings.confirm')" size="sm" variant="secondary" :disabled="busy" @click="act(r, 'confirm')">Mark bought</Button>
+                  <Button v-if="can('events.bookings.confirm') || can('events.bookings.confirm_override')"
+                          size="sm" variant="secondary" :disabled="busy"
+                          @click="startConfirmation(r)">Confirm purchase…</Button>
                 </template>
                 <Button
                   v-if="(r.status === 'confirmed' && ['sent', 'failed', 'skipped', 'suppressed'].includes(r.confirmationEmail)) && (can('events.bookings.resend'))"
@@ -513,6 +571,8 @@ function csv() {
 .muted { color: var(--text-muted); font-size: var(--text-xs); }
 .mono { font-family: var(--font-mono); font-size: var(--text-xs); }
 .actions { display: flex; gap: var(--space-2); flex-wrap: wrap; justify-content: flex-end; }
+.confirmation-edit { display:grid; gap:var(--space-2); min-width:190px; }
+.confirm-override { display:flex; align-items:center; gap:var(--space-2); font:var(--type-small); }
 .order-edit { max-width: 125px; padding: 4px; border: 1px solid var(--border-default); }
 .ticket-switch {
   font: var(--type-2xs);

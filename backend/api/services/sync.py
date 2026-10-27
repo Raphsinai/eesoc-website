@@ -152,6 +152,14 @@ async def sync_all(force: bool = False, year: str | None = None) -> dict:
             matched = await database.post(
                 "/reservations/match", params={"academic_year": year}
             )
+            # Never reject a pending order unless the sales feed itself was
+            # successfully refreshed. Match locally when possible regardless.
+            sales_refreshed = next((step['ok'] for step in results if step['kind'] == 'sales'), False)
+            verified_orders = await database.post('/reservations/order-verification/settle', {
+                'allow_reject': sales_refreshed,
+            })
+            if (matched or {}).get('confirmed'):
+                confirmations.trigger()
             # Expiring a hold frees a seat, so the queue is worked immediately
             # afterwards rather than a day later.
             promoted = await database.post(
@@ -176,6 +184,7 @@ async def sync_all(force: bool = False, year: str | None = None) -> dict:
         "steps": results,
         "expired_reservations": expired,
         "matched": matched,
+        "verified_orders": verified_orders,
         "waitlist_promoted": (promoted or {}).get("count", 0),
         "waitlist_notified": notified,
         "committee_synced": sync_committee_today or force,
@@ -191,6 +200,7 @@ async def reconcile_only() -> dict:
     matched = await database.post(
         "/reservations/match", params={"academic_year": academic_year()}
     )
+    await database.post('/reservations/order-verification/settle', {'allow_reject': False})
     promoted = await database.post(
         "/waitlist/promote", params={"academic_year": academic_year()}
     )

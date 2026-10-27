@@ -254,3 +254,89 @@ def test_creator_edit_preserves_independent_ticket_and_publishing_permissions(mo
     with pytest.raises(HTTPException) as exc:
         asyncio.run(admin.update_event(17, {'ticket_types': [{'name':'New'}]}, session))
     assert exc.value.status_code == 403
+
+
+def test_ordinary_committee_confirmation_needs_an_order_number(monkeypatch):
+    calls = []
+    async def scoped(*args): return {'id': 77, 'status': 'held'}
+    async def should_not_post(*args, **kwargs):
+        calls.append(args)
+        pytest.fail('No database writes without order number')
+    monkeypatch.setattr(admin, '_reservation_in_scope', scoped)
+    monkeypatch.setattr(admin.database, 'post', should_not_post)
+    member = make_session('events', ['events.bookings.confirm', 'events.scope.all'])
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(admin.confirm_manually(77, None, False, member))
+    assert exc.value.status_code == 400 and calls == []
+
+
+def test_confirmation_override_denied_without_separate_permission(monkeypatch):
+    async def scoped(*args): return {'id': 78, 'status': 'held'}
+    async def should_not_post(*args, **kwargs):
+        pytest.fail('Override must be denied before writing')
+    monkeypatch.setattr(admin, '_reservation_in_scope', scoped)
+    monkeypatch.setattr(admin.database, 'post', should_not_post)
+    member = make_session('events', ['events.bookings.confirm', 'events.scope.all'])
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(admin.confirm_manually(78, None, True, member))
+    assert exc.value.status_code == 403
+
+
+def test_ordinary_order_confirmation_stays_held_without_matched_sale(monkeypatch):
+    captured = []
+    async def scoped(*args): return {'id': 79, 'status': 'held'}
+    async def post(path, json=None, params=None):
+        captured.append((path, json))
+        assert path.endswith('/submit-order')
+        return {'ok': True}
+    async def reconcile(): return {'confirmed': 0}
+    async def get(path, params=None):
+        assert path == '/reservations/79'
+        return {'id': 79, 'status': 'held'}
+    monkeypatch.setattr(admin, '_reservation_in_scope', scoped)
+    monkeypatch.setattr(admin.database, 'post', post)
+    monkeypatch.setattr(admin.database, 'get', get)
+    monkeypatch.setattr(admin.sync_service, 'reconcile_only', reconcile)
+    session = make_session('events', ['events.bookings.confirm', 'events.scope.all'])
+    result = asyncio.run(admin.confirm_manually(79, 'ABC-123', False, session))
+    assert result['reservation']['status'] == 'held'
+    assert captured == [('/reservations/79/submit-order', {
+        'order_number': 'ABC-123', 'actor_user_id': session.user.id,
+    })]
+    assert '06:05 UTC' in result['message']
+
+
+def test_manual_override_confirms_with_actor_and_does_not_run_matcher(monkeypatch):
+    recorded = []
+    async def scoped(*args): return {'id': 80, 'status': 'held'}
+    async def post(path, json=None, params=None):
+        recorded.append((path, params))
+        return {'id': 80, 'status': 'confirmed'}
+    monkeypatch.setattr(admin, '_reservation_in_scope', scoped)
+    monkeypatch.setattr(admin.database, 'post', post)
+    monkeypatch.setattr(admin.confirmations, 'trigger', lambda: None)
+    member = make_session('events', ['events.bookings.confirm_override', 'events.scope.all'])
+    result = asyncio.run(admin.confirm_manually(80, None, True, member))
+    assert result['reservation']['status'] == 'confirmed'
+    assert recorded == [('/reservations/80/confirm', {
+        'order_number': None, 'actor_user_id': member.user.id,
+    })]
+
+
+def test_role_defaults_do_not_implicitly_grant_confirmation_override():
+    assert 'events.bookings.confirm_override' in roles.capabilities('superuser')
+    for role in ('events', 'industry', 'admin'):
+        assert 'events.bookings.confirm_override' not in roles.capabilities(role)
+    assert 'events.bookings.confirm_override' not in roles.LEGACY_GRANTS['bookings']
+
+
+def test_submitted_orders_use_strict_number_and_next_successful_refresh():
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[2]
+    matching = (repo / 'backend/database/routes/events.py').read_text()
+    sync = (repo / 'backend/api/services/sync.py').read_text()
+    assert "upper(s.order_number)=upper(ov.order_number)" in matching
+    assert "ov.reservation_id IS NULL AND" in matching
+    assert "interval '1 day 6 hours 5 minutes'" in matching
+    assert "'allow_reject': sales_refreshed" in sync
+    assert "'allow_reject': False" in sync

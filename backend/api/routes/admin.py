@@ -575,6 +575,8 @@ async def event_detail(
     ticket type, every reservation in every state, and the waitlist."""
     event = await _bookable_event(event_id, session)
     rows = await database.get("/reservations", {"event_id": event_id, "limit": 5000}) or []
+    verifications = await database.get('/order-verification/reservations', {'event_id': event_id}) or []
+    verification_by_id = {v['reservation_id']: v for v in verifications}
     waiting = await database.get("/waitlist", {"event_id": event_id}) or [] if session.can("events.bookings.waitlist") else []
 
     summary = []
@@ -610,6 +612,7 @@ async def event_detail(
             "requiresPurchase": r.get("requires_purchase", True),
             "membersOnly": r.get("members_only", False),
             "orderNumber": r.get("order_number"),
+            "orderVerification": verification_by_id.get(r['id']),
             "guest": r.get("booked_as_guest", False),
             "bookedAt": r.get("created_at"),
             "holdUntil": r.get("expires_at"),
@@ -741,20 +744,47 @@ async def remind(
     }
 
 
-@router.post("/reservations/{reservation_id}/confirm", dependencies=[Depends(require_action("events.bookings.confirm")), Depends(verify_csrf)])
+@router.post("/reservations/{reservation_id}/confirm", dependencies=[
+    Depends(require_any_action("events.bookings.confirm", "events.bookings.confirm_override")),
+    Depends(verify_csrf),
+])
 async def confirm_manually(
     reservation_id: int,
     order_number: str | None = Body(default=None, embed=True),
+    override: bool = Body(default=False, embed=True),
     session: AuthSession = Depends(require_booking_editor),
 ) -> dict:
-    """Confirm a booking the matcher could not."""
+    """Submit an order number to the matcher, or explicitly override it.
+
+    The ordinary path never confirms an unverified sale. It stays held until
+    matched locally or via the 06:05 UTC sales refresh the next calendar day.
+    """
     await _reservation_in_scope(reservation_id, session)
-    row = await database.post(
-        f"/reservations/{reservation_id}/confirm",
-        params={"order_number": order_number},
-    )
-    confirmations.trigger()
-    return {"ok": True, "reservation": row}
+    if override:
+        if not session.can('events.bookings.confirm_override'):
+            raise HTTPException(403, 'Permission required: events.bookings.confirm_override')
+        row = await database.post(f'/reservations/{reservation_id}/confirm', params={
+            'order_number': (order_number or '').strip() or None,
+            'actor_user_id': session.user.id,
+        })
+        confirmations.trigger()
+        return {'ok': True, 'reservation': row,
+                'message': 'Booking confirmed using an authorised manual override.'}
+    if not session.can('events.bookings.confirm'):
+        raise HTTPException(403, 'Permission required: events.bookings.confirm')
+    value = (order_number or '').strip()
+    if not value or len(value) > 128:
+        raise HTTPException(400, 'An order number is required (up to 128 characters)')
+    await database.post(f'/reservations/{reservation_id}/submit-order', {
+        'order_number': value, 'actor_user_id': session.user.id,
+    })
+    await sync_service.reconcile_only()
+    current = await database.get(f'/reservations/{reservation_id}')
+    if current and current['status'] == 'confirmed':
+        return {'ok': True, 'reservation': current,
+                'message': 'The Union order was matched and the ticket is confirmed.'}
+    return {'ok': True, 'reservation': current,
+            'message': 'Order submitted for verification. It will be checked again after tomorrow’s 06:05 UTC sales sync; if not found, the order number will be rejected but the reservation stays held.'}
 
 
 @router.patch("/reservations/{reservation_id}/order-number", dependencies=[Depends(require_action("events.bookings.order_number.edit")), Depends(verify_csrf)])

@@ -1089,6 +1089,19 @@ async def committee_set_order_number(reservation_id: int, order_number: str | No
                   RETURNING {RESERVATION_COLUMNS};""", reservation_id, value,
         )
         if row is not None:
+            # If an order is already being verified, editing it must replace
+            # the pending claim so the matcher never uses stale order evidence.
+            # Clearing the number withdraws the pending verification.
+            if value is None:
+                await conn.execute("""DELETE FROM public.reservation_order_verification
+                    WHERE reservation_id=$1 AND status='pending'""", reservation_id)
+            elif row['status'] == 'held':
+                await conn.execute("""UPDATE public.reservation_order_verification
+                    SET order_number=$2,submitted_by=$3,submitted_at=NOW(),
+                        check_after=(date_trunc('day',NOW() AT TIME ZONE 'UTC')
+                                     + interval '1 day 6 hours 5 minutes') AT TIME ZONE 'UTC',
+                        checked_at=NULL WHERE reservation_id=$1 AND status='pending'""",
+                    reservation_id,value,actor_user_id)
             await conn.execute("""INSERT INTO public.action_audit(actor_user_id, action, entity_type, entity_id, before_data, after_data)
                 VALUES ($1, 'reservations.order_number.edit', 'reservation', $2, jsonb_build_object('order_number', $3::text), jsonb_build_object('order_number', $4::text))""",
                 actor_user_id, reservation_id, old['order_number'] if old else None, value)
@@ -1420,8 +1433,115 @@ async def resend_confirmation(reservation_id: int) -> Reservation:
     return Reservation(**dict(row))
 
 
+@router.post("/reservations/{reservation_id}/submit-order")
+async def committee_submit_order(
+    reservation_id: int,
+    order_number: str = Body(embed=True),
+    actor_user_id: int = Body(embed=True),
+) -> dict:
+    """Link a claimed order to a hold, never confirming without sale evidence."""
+    value = order_number.strip()
+    if not value or len(value) > 128:
+        raise HTTPException(400, 'Enter a valid Union order number (up to 128 characters)')
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        previous = await conn.fetchrow("""SELECT r.status, r.order_number, tt.requires_purchase
+            FROM public.reservations r JOIN public.ticket_types tt ON tt.id=r.ticket_type_id
+            WHERE r.id=$1 FOR UPDATE OF r""", reservation_id)
+        if previous is None or previous['status'] != 'held':
+            raise HTTPException(409, 'Only held bookings can submit a purchase order')
+        if not previous['requires_purchase']:
+            raise HTTPException(409, 'This is a free ticket; no purchase order is needed')
+        row = await conn.fetchrow(
+            f"UPDATE public.reservations SET order_number=$2 WHERE id=$1 RETURNING {RESERVATION_COLUMNS}",
+            reservation_id, value,
+        )
+        await conn.execute("""INSERT INTO public.reservation_order_verification
+            (reservation_id,order_number,submitted_by,check_after)
+            VALUES ($1,$2,$3,(date_trunc('day',NOW() AT TIME ZONE 'UTC')
+                + interval '1 day 6 hours 5 minutes') AT TIME ZONE 'UTC')
+            ON CONFLICT(reservation_id) DO UPDATE SET
+                order_number=EXCLUDED.order_number,
+                submitted_by=EXCLUDED.submitted_by,
+                submitted_at=NOW(), check_after=EXCLUDED.check_after,
+                status='pending', checked_at=NULL""",
+            reservation_id, value, actor_user_id,
+        )
+        await conn.execute("""INSERT INTO public.action_audit
+            (actor_user_id,action,entity_type,entity_id,before_data,after_data)
+            VALUES ($1,'reservations.order.submit','reservation',$2,
+                jsonb_build_object('order_number',$3::text),
+                jsonb_build_object('order_number',$4::text,'status','pending'))""",
+            actor_user_id, reservation_id, previous['order_number'], value,
+        )
+    return {'ok': True, 'reservation': Reservation(**dict(row)).model_dump(mode='json')}
+
+
+@router.get('/order-verification/reservations')
+async def list_order_verifications(event_id: int) -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""SELECT v.reservation_id,v.order_number,v.status,
+                   v.submitted_at,v.check_after,v.checked_at
+            FROM public.reservation_order_verification v
+            JOIN public.reservations r ON r.id=v.reservation_id
+            WHERE r.event_id=$1 ORDER BY v.submitted_at DESC""", event_id)
+    return [dict(row) for row in rows]
+
+
+@router.post('/reservations/order-verification/settle')
+async def settle_order_verifications(
+    allow_reject: bool = Body(default=False, embed=True),
+) -> dict:
+    """Match immediately; reject only after a successful fresh sales sync.
+
+    The caller sends allow_reject only after a successful complete sales import
+    and match pass. Database locking keeps concurrent resubmits from being lost.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        pending = await conn.fetch("""SELECT v.reservation_id,v.order_number,v.check_after,
+                  r.status AS reservation_status,r.order_number AS current_order,
+                  r.matched_sale_id,s.order_number AS matched_order
+            FROM public.reservation_order_verification v
+            JOIN public.reservations r ON r.id=v.reservation_id
+            LEFT JOIN public.union_sales s ON s.id=r.matched_sale_id
+            WHERE v.status='pending' AND (
+                  (r.status='confirmed' AND r.matched_sale_id IS NOT NULL)
+                  OR ($1::boolean AND v.check_after<=NOW()))
+            FOR UPDATE OF v,r""", allow_reject)
+        matched = rejected = 0
+        for pending_row in pending:
+            approved = (pending_row['reservation_status'] == 'confirmed' and
+                        pending_row['matched_order'] is not None and
+                        pending_row['matched_order'].strip().upper() == pending_row['order_number'].strip().upper())
+            if approved:
+                outcome = 'matched'
+                matched += 1
+            elif allow_reject and pending_row['check_after'] <= datetime.now(timezone.utc):
+                # If the user re-edited their order while it was awaiting sync,
+                # do not clear a newer number. Never cancel their reservation.
+                await conn.execute("""UPDATE public.reservations SET order_number=NULL
+                   WHERE id=$1 AND status='held' AND order_number=$2""",
+                    pending_row['reservation_id'], pending_row['order_number'])
+                outcome = 'rejected'
+                rejected += 1
+            else:
+                continue
+            await conn.execute("""UPDATE public.reservation_order_verification
+                SET status=$2,checked_at=NOW() WHERE reservation_id=$1""",
+                pending_row['reservation_id'], outcome)
+            await conn.execute("""INSERT INTO public.action_audit
+                (action,entity_type,entity_id,after_data)
+                VALUES($1,'reservation',$2,
+                       jsonb_build_object('order_number',$3::text,'status',$4::text))""",
+                f'reservations.order.{outcome}',pending_row['reservation_id'],
+                pending_row['order_number'],outcome)
+    return {'matched': matched, 'rejected': rejected}
+
+
 @router.post("/reservations/{reservation_id}/confirm")
-async def confirm_manually(reservation_id: int, order_number: str | None = None) -> Reservation:
+async def confirm_manually(reservation_id: int, order_number: str | None = None, actor_user_id: int | None = None) -> Reservation:
     """Confirm a booking by hand.
 
     For the case the automatic matcher cannot cover: a purchase made under a
@@ -1430,7 +1550,10 @@ async def confirm_manually(reservation_id: int, order_number: str | None = None)
     that is the point of a manual override.
     """
     pool = await get_pool()
-    async with pool.acquire() as conn:
+    async with pool.acquire() as conn, conn.transaction():
+        previous = await conn.fetchrow(
+            'SELECT status,order_number FROM public.reservations WHERE id=$1 FOR UPDATE', reservation_id,
+        )
         row = await conn.fetchrow(
             f"""
             UPDATE public.reservations
@@ -1444,6 +1567,14 @@ async def confirm_manually(reservation_id: int, order_number: str | None = None)
             reservation_id,
             (order_number or "").strip() or None,
         )
+        if row is not None:
+            await conn.execute("""INSERT INTO public.action_audit
+                (actor_user_id,action,entity_type,entity_id,before_data,after_data)
+                VALUES($1,'reservations.confirm.override','reservation',$2,
+                    jsonb_build_object('status',$3::text,'order_number',$4::text),
+                    jsonb_build_object('status','confirmed','order_number',$5::text))""",
+                actor_user_id, reservation_id, previous['status'],
+                previous['order_number'], row['order_number'])
     if row is None:
         raise HTTPException(404, "No such reservation, or it is already confirmed")
     return Reservation(**dict(row))
@@ -1506,6 +1637,8 @@ async def match_reservations(academic_year: str | None = None) -> dict:
               JOIN public.union_sales s
                 ON s.product_id = h.product_id
                AND (h.line_id IS NULL OR s.product_line_id = h.line_id)
+              LEFT JOIN public.reservation_order_verification ov
+                ON ov.reservation_id=h.id AND ov.status='pending'
              WHERE h.product_id IS NOT NULL
                -- An unassigned ticket type accepts any line of the product, but
                -- must not swallow a line that belongs to a sibling type.
@@ -1525,13 +1658,16 @@ async def match_reservations(academic_year: str | None = None) -> dict:
                    -- itself rather than needing them to book again.
                AND (NOT h.members_only OR h.is_member)
                AND (
-                     (h.member_id IS NOT NULL AND h.login IS NOT NULL
-                      AND lower(s.customer_login) = lower(h.login))
-                  OR (h.member_id IS NOT NULL AND h.cid IS NOT NULL
-                      AND s.customer_cid = h.cid)
-                  OR (h.order_number IS NOT NULL
-                      AND upper(s.order_number) = upper(h.order_number))
-                   )
+                    (ov.reservation_id IS NOT NULL
+                         AND upper(s.order_number)=upper(ov.order_number))
+                 OR (ov.reservation_id IS NULL AND (
+                       (h.member_id IS NOT NULL AND h.login IS NOT NULL
+                        AND lower(s.customer_login)=lower(h.login))
+                    OR (h.member_id IS NOT NULL AND h.cid IS NOT NULL
+                        AND s.customer_cid=h.cid)
+                    OR (h.order_number IS NOT NULL
+                        AND upper(s.order_number)=upper(h.order_number))
+                 )))
                AND NOT EXISTS (
                      SELECT 1 FROM public.reservations r2 WHERE r2.matched_sale_id = s.id
                    )

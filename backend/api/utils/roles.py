@@ -49,6 +49,7 @@ GROUPS = {
             'events.bookings.view': 'View attendee bookings',
             'events.bookings.export': 'Export attendee CSV',
             'events.bookings.add': 'Add complimentary or manual tickets',
+            'events.bookings.capacity_override': 'Add tickets exceeding event or ticket capacity',
             'events.bookings.confirm': 'Confirm a booking as paid',
             'events.bookings.order_number.edit': 'Edit reservation order numbers',
             'events.bookings.cancel': 'Cancel another person’s booking',
@@ -261,8 +262,8 @@ LEGACY_GRANTS = {
     'passkey_links': {p for p in PERMISSIONS if p.startswith('passkeys.')},
     'events': EVENT_EDIT_ACTIONS | {'events.scope.all'},
     'industry': EVENT_EDIT_ACTIONS | {'events.scope.industry'},
-    'bookings': BOOKING_ACTIONS | {'events.scope.all'},
-    'industry_bookings': BOOKING_ACTIONS | {'events.scope.industry'},
+    'bookings': (BOOKING_ACTIONS - {'events.bookings.capacity_override'}) | {'events.scope.all'},
+    'industry_bookings': (BOOKING_ACTIONS - {'events.bookings.capacity_override'}) | {'events.scope.industry'},
     'sync': {p for p in PERMISSIONS if p.startswith('events.sync.')},
     'sponsors': {p for p in PERMISSIONS if p.startswith('sponsors.')},
     'resources': {p for p in PERMISSIONS if p.startswith('resources.')},
@@ -277,12 +278,12 @@ LEGACY_GRANTS = {
 }
 # Old committee-only check-in did not need a role. Existing roles receive door
 # access by default; custom permission holders can explicitly revoke it.
-_ADMIN = set(PERMISSIONS) - {'access.grant', 'access.revoke', 'access.impersonate'} - LEGACY_GRANTS['locker_allowances']
+_ADMIN = set(PERMISSIONS) - {'access.grant', 'access.revoke', 'access.impersonate', 'events.bookings.capacity_override'} - LEGACY_GRANTS['locker_allowances']
 ROLES = {
     'superuser': {'label': 'Superuser', 'blurb': 'All actions selected by default.', 'capabilities': set(PERMISSIONS)},
     'admin': {'label': 'Admin', 'blurb': 'Read-only access list, with all other actions except access management and complimentary locker allowances.', 'capabilities': _ADMIN},
-    'events': {'label': 'Events', 'blurb': 'All event and booking actions, including check-in and sales sync.', 'capabilities': EVENT_ACTIONS | {'events.scope.all'} | LEGACY_GRANTS['sync']},
-    'industry': {'label': 'Industry', 'blurb': 'All sponsor actions and industry-scoped event, booking and check-in actions.', 'capabilities': LEGACY_GRANTS['sponsors'] | EVENT_ACTIONS | {'events.scope.industry'}},
+    'events': {'label': 'Events', 'blurb': 'All event and booking actions, including check-in and sales sync.', 'capabilities': (EVENT_ACTIONS - {'events.bookings.capacity_override'}) | {'events.scope.all'} | LEGACY_GRANTS['sync']},
+    'industry': {'label': 'Industry', 'blurb': 'All sponsor actions and industry-scoped event, booking and check-in actions.', 'capabilities': LEGACY_GRANTS['sponsors'] | (EVENT_ACTIONS - {'events.bookings.capacity_override'}) | {'events.scope.industry'}},
 }
 ROLE_NAMES = tuple(ROLES)
 

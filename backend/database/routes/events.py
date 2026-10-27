@@ -1210,8 +1210,8 @@ async def committee_ticket(req: CommitteeTicket) -> Reservation:
     """A ticket the committee adds for somebody: confirmed from the start.
 
     Serialised on the event row and counted exactly as `reserve` counts, so it
-    takes a real place and cannot oversell — over capacity it is refused, the
-    same answer a member gets at the booking page. The per-person limit is not
+    takes a real place. Exceeding event or ticket type capacity is refused unless
+    the committee explicitly requests an authorised capacity override. The per-person limit is not
     applied: a committee member adding a second ticket for somebody has decided
     to.
 
@@ -1246,11 +1246,11 @@ async def committee_ticket(req: CommitteeTicket) -> Reservation:
             req.event_id,
             req.ticket_type_id,
         )
-        if tt["capacity"] is not None and counts["type_taken"] + req.quantity > tt["capacity"]:
+        if not req.override_capacity and tt["capacity"] is not None and counts["type_taken"] + req.quantity > tt["capacity"]:
             raise HTTPException(
                 409, f"{tt['name']} is full ({counts['type_taken']} of {tt['capacity']} taken)."
             )
-        if event["capacity"] is not None and counts["event_taken"] + req.quantity > event["capacity"]:
+        if not req.override_capacity and event["capacity"] is not None and counts["event_taken"] + req.quantity > event["capacity"]:
             raise HTTPException(
                 409, f"The event is full ({counts['event_taken']} of {event['capacity']} taken)."
             )
@@ -1273,6 +1273,15 @@ async def committee_ticket(req: CommitteeTicket) -> Reservation:
             req.booked_as_guest,
             req.added_by,
             req.send_confirmation,
+        )
+        # Insert audit in the same transaction so an unlogged override can never commit.
+        await conn.execute("""INSERT INTO public.action_audit
+            (actor_user_id, action, entity_type, entity_id, after_data)
+            VALUES ($1, 'reservations.committee.add', 'reservation', $2,
+                    jsonb_build_object('event_id', $3::bigint, 'ticket_type_id', $4::bigint,
+                                       'quantity', $5::integer, 'override_capacity', $6::boolean))""",
+            req.added_by, row['id'], req.event_id, req.ticket_type_id,
+            req.quantity, req.override_capacity,
         )
     return Reservation(**dict(row))
 

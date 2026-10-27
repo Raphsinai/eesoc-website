@@ -165,7 +165,7 @@ async function changeTicket(row, event) {
 const adding = ref(false)
 const blankTicket = () => ({
   ticket_type_id: '', email: '', first_name: '', last_name: '', quantity: 1, note: '',
-  send_confirmation: true,
+  send_confirmation: true, override_capacity: false,
 })
 const ticket = reactive(blankTicket())
 
@@ -179,6 +179,8 @@ async function addTicket() {
     error.value = 'Choose a ticket type and give their email address.'
     return
   }
+  if (ticket.override_capacity && !confirm(
+    'Bypass the event and ticket-type capacity limits? This can overbook the event.')) return
   busy.value = true
   error.value = ''
   notice.value = ''
@@ -337,6 +339,13 @@ function csv() {
               <input v-model="ticket.send_confirmation" type="checkbox" />
               Email them a confirmation
             </label>
+            <label v-if="can('events.bookings.capacity_override')" style="display:flex; gap:var(--space-2); align-items:center; font:var(--type-small)">
+              <input v-model="ticket.override_capacity" type="checkbox" />
+              Override event and ticket-type capacity
+            </label>
+            <p v-if="ticket.override_capacity && can('events.bookings.capacity_override')" style="margin:0;color:var(--danger);font:var(--type-small)">
+              This bypasses capacity restrictions. You will be asked to confirm before adding the ticket.
+            </p>
             <div style="display:flex; gap:var(--space-3)">
               <Button v-if="can('events.bookings.add')" type="submit" :disabled="busy">{{ busy ? 'Adding…' : 'Add ticket' }}</Button>
               <Button variant="ghost" type="button" @click="adding = false">Cancel</Button>

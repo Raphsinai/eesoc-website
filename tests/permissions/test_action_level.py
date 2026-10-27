@@ -314,3 +314,32 @@ def test_committee_order_number_requires_its_own_write_permission():
     source = (VIEWS / 'views' / 'AdminEventView.vue').read_text()
     assert "can('events.bookings.order_number.edit')" in source
     assert '/admin/reservations/${row.id}/order-number' in source
+
+
+def test_capacity_override_is_independent_of_adding_tickets():
+    assert 'events.bookings.capacity_override' in roles.PERMISSIONS
+    assert 'events.bookings.capacity_override' in roles.capabilities('superuser')
+    for name in ('admin', 'events', 'industry'):
+        assert 'events.bookings.capacity_override' not in roles.capabilities(name)
+    assert 'events.bookings.capacity_override' not in roles.LEGACY_GRANTS['bookings']
+    assert 'events.bookings.capacity_override' not in roles.LEGACY_GRANTS['industry_bookings']
+    source = (ROUTES / 'admin.py').read_text()
+    assert 'if override_capacity and not session.can(\'events.bookings.capacity_override\'):' in source
+    front = (VIEWS / 'views' / 'AdminEventView.vue').read_text()
+    assert "can('events.bookings.capacity_override')" in front
+    assert 'ticket.override_capacity' in front
+
+
+def test_capacity_override_denied_before_member_creation(monkeypatch):
+    async def bookable(*args):
+        return {'id': 8}
+    async def no_create(*args, **kwargs):
+        pytest.fail('Must deny override before creating a member')
+    monkeypatch.setattr(admin, '_bookable_event', bookable)
+    monkeypatch.setattr(admin, 'resolve_or_create_user', no_create)
+    limited = make_session('events', ['events.bookings.add', 'events.scope.all'])
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(admin.add_ticket(
+            8, 2, 'member@example.org', None, None, 1, None, False, True, limited,
+        ))
+    assert exc.value.status_code == 403

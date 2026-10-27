@@ -812,6 +812,7 @@ async def add_ticket(
     quantity: int = Body(default=1, embed=True),
     note: str | None = Body(default=None, embed=True),
     send_confirmation: bool = Body(default=True, embed=True),
+    override_capacity: bool = Body(default=False, embed=True),
     session: AuthSession = Depends(require_booking_editor),
 ) -> dict:
     """Add a ticket for somebody — paid in cash or by transfer, or a comp.
@@ -826,6 +827,8 @@ async def add_ticket(
     bookings. No Union calls.
     """
     await _bookable_event(event_id, session)
+    if override_capacity and not session.can('events.bookings.capacity_override'):
+        raise HTTPException(403, 'Permission required: events.bookings.capacity_override')
     address = normalise_email(email)
     if "@" not in address:
         raise HTTPException(400, "That does not look like an email address.")
@@ -852,6 +855,7 @@ async def add_ticket(
             "note": f"added by {who}" + (f": {text}" if text else ""),
             "added_by": session.user.id,
             "send_confirmation": send_confirmation,
+            "override_capacity": override_capacity,
             "booked_as_guest": holder.get("member_id") is None,
         },
     )

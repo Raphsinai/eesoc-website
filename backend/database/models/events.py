@@ -225,6 +225,7 @@ class CommitteeTicket(BaseModel):
     note: str | None = None
     added_by: int | None = None
     send_confirmation: bool = True
+    override_capacity: bool = False
     booked_as_guest: bool = False
 
 

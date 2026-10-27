@@ -1,0 +1,26 @@
+# Run manually to verify that the isolated EESoc homelab runner is online.
+name: self-hosted runner smoke test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, Linux, X64, eesoc-ci]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify isolated Docker build host
+        run: |
+          set -euo pipefail
+          echo "Runner: $RUNNER_NAME ($RUNNER_OS / $RUNNER_ARCH)"
+          docker info --format 'Docker engine {{.ServerVersion}} / {{.Driver}}'
+          docker compose version
+          python3 --version
+          python3 -m venv "$RUNNER_TEMP/eesoc-smoke-venv"
+          "$RUNNER_TEMP/eesoc-smoke-venv/bin/python" -m pip --version
+          git rev-parse --short HEAD
+          df -h / | tail -1

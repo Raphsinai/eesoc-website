@@ -50,6 +50,7 @@ GROUPS = {
             'events.bookings.export': 'Export attendee CSV',
             'events.bookings.add': 'Add complimentary or manual tickets',
             'events.bookings.confirm': 'Confirm a booking as paid',
+            'events.bookings.order_number.edit': 'Edit reservation order numbers',
             'events.bookings.cancel': 'Cancel another person’s booking',
             'events.bookings.remind': 'Send purchase reminders',
             'events.bookings.change_ticket': 'Change an attendee’s ticket type',

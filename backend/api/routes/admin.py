@@ -749,6 +749,20 @@ async def confirm_manually(
     return {"ok": True, "reservation": row}
 
 
+@router.patch("/reservations/{reservation_id}/order-number", dependencies=[Depends(require_action("events.bookings.order_number.edit")), Depends(verify_csrf)])
+async def committee_order_number(
+    reservation_id: int,
+    order_number: str | None = Body(default=None, embed=True),
+    session: AuthSession = Depends(require_booking_editor),
+) -> dict:
+    await _reservation_in_scope(reservation_id, session)
+    value = (order_number or "").strip() or None
+    if value is not None and len(value) > 128:
+        raise HTTPException(400, "Order number too long")
+    row = await database.patch(f"/reservations/{reservation_id}/committee-order-number", {"order_number": value, "actor_user_id": session.user.id})
+    return {"ok": True, "reservation": row}
+
+
 @router.post("/reservations/{reservation_id}/ticket-type", dependencies=[Depends(require_action("events.bookings.change_ticket")), Depends(verify_csrf)])
 async def change_ticket_type(
     reservation_id: int,

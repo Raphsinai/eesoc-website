@@ -1074,6 +1074,29 @@ async def set_order_number(reservation_id: int, order_number: str) -> Reservatio
     return Reservation(**dict(row))
 
 
+@router.patch("/reservations/{reservation_id}/committee-order-number")
+async def committee_set_order_number(reservation_id: int, order_number: str | None = Body(default=None, embed=True), actor_user_id: int | None = Body(default=None, embed=True)) -> Reservation:
+    """Committee can change the order number on a booked reservation."""
+    value = (order_number or "").strip() or None
+    if value is not None and len(value) > 128:
+        raise HTTPException(400, "Order number too long")
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        old = await conn.fetchrow("SELECT order_number FROM public.reservations WHERE id = $1 FOR UPDATE", reservation_id)
+        row = await conn.fetchrow(
+            f"""UPDATE public.reservations SET order_number = $2
+                  WHERE id = $1 AND status != 'draft'
+                  RETURNING {RESERVATION_COLUMNS};""", reservation_id, value,
+        )
+        if row is not None:
+            await conn.execute("""INSERT INTO public.action_audit(actor_user_id, action, entity_type, entity_id, before_data, after_data)
+                VALUES ($1, 'reservations.order_number.edit', 'reservation', $2, jsonb_build_object('order_number', $3::text), jsonb_build_object('order_number', $4::text))""",
+                actor_user_id, reservation_id, old['order_number'] if old else None, value)
+    if row is None:
+        raise HTTPException(404, "No such reservation")
+    return Reservation(**dict(row))
+
+
 @router.post("/reservations/expire")
 async def expire_reservations() -> int:
     """Expire abandoned *drafts* only.

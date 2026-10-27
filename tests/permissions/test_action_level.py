@@ -302,3 +302,15 @@ def test_admin_sponsor_loader_uses_each_read_permission_instead_of_directory_per
     assert "can('sponsors.inbox')" in loader
     assert "can('sponsors.digest.view')" in loader
     assert "can('sponsors.view')" not in loader
+
+
+def test_committee_order_number_requires_its_own_write_permission():
+    decorators = list(_route_decorators('admin.py'))
+    method, guard = next((method, code) for name, method, code in decorators
+                         if name == 'committee_order_number')
+    assert method == 'patch'
+    assert 'require_action("events.bookings.order_number.edit")' in guard
+    assert 'verify_csrf' in guard
+    source = (VIEWS / 'views' / 'AdminEventView.vue').read_text()
+    assert "can('events.bookings.order_number.edit')" in source
+    assert '/admin/reservations/${row.id}/order-number' in source

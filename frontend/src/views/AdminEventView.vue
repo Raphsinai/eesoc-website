@@ -24,6 +24,9 @@ const notice = ref('')
 const filter = ref('unpaid')
 const query = ref('')
 
+const editingOrder = ref(null)
+const editedOrder = ref('')
+
 const FILTERS = [
   { id: 'unpaid', label: "Hasn't bought" },
   { id: 'bought', label: 'Bought' },
@@ -117,6 +120,22 @@ async function act(row, action) {
   } finally {
     busy.value = false
   }
+}
+
+function startOrderEdit(row) {
+  editingOrder.value = row.id
+  editedOrder.value = row.orderNumber || ''
+}
+async function saveOrder(row) {
+  busy.value = true
+  error.value = ''
+  try {
+    await api.patch(`/admin/reservations/${row.id}/order-number`, { order_number: editedOrder.value.trim() || null })
+    editingOrder.value = null
+    notice.value = 'Order number saved.'
+    await load()
+  } catch (e) { error.value = e.message }
+  finally { busy.value = false }
 }
 
 /** Move a booking to another ticket type of this event. */
@@ -375,7 +394,17 @@ function csv() {
                   :title="r.note || ''"
                 >{{ emailState(r).text }}</div>
               </td>
-              <td class="mono">{{ r.orderNumber || '—' }}</td>
+              <td class="mono">
+                <template v-if="!r.waitlist && editingOrder === r.id">
+                  <input v-model="editedOrder" maxlength="128" aria-label="Order number" class="order-edit" :disabled="busy" @keyup.enter="saveOrder(r)" @keyup.esc="editingOrder = null" />
+                  <Button v-if="can('events.bookings.order_number.edit')" size="sm" :disabled="busy" @click="saveOrder(r)">Save</Button>
+                  <Button v-if="can('events.bookings.order_number.edit')" size="sm" variant="ghost" @click="editingOrder = null">Cancel</Button>
+                </template>
+                <template v-else>
+                  {{ r.orderNumber || '—' }}
+                  <Button v-if="!r.waitlist && can('events.bookings.order_number.edit')" size="sm" variant="ghost" :disabled="busy" @click="startOrderEdit(r)">Edit</Button>
+                </template>
+              </td>
               <td class="muted">{{ when(r.bookedAt) }}</td>
               <td class="muted">{{ r.status === 'held' ? when(r.holdUntil) : '—' }}</td>
               <td class="actions">
@@ -472,6 +501,7 @@ function csv() {
 .muted { color: var(--text-muted); font-size: var(--text-xs); }
 .mono { font-family: var(--font-mono); font-size: var(--text-xs); }
 .actions { display: flex; gap: var(--space-2); flex-wrap: wrap; justify-content: flex-end; }
+.order-edit { max-width: 125px; padding: 4px; border: 1px solid var(--border-default); }
 .ticket-switch {
   font: var(--type-2xs);
   padding: 4px 6px;

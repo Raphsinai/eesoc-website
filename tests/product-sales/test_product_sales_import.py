@@ -15,6 +15,7 @@ spec = importlib.util.spec_from_file_location('sale_matcher', ROOT / 'backend' /
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 choose_reservation = module.choose_reservation
+sale_source_key = module.sale_source_key
 
 
 class SaleRow:
@@ -22,6 +23,9 @@ class SaleRow:
         self.cid = kwargs.get('cid')
         self.buyer_name = kwargs.get('buyer_name')
         self.quantity = kwargs.get('quantity', 1)
+        self.order_number = kwargs.get('order_number')
+        self.product_line_id = kwargs.get('product_line_id')
+        self.source_row = kwargs.get('source_row', 2)
 
 
 def test_filename_resolves_unambiguous_product_identifier():
@@ -126,3 +130,37 @@ def test_approval_and_add_ticket_endpoints_are_separately_permissioned():
     assert "if reservation_id not in" in db_route
     assert "FOR UPDATE" in db_route
     assert "status='ticket_added'" in (ROOT / 'backend' / 'database' / 'routes' / 'events.py').read_text()
+
+
+def test_missing_cid_never_matches_explicit_zero_cid():
+    # Before this regression fix, normalized_cid(None) and normalized_cid('0000')
+    # both returned '0', silently confirming a reservation with no known CID.
+    rows = [held(21, 'Other Buyer', cid=None)]
+    status, match, _, _ = choose_reservation(sale(cid='0000', buyer_name='Other Buyer'), rows, set())
+    assert status == 'unreserved' and match is None
+    status, match, _, _ = choose_reservation(sale(cid='0'), [held(22, 'Zero', cid='0000')], set())
+    assert status == 'confirmed' and match['id'] == 22
+
+
+def test_alphanumeric_cid_is_not_loosely_stripped():
+    rows = [held(21, 'Other Buyer', cid='ABC0123')]
+    status, match, _, _ = choose_reservation(sale(cid='000ABC0123'), rows, set())
+    assert status == 'unreserved' and match is None
+
+
+def test_union_order_duplicate_keys_are_scoped_to_ticket_type_and_line():
+    first = sale(order_number='ORD-1234', product_line_id=77)
+    second = sale(order_number='ord-1234 ', product_line_id=77)
+    assert sale_source_key(100, 10, first, 'a' * 64) == sale_source_key(100, 10, second, 'b' * 64)
+    assert sale_source_key(100, 10, first, 'a' * 64) != sale_source_key(100, 11, first, 'a' * 64)
+    assert sale_source_key(100, 10, first, 'a' * 64) != sale_source_key(100, 10,
+        sale(order_number='ORD-1234', product_line_id=78), 'a' * 64)
+
+
+def test_import_marks_matching_pending_order_verification_as_matched():
+    source = (ROOT / 'backend' / 'database' / 'routes' / 'product_sales.py').read_text()
+    assert "UPDATE public.reservation_order_verification" in source
+    assert "AND status='pending'" in source
+    assert "status='matched'" in source
+    assert source.count('await _record_verified_import_order(') == 2
+    assert 'confirmed.ticket_type_id=$3' in source

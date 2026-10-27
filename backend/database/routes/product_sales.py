@@ -5,14 +5,13 @@ again is idempotent. No fuzzy matches are ever approved automatically.
 """
 from __future__ import annotations
 
-from hashlib import sha256
 import json
 
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
 
 from postgres import get_pool
-from sale_matching import choose_reservation
+from sale_matching import choose_reservation, sale_source_key
 
 router = APIRouter(prefix='/product-sales')
 
@@ -83,6 +82,29 @@ async def _existing(conn, ticket_type_id: int) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+async def _record_verified_import_order(conn, reservation_id: int, order_number: str | None,
+                                        actor_id: int) -> None:
+    """An accepted Union sale is valid evidence for a pending committee claim.
+
+    The daily Union sync normally settles these claims. If the committee
+    imports the actual sales export first, mark a matching claim as verified
+    now instead of later rejecting an already-confirmed booking.
+    """
+    if not order_number:
+        return
+    matched = await conn.fetchval("""UPDATE public.reservation_order_verification
+        SET status='matched', checked_at=NOW()
+        WHERE reservation_id=$1 AND status='pending'
+          AND upper(btrim(order_number))=upper(btrim($2::text))
+        RETURNING reservation_id""", reservation_id, order_number)
+    if matched:
+        await conn.execute("""INSERT INTO public.action_audit
+            (actor_user_id, action, entity_type, entity_id, after_data)
+            VALUES ($1, 'reservations.order.matched', 'reservation', $2,
+                jsonb_build_object('order_number',$3::text,'source','committee_sale_import'))""",
+            actor_id, reservation_id, order_number)
+
+
 @router.post('/imports')
 async def create_import(request: ImportRequest) -> dict:
     pool = await get_pool()
@@ -114,9 +136,8 @@ async def create_import(request: ImportRequest) -> dict:
                     request.product_id, target['event_id'], request.ticket_type_id, sale.product_line_id)
                 if not allowed:
                     raise HTTPException(400, f'Row {sale.source_row}: product line not linked to selected ticket')
-            key_source = (f"{request.product_id}:{sale.product_line_id or 0}:{sale.order_number.casefold().strip()}"
-                          if sale.order_number else f"{request.file_sha256}:{sale.source_row}")
-            key = sha256(key_source.encode()).hexdigest()
+            key = sale_source_key(request.product_id, request.ticket_type_id,
+                                  sale, request.file_sha256)
             duplicate = await conn.fetchval("""SELECT EXISTS(
                 SELECT 1 FROM public.product_sales_import_rows
                  WHERE source_key=$1 AND status IN ('confirmed','review','unreserved','ticket_added'))""", key)
@@ -124,9 +145,10 @@ async def create_import(request: ImportRequest) -> dict:
             if sale.order_number and not duplicate:
                 duplicate = await conn.fetchval("""SELECT EXISTS(
                     SELECT 1 FROM public.reservations confirmed
-                    WHERE confirmed.event_id=$2 AND confirmed.status='confirmed'
+                    WHERE confirmed.event_id=$2 AND confirmed.ticket_type_id=$3
+                      AND confirmed.status='confirmed'
                       AND upper(confirmed.order_number)=upper($1))""",
-                    sale.order_number, target['event_id'])
+                    sale.order_number, target['event_id'], request.ticket_type_id)
             if duplicate:
                 status, suggestion, suggestions, reason = 'duplicate', None, [], 'previously_imported_sale'
             else:
@@ -140,6 +162,8 @@ async def create_import(request: ImportRequest) -> dict:
                     status, reason = 'review', 'concurrent_confirmation'
                 else:
                     already_used.add(linked_id)
+                    await _record_verified_import_order(conn, linked_id, sale.order_number,
+                                                        request.uploaded_by)
             await conn.execute("""INSERT INTO public.product_sales_import_rows
                 (import_id, source_row, source_key, cid, buyer_name, email,
                  order_number, quantity, product_line_id, ticket_type_id,
@@ -241,6 +265,7 @@ async def approve_row(row_id: int, reservation_id: int = Body(embed=True), actor
         await conn.execute("""UPDATE public.product_sales_import_rows SET status='confirmed',
             reservation_id=$2,reviewed_by=$3,reviewed_at=NOW(),matched_on='committee_approved'
             WHERE id=$1""", row_id, reservation_id, actor_id)
+        await _record_verified_import_order(conn, reservation_id, row['order_number'], actor_id)
         await conn.execute("""INSERT INTO public.action_audit(actor_user_id,action,entity_type,entity_id,after_data)
             VALUES ($1,'reservations.sale_import.approve','reservation',$2,
                     jsonb_build_object('import_row_id',$3::bigint))""", actor_id, reservation_id, row_id)

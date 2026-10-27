@@ -5,6 +5,7 @@ Intentionally pure so matching behaviour can be tested without a running DB.
 import re
 import unicodedata
 from difflib import SequenceMatcher
+from hashlib import sha256
 
 def normalized_name(value: str | None) -> str:
     value = unicodedata.normalize('NFKD', value or '')
@@ -13,14 +14,30 @@ def normalized_name(value: str | None) -> str:
 
 
 def normalized_cid(value: str | None) -> str:
-    return (re.sub(r'\s+', '', value or '').casefold().lstrip('0') or '0')
+    # Missing CIDs must not become the same value as an all-zero CID. Only
+    # *numeric* CIDs drop leading zeros; alphabetic IDs are preserved verbatim.
+    raw = re.sub(r'\s+', '', value or '').casefold()
+    return (raw.lstrip('0') or '0') if raw.isdecimal() else raw
+
+
+def sale_source_key(product_id: int, ticket_type_id: int, sale, file_sha256: str) -> str:
+    # An order may contain more than one ticket type for the same Union product.
+    # Both product and ticket type must be part of the identity; otherwise the
+    # second valid line is mislabelled a duplicate of the first one.
+    if sale.order_number:
+        identity = (f'order:{product_id}:{ticket_type_id}:'
+                    f'{sale.product_line_id or 0}:{sale.order_number.strip().casefold()}')
+    else:
+        identity = f'file:{file_sha256}:{sale.source_row}'
+    return sha256(identity.encode()).hexdigest()
 
 
 def choose_reservation(sale, reservations: list[dict], already_used: set[int]) -> tuple[str, dict | None, list[dict], str]:
     # Supplying a CID disallows fallback to matching a different person's name.
     candidates = [r for r in reservations if r['id'] not in already_used]
     if sale.cid:
-        hits = [r for r in candidates if normalized_cid(r.get('cid')) == normalized_cid(sale.cid)]
+        cid = normalized_cid(sale.cid)
+        hits = [r for r in candidates if cid and normalized_cid(r.get('cid')) == cid]
         matched_on = 'cid'
     else:
         exact = normalized_name(sale.buyer_name)

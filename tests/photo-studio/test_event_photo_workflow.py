@@ -165,14 +165,16 @@ def test_print_label_passed_to_renderer(monkeypatch):
     photo = Image.new("RGB", (1000, 800), "#647e9f")
     output = BytesIO()
     photo.save(output, "JPEG")
-    with patch.object(photo_print, "_header", wraps=photo_print._header) as spy:
+    from services import booth_template
+    with patch.object(booth_template, "_draw_text", wraps=booth_template._draw_text) as spy:
         photo_print.render([output.getvalue()], "Full Event Title",
                            "https://eesoc.com/photos/abcdef123456",
                            print_label="Short Event")
-        assert spy.call_args.args[1] == "Short Event"
+        assert spy.call_args_list[0].args[2] == "Short Event"
+        spy.reset_mock()
         photo_print.render([output.getvalue()], "Full Event Title",
                            "https://eesoc.com/photos/abcdef123456")
-        assert spy.call_args.args[1] == "Full Event Title"
+        assert spy.call_args_list[0].args[2] == "Full Event Title"
 
 
 def test_brand_pins_raster_is_not_old_mark():

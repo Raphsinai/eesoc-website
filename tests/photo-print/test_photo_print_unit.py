@@ -26,69 +26,20 @@ def image_bytes():
 
 
 @pytest.mark.parametrize("count", range(1, 5))
-@pytest.mark.parametrize("orientation,size", [
-    ("portrait", (1200, 1800)),
-    ("landscape", (1800, 1200)),
-])
-def test_print_dimensions_qr_and_safe_margins(image_bytes, count, orientation, size):
-    url = "https://eesoc.raphsinai.dev/photos/Tk6uLhQRCourse2026PrintTesting"
+@pytest.mark.parametrize("orientation", ("portrait", "landscape"))
+def test_print_dimensions_qr_and_safe_margins(image_bytes, count, orientation):
+    from services import booth_template
+    url = "https://eesoc.com/api/p/QrcodeTest123"
     result = photo_print.render([image_bytes] * count, "EESoc event print", url, orientation)
     with Image.open(BytesIO(result)) as image:
         assert image.format == "PNG"
-        assert image.size == size
-        # The new design uses EESoc navy with gold lines: white only inside the QR.
-        for x,y in ((0, 0), (size[0]-1, size[1]-1)):
-            r,g,b = image.getpixel((x,y))
-            assert b > g > r and b < 150
+        # The handoff specifies portrait postcards for every layout.
+        assert image.size == (1181, 1747)
+        assert image.getpixel((3,200)) == (11,13,18)
+        assert image.getpixel((23,12)) == (231,181,112)
+        assert image.getpixel((970,1495)) == (255,255,255)
         assert image.info["dpi"][0] == pytest.approx(300, abs=1)
-        assert image.getpixel((100, 450)) != (255, 255, 255)
-
-
-@pytest.mark.parametrize("orientation,size,row_center", [
-    ("portrait", (1200, 1800), 147),
-    ("landscape", (1800, 1200), 125),
-])
-def test_print_has_aligned_header_and_discreet_footer(
-    monkeypatch, image_bytes, orientation, size, row_center,
-):
-    drawn_text = []
-    qr_positions = []
-    original_text = ImageDraw.ImageDraw.text
-    original_qr = photo_print._draw_qr
-
-    def record_text(draw, xy, text, *args, **kwargs):
-        drawn_text.append((text, xy, kwargs.get("font")))
-        return original_text(draw, xy, text, *args, **kwargs)
-
-    def record_qr(page, url, x, y, qr_size):
-        qr_positions.append((x, y, qr_size))
-        return original_qr(page, url, x, y, qr_size)
-
-    monkeypatch.setattr(ImageDraw.ImageDraw, "text", record_text)
-    monkeypatch.setattr(photo_print, "_draw_qr", record_qr)
-    photo_print.render([image_bytes], "Full event name", "https://eesoc.com/photos/sample",
-                       orientation, print_label="Short event")
-
-    assert len(qr_positions) == 1
-    qr_x, qr_y, qr_size = qr_positions[0]
-    assert photo_print.QR_FRAME_PADDING == 5
-    qr_panel = qr_size + 2 * photo_print.QR_FRAME_PADDING
-    assert qr_size <= 145
-    assert qr_x + qr_panel == size[0] - 67
-    assert qr_y + qr_panel < size[1] - 33
-
-    title, = [entry for entry in drawn_text if entry[0] == "Short event"]
-    caption, = [entry for entry in drawn_text if entry[0] == "your photos, online"]
-    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
-
-    def text_center(entry):
-        content, xy, font = entry
-        bbox = probe.textbbox((0, 0), content, font=font)
-        return xy[1] + (bbox[1] + bbox[3]) / 2
-
-    assert abs(text_center(title) - row_center) <= 1
-    assert abs(text_center(caption) - (qr_y + qr_panel / 2)) <= 1
-    assert all(entry[0] != "YOUR PHOTOS, TO KEEP." for entry in drawn_text)
+        assert len(booth_template.spec()['layouts'][str(count)]['windows']) == count
 
 
 @pytest.mark.parametrize("emoji", ["🎃", "❤️", "🇬🇧", "👩🏽‍🎓", "1️⃣"])
@@ -121,7 +72,7 @@ def test_event_print_preserves_emoji_in_short_label(image_bytes, orientation):
         assert image.format == "PNG"
         # The text and background remain the same; the colour glyphs add pixels
         # to the title line even after full print composition.
-        emoji_row = (0, 90, image.width, 185)
+        emoji_row = (0, 1480, image.width, 1580)
         assert ImageChops.difference(
             image.crop(emoji_row), baseline.crop(emoji_row),
         ).getbbox() is not None

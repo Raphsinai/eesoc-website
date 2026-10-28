@@ -167,6 +167,7 @@ GROUPS = {
             'photos.view': 'View photo print sets',
             'photos.upload': 'Upload photos for prints',
             'photos.create': 'Create photo print drafts',
+            'photos.framing.edit': 'Adjust crop and zoom on draft photo prints',
             'photos.publish': 'Publish photo print sets and links',
             'photos.unpublish': 'Unpublish photo print sets',
             'photos.delete': 'Delete photo print sets and images',

@@ -13,8 +13,8 @@ import zipfile
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from fastapi.responses import RedirectResponse, Response
+from pydantic import BaseModel, Field, model_validator
 
 from clients import database
 from config import settings
@@ -26,14 +26,38 @@ router = APIRouter()
 log = logging.getLogger("api.photos")
 
 
+class PhotoPlacement(BaseModel):
+    x: float = Field(default=.5, ge=0, le=1, allow_inf_nan=False)
+    y: float = Field(default=.5, ge=0, le=1, allow_inf_nan=False)
+    zoom: float = Field(default=1, ge=1, le=8, allow_inf_nan=False)
+
+
+class UpdateFraming(BaseModel):
+    placements: list[PhotoPlacement] = Field(min_length=1, max_length=4)
+
+
 class CreatePhotos(BaseModel):
     event_id: int = Field(gt=0)
     orientation: Literal["portrait", "landscape"] = "portrait"
     image_ids: list[int] = Field(min_length=1, max_length=4)
+    placements: list[PhotoPlacement] = Field(default_factory=list, max_length=4)
+
+    @model_validator(mode='after')
+    def validate_placements(self):
+        if self.placements and len(self.placements) != len(self.image_ids):
+            raise ValueError('Framing must match the number of selected photos')
+        return self
 
 
 def _page_url(row: dict) -> str:
     return f"{settings.site_origin.rstrip('/')}/photos/{row['token']}"
+
+
+def _qr_url(row: dict) -> str:
+    code = row.get('qr_code')
+    if not code:
+        return _page_url(row)
+    return f"{settings.site_origin.rstrip('/')}/api/p/{code}"
 
 
 def _present(row: dict) -> dict:
@@ -51,7 +75,11 @@ def _present(row: dict) -> dict:
         "title": row["title"],
         "printLabel": row.get("print_label") or row["title"],
         "printedAt": row.get("printed_at"),
+        "previewQrUrl": _qr_url(row),
         "orientation": row["orientation"],
+        "eventDate": row.get("event_date") or "",
+        "eventVenue": row.get("event_venue") or "",
+        "placements": row.get("placements") or [],
         "status": row["status"],
         "createdAt": row["created_at"],
         "publishedAt": row.get("published_at"),
@@ -60,6 +88,7 @@ def _present(row: dict) -> dict:
     }
     if row["status"] == "published":
         result["url"] = _page_url(row)
+        result["qrUrl"] = _qr_url(row)
         result["printUrl"] = f"/api/photos/{row['token']}/print.png"
         result["downloadUrl"] = f"/api/photos/{row['token']}/download.zip"
     return result
@@ -77,7 +106,9 @@ async def _print(row: dict) -> Response:
     photos = await asyncio.gather(*(storage.load(i["stored_name"]) for i in images))
     image = await asyncio.to_thread(
         photo_print.render, photos, row["title"], _page_url(row), row["orientation"],
-        row.get("print_label"),
+        row.get("print_label"), row.get("placements") or [],
+        row.get("event_date") or "", row.get("event_venue") or "",
+        _qr_url(row),
     )
     return Response(
         image, media_type="image/png",
@@ -86,6 +117,16 @@ async def _print(row: dict) -> Response:
             "Content-Disposition": 'inline; filename="eesoc-photo-print.png"',
         },
     )
+
+
+# Short, unguessable redirects make QR modules large enough for a 13.8 mm tile.
+@router.get("/p/{code}")
+async def short_photo_link(code: str) -> RedirectResponse:
+    row = await database.get(f"/photo-sets/by-code/{code}")
+    if not row or row["status"] != "published":
+        raise HTTPException(404, "Photo page not found")
+    return RedirectResponse(_page_url(row), status_code=302,
+                            headers={"Cache-Control": "no-store"})
 
 
 # Public, unlisted, token-only. Neither a sign-in nor a committee grant is needed.
@@ -143,7 +184,8 @@ async def photo_event_choices(session: AuthSession = Depends(require_session)) -
         {
             "id": event["id"], "title": event["title"],
             "photoShortName": event.get("photo_short_name"),
-            "startsAt": event["starts_at"], "published": event["published"],
+            "startsAt": event["starts_at"], "venue": event.get("venue") or "",
+            "published": event["published"],
             "canEditShortName": session.can("events.photo_short_name.edit")
                and (session.can("events.scope.all")
                     or (session.can("events.scope.industry") and event.get("industry"))),
@@ -245,9 +287,24 @@ async def create_set(
         {
             **payload.model_dump(),
             "token": secrets.token_urlsafe(24),
+            "qr_code": secrets.token_urlsafe(9),
             "created_by": session.user.id,
         },
     )
+    return _present(row)
+
+
+@router.patch(
+    "/admin/photos/sets/{set_id}/framing",
+    dependencies=[Depends(require_action("photos.framing.edit")), Depends(verify_csrf)],
+)
+async def edit_framing(set_id: int, payload: UpdateFraming) -> dict:
+    """Editable only on drafts, so published QR prints do not silently change."""
+    row = await database.patch(
+        f"/photo-sets/{set_id}/framing", payload.model_dump(),
+    )
+    if not row:
+        raise HTTPException(404, "Photo set not found")
     return _present(row)
 
 

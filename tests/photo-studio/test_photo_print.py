@@ -33,7 +33,7 @@ def jpeg_images():
 
 
 @pytest.mark.parametrize("orientation,dimensions", [
-    ("portrait", (1200, 1800)), ("landscape", (1800, 1200)),
+    ("portrait", (1181, 1747)), ("landscape", (1181, 1747)),
 ])
 @pytest.mark.parametrize("count", [1, 2, 3, 4])
 def test_print_is_exact_size_and_dpi(jpeg_images, orientation, dimensions, count):

@@ -36,7 +36,7 @@ PUBLIC_AND_SELF_SERVICE = {
         'add_passkey', 'remove_passkey', 'inspect_link', 'link_options', 'link_register',
     },
     'checkin.py': {'ticket', 'qr_png'},
-    'photos.py': {'public_photo_set', 'public_print', 'download_photos'},
+    'photos.py': {'public_photo_set', 'public_print', 'download_photos', 'short_photo_link'},
 }
 AUDITED_ROUTES = ('admin.py', 'resources.py', 'committee.py', 'approvals.py',
                   'whatsapp.py', 'opportunities.py', 'passkeys.py', 'checkin.py', 'photos.py')

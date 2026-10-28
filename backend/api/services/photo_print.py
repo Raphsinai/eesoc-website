@@ -246,23 +246,10 @@ def _footer(page: Image.Image, url: str, footer_top: int, pad: int,
 def render(
     photos: list[bytes], title: str, url: str,
     orientation: str = "portrait", print_label: str | None = None,
+    placements: list[dict] | None = None, event_date: str = "",
+    event_venue: str = "", qr_url: str | None = None,
 ) -> bytes:
-    """Compose the event title (or its configured short label) and QR into a print."""
-    if not 1 <= len(photos) <= 4:
-        raise ValueError("A print needs 1–4 photos")
-    if orientation not in ("portrait", "landscape"):
-        raise ValueError("Unknown print orientation")
-    w, h = ((1200, 1800) if orientation == "portrait" else (1800, 1200))
-    page = _background(w, h)
-    pad = 67
-    header = _header(page, print_label or title, orientation, pad)
-    footer = 220 if orientation == "portrait" else 205
-    photo_y = header + 5
-    photo_bottom = h-footer
-    for data, rect in zip(photos, layout(
-        len(photos), (pad, photo_y, w-2*pad, photo_bottom-photo_y))):
-        _paste_photo(page, data, rect)
-    _footer(page, url, photo_bottom, pad, orientation)
-    output = BytesIO()
-    page.save(output, format="PNG", dpi=(300, 300), optimize=True)
-    return output.getvalue()
+    """Render the handoff's 300 DPI portrait postcard using its exact templates."""
+    from services.booth_template import render as render_booth
+    return render_booth(photos, title, url, orientation, print_label,
+                        placements, event_date, event_venue, qr_url)

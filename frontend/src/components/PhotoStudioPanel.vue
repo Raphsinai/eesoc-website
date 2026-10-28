@@ -6,6 +6,7 @@ import api from '@/api'
 import { can } from '@/stores/session'
 import Button from '@/components/ds/Button.vue'
 import Card from '@/components/ds/Card.vue'
+import BoothPrintEditor from '@/components/BoothPrintEditor.vue'
 
 const selections = ref([])
 const events = ref([])
@@ -19,7 +20,35 @@ watch(selectedEventId, () => {
   shortName.value = selectedEvent.value?.photoShortName || ''
 })
 
-const orientation = ref('portrait')
+const framing = ref([])
+const framingChanged = computed(() => Boolean(active.value && JSON.stringify(framing.value) !==
+  JSON.stringify(active.value.images.map((_,i) => ({x:active.value.placements?.[i]?.x ?? .5,
+    y:active.value.placements?.[i]?.y ?? .5, zoom:active.value.placements?.[i]?.zoom ?? 1})))))
+const activePhotos = computed(() => active.value?.images?.map((image,i) => ({
+  url:image.url, ...framing.value[i],
+})) || [])
+function eventDate(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  const parts = new Intl.DateTimeFormat('en-GB', {timeZone:'Europe/London', weekday:'short', day:'numeric', month:'short', year:'numeric'}).formatToParts(date)
+  const find = type => parts.find(part => part.type===type)?.value || ''
+  return `${find('weekday')} ${find('day')} ${find('month')} ${find('year')}`
+}
+function updateSelectionFraming(next) {
+  if (busy.value) return
+  selections.value = selections.value.map((entry,i) => ({...entry,...next[i]}))
+}
+function updateDraftFraming(next) {framing.value = next}
+async function saveFraming() {
+  if (!active.value || active.value.status !== 'draft' || !can('photos.framing.edit') || !framingChanged.value || busy.value) return
+  busy.value = true;error.value = '';notice.value = ''
+  try {
+    active.value = await api.patch(`/admin/photos/sets/${active.value.id}/framing`,{placements:framing.value})
+    framing.value = active.value.images.map((_,i)=>({x:active.value.placements?.[i]?.x??.5, y:active.value.placements?.[i]?.y??.5, zoom:active.value.placements?.[i]?.zoom??1}))
+    await Promise.all([makePreview(),loadSets()])
+    notice.value = 'Photo crop and zoom saved to this draft.'
+  } catch(e) {error.value = e.message} finally {busy.value = false}
+}
 const busy = ref(false)
 const error = ref('')
 const notice = ref('')
@@ -61,7 +90,7 @@ function pick(event) {
       error.value = 'Select JPEG, PNG, WebP or iPhone HEIC photos.'
       continue
     }
-    selections.value.push({ file, url: URL.createObjectURL(file) })
+    selections.value.push({ file, url: URL.createObjectURL(file), x:.5, y:.5, zoom:1 })
   }
   if (files.length > 4 || selections.value.length === 4 && files.length > 4) {
     notice.value = 'Only the first four photos are selected.'
@@ -181,6 +210,8 @@ onMounted(() => {
 
 async function openSet(set) {
   active.value = set
+  framing.value = set.images.map((_,i)=>({x:set.placements?.[i]?.x??.5,
+    y:set.placements?.[i]?.y??.5,zoom:set.placements?.[i]?.zoom??1}))
   resetPrintPreview()
   notice.value = ''
   await makePreview()
@@ -229,8 +260,9 @@ async function createDraft() {
     progress.value = 'Building your photo print...'
     const set = await api.post('/admin/photos/sets', {
       event_id: selectedEventId.value,
-      orientation: orientation.value,
+      orientation: 'portrait',
       image_ids: ids,
+      placements: selections.value.map(({x,y,zoom})=>({x,y,zoom})),
     })
     created = true
     cleanupSelections()
@@ -266,6 +298,8 @@ async function mutate(set, operation) {
       const updated = await api.post(`/admin/photos/sets/${set.id}/${operation}`)
       if (active.value?.id === set.id) {
         active.value = updated
+        framing.value = updated.images.map((_,i)=>({x:updated.placements?.[i]?.x??.5,
+          y:updated.placements?.[i]?.y??.5,zoom:updated.placements?.[i]?.zoom??1}))
         await makePreview()
       }
     }
@@ -366,7 +400,7 @@ async function shareLink() {
                   @click="saveShortName">Save photo short name</Button>
         </div>
         <div class="photo-studio__heading">
-          <strong>2. Select 1–4 photos</strong><small>JPEG from Imaging Edge Mobile is ideal; photos from your iPhone work too.</small></div>
+          <strong>2. Select 1–4 photos</strong><small>The layout follows the number of photos. JPEG from Imaging Edge Mobile is ideal; photos from your iPhone work too.</small></div>
         <label class="photo-studio__picker">
           <span>+ Add photos ({{ selections.length }}/4)</span>
           <input type="file" multiple accept="image/*" :disabled="busy || selections.length >= 4" @change="pick">
@@ -382,16 +416,16 @@ async function shareLink() {
             </div>
           </div>
         </div>
-        <div class="photo-studio__controls">
-          <label>Print orientation
-            <select v-model="orientation">
-              <option value="portrait">Portrait · 4×6</option>
-              <option value="landscape">Landscape · 6×4</option>
-            </select>
-          </label>
+        <div v-if="selections.length && selectedEvent" class="photo-studio__crop-section">
+          <strong>3. Crop and resize your print</strong>
+          <BoothPrintEditor :photos="selections"
+                            :event-name="selectedEvent.photoShortName || selectedEvent.title"
+                            :event-date="eventDate(selectedEvent.startsAt)" :event-venue="selectedEvent.venue || ''"
+                            qr-url="https://eesoc.com/api/p/preview" :disabled="busy"
+                            @change="updateSelectionFraming" />
         </div>
-        <p class="muted photo-studio__hint">The digital photo set keeps all 1–4 photos separately, at high resolution. The print is a branded collage; photos are centre-cropped to fit. The QR link becomes available after publishing.</p>
-        <Button :disabled="busy || !selections.length || !selectedEvent" @click="createDraft">{{ busy ? (progress || 'Working…') : '3. Create event photo draft' }}</Button>
+        <p class="muted photo-studio__hint">The layout is the supplied 100 × 148 mm portrait template for the SELPHY CP1500. The digital gallery preserves each original full-resolution photo. The print QR becomes active when published.</p>
+        <Button :disabled="busy || !selections.length || !selectedEvent" @click="createDraft">{{ busy ? (progress || 'Working…') : '4. Create photo draft' }}</Button>
       </div>
     </Card>
     <p v-else class="muted">Your committee permissions do not include creating photo prints. Ask an administrator to grant <code>photos.view</code>, <code>photos.upload</code> and <code>photos.create</code>.</p>
@@ -402,10 +436,19 @@ async function shareLink() {
           <strong>Review &amp; print</strong>
           <small>{{ active.printLabel }} · {{ active.count }} photo{{ active.count === 1 ? '' : 's' }} · {{ active.status }}</small>
         </div>
-        <img v-if="previewUrl" :src="previewUrl" alt="EESoc collage preview with QR code" class="photo-studio__print-preview">
+        <div v-if="active.status === 'draft' && can('photos.framing.edit') && activePhotos.length" class="photo-studio__crop-section">
+          <strong>Adjust this draft's crops</strong>
+          <BoothPrintEditor :photos="activePhotos" :event-name="active.printLabel"
+                            :event-date="active.eventDate" :event-venue="active.eventVenue"
+                            :qr-url="active.previewQrUrl || ''" :disabled="busy"
+                            @change="updateDraftFraming" />
+          <Button :disabled="busy || !framingChanged" variant="secondary" @click="saveFraming">Save crop and zoom</Button>
+          <small class="muted">Save your changes before publishing. Published prints cannot be silently edited.</small>
+        </div>
+        <img v-if="previewUrl" :src="previewUrl" alt="Print-ready EESoc collage with QR code" class="photo-studio__print-preview">
         <p v-else class="muted">Preparing print preview…</p>
         <div class="photo-studio__actions">
-          <Button v-if="active.status === 'draft' && can('photos.publish')" :disabled="busy" @click="mutate(active, 'publish')">3. Publish &amp; enable QR</Button>
+          <Button v-if="active.status === 'draft' && !framingChanged && can('photos.publish')" :disabled="busy" @click="mutate(active, 'publish')">Publish &amp; enable QR</Button>
           <Button v-if="active.status === 'published' && previewUrl && can('photos.print')" :disabled="busy" @click="sharePrint">Share / AirPrint</Button>
           <Button v-if="active.status === 'published'" variant="secondary" @click="shareLink">Copy QR link</Button>
           <a v-if="active.status === 'published' && previewUrl && can('photos.print')" class="photo-studio__link" :href="printUrl" target="_blank" rel="noopener" @click="openFullSizePrint">Open full-size print</a>
@@ -413,7 +456,7 @@ async function shareLink() {
           <Button v-if="active.status === 'published' && can('photos.unpublish')" variant="ghost" :disabled="busy" @click="mutate(active, 'unpublish')">Unpublish</Button>
           <Button v-if="can('photos.delete')" variant="danger" :disabled="busy" @click="mutate(active, 'delete')">Delete set</Button>
         </div>
-        <p class="muted photo-studio__hint">On iPhone, tap <b>Share / AirPrint</b> then <b>Print</b>. Choose your SELPHY CP1500, 4×6 paper and borderless printing. Confirm the QR scans before giving the print to a guest.</p>
+        <p class="muted photo-studio__hint">Every print uses the supplied portrait-only EESoc template. On iPhone, tap <b>Share / AirPrint</b> then <b>Print</b>. Choose your SELPHY CP1500, 4×6 paper and borderless printing. Confirm the QR scans before giving the print to a guest.</p>
         <p v-if="active.status === 'published'" class="photo-studio__privacy">Anyone with the printed QR or this link can view and download this set. Only publish photos you're allowed to share.</p>
       </div>
     </Card>
@@ -464,6 +507,7 @@ async function shareLink() {
 }
 .photo-studio__short-name { display: grid; justify-items: start; gap: var(--space-2); }
 .photo-studio__short-name label { width: 100%; }
+.photo-studio__crop-section { display:grid; justify-items:stretch; gap:var(--space-3); }
 .photo-studio__controls { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,220px),1fr)); gap: var(--space-3); }
 .photo-studio__controls label { display: grid; gap: var(--space-2); font-size: var(--text-sm); font-weight: 700; }
 .photo-studio__controls input, .photo-studio__controls select { padding: 12px; min-width: 0; width: 100%; background: var(--surface-page); border: 1px solid var(--border-default); border-radius: var(--radius-sm); color: var(--text-body); font-size: 16px; }

@@ -31,22 +31,22 @@ components:
 images:
 - name: ghcr.io/OWNER/eesoc-api
   newName: ghcr.io/raphsinai/eesoc-api
-  newTag: f7795dd0e472fd69884883287969f50b9dc928c9
+  newTag: 6ba0145aeeda68b1032f74c4947d7d06e0076691
 - name: ghcr.io/OWNER/eesoc-database
   newName: ghcr.io/raphsinai/eesoc-database
-  newTag: f7795dd0e472fd69884883287969f50b9dc928c9
+  newTag: 6ba0145aeeda68b1032f74c4947d7d06e0076691
 - name: ghcr.io/OWNER/eesoc-frontend
   newName: ghcr.io/raphsinai/eesoc-frontend
-  newTag: f7795dd0e472fd69884883287969f50b9dc928c9
+  newTag: 6ba0145aeeda68b1032f74c4947d7d06e0076691
 - name: ghcr.io/OWNER/eesoc-garage-init
   newName: ghcr.io/raphsinai/eesoc-garage-init
-  newTag: f7795dd0e472fd69884883287969f50b9dc928c9
+  newTag: 6ba0145aeeda68b1032f74c4947d7d06e0076691
 - name: ghcr.io/OWNER/eesoc-union
   newName: ghcr.io/raphsinai/eesoc-union
-  newTag: f7795dd0e472fd69884883287969f50b9dc928c9
+  newTag: 6ba0145aeeda68b1032f74c4947d7d06e0076691
 - name: ghcr.io/OWNER/eesoc-whatsapp
   newName: ghcr.io/raphsinai/eesoc-whatsapp
-  newTag: f7795dd0e472fd69884883287969f50b9dc928c9
+  newTag: 6ba0145aeeda68b1032f74c4947d7d06e0076691
 
 # Staging runs on a small VM on the homelab (deploy/homelab), sized to leave the
 # other VMs there alone, so it runs one of everything.

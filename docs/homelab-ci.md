@@ -10,12 +10,14 @@ as a systemd service on the VM and builds/tests with its own Docker daemon.
 
 * Pushes to `main` run `.github/workflows/deploy.yml`: tests and image builds
   only. They do **not** move either staging or production.
-* To review a feature on staging, open GitHub Actions > **stage one EESoc
-  feature** > **Run workflow** and provide the complete 40-character SHA of
-  the **next** feature commit. The workflow checks the sequence, runs focused
-  regressions, builds all six image tags from that historical commit, and
-  commits only the selected image tags to the staging overlay with `[skip ci]`.
-  ArgoCD reconciles that staging overlay. It refuses to skip a feature.
+* To deploy staging, open GitHub Actions > **stage EESoc features** > **Run
+  workflow** and provide the full 40-character SHA. The default
+  `next_feature` mode requires the next unstaged feature commit. With explicit
+  approval for a combined staging rollout, select `all_pending` and provide
+  the full SHA of the **current tip of `main`**; this skips all intermediate
+  staging pins. Both modes run focused tests, build all six service images,
+  and atomically commit their tags to the staging overlay with `[skip ci]`.
+  ArgoCD then reconciles staging. Neither mode changes production.
 * Review the feature at `https://eesoc.raphsinai.dev` before staging the next.
 * The `promote.yml` workflow remains **manual**. Do not run it without
   explicit production approval. It promotes staging's pinned artifacts.

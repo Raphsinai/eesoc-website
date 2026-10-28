@@ -27,7 +27,7 @@ visitor ─https─> Cloudflare ─tunnel─> cloudflared (in the cluster, dials
 | Public access | Cloudflare Tunnel `eesoc-staging` (`ee536f2b-…`), connector `rke2/manifests/cloudflared.yaml` |
 | SSH | `ssh eesoc-staging` (user `raph`; jumps through pve2 over the tailnet) |
 
-The deploy flow uses a separate manual **stage one EESoc feature** GitHub
+The deploy flow uses a separate manual **stage EESoc features** GitHub
 Actions workflow. Pushes to `main` test and publish images but do not update
 staging. The feature workflow builds the selected next commit and pins its
 images in `deploy/k8s/overlays/staging`; ArgoCD in this VM picks the pin up

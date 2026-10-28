@@ -1,17 +1,24 @@
-# Stage exactly the next not-yet-reviewed feature commit from main.
-# This is deliberately separate from CI: merging several features into main
-# must NOT deploy them together before the committee has reviewed each one.
-name: stage one EESoc feature
+# Manually stage one feature at a time by default, or stage all pending main
+# changes in one explicit bulk release. Neither path modifies production.
+name: stage EESoc features
 
 on:
   workflow_dispatch:
     inputs:
       target_sha:
-        description: Full (40-character) commit SHA of the next feature to stage
+        description: Full (40-character) commit SHA to stage
         required: true
         type: string
+      release_mode:
+        description: Stage just the next feature or the entire pending main branch
+        required: true
+        default: next_feature
+        type: choice
+        options:
+          - next_feature
+          - all_pending
 
-run-name: "Stage feature ${{ inputs.target_sha }}"
+run-name: "Stage ${{ inputs.release_mode }} ${{ inputs.target_sha }}"
 
 concurrency:
   group: eesoc-staging-feature
@@ -27,13 +34,16 @@ jobs:
       sha: ${{ steps.target.outputs.sha }}
       previous_sha: ${{ steps.target.outputs.previous_sha }}
     steps:
+      - name: Repair persistent runner workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Require exactly the next unreleased feature commit
+      - name: Validate selected staging target and release mode
         id: target
         env:
           REQUESTED_SHA: ${{ inputs.target_sha }}
+          RELEASE_MODE: ${{ inputs.release_mode }}
         run: |
           set -euo pipefail
           [[ "$REQUESTED_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || { echo '::error::Supply a full 40-character commit SHA'; exit 1; }
@@ -49,18 +59,32 @@ jobs:
             ':(exclude)deploy/README.md' \
             ':(exclude)deploy/homelab/README.md' \
             ':(exclude)deploy/k8s/overlays/staging/kustomization.yaml' | head -n1)
-          if [ -z "$next" ] || [ "$target" != "$next" ]; then
-            echo "::error::Next stageable feature is ${next:-none}, not $target"
+          if [ "$RELEASE_MODE" = all_pending ]; then
+            latest=$(git rev-parse origin/main)
+            if [ "$target" != "$latest" ]; then
+              echo "::error::Bulk staging requires the exact current main HEAD ($latest)"
+              exit 1
+            fi
+            echo "Bulk staging authorised: from $pinned to $target"
+          elif [ "$RELEASE_MODE" = next_feature ]; then
+            if [ -z "$next" ] || [ "$target" != "$next" ]; then
+              echo "::error::Next stageable feature is ${next:-none}, not $target"
+              exit 1
+            fi
+          else
+            echo "::error::Unrecognised release mode"
             exit 1
           fi
           echo "sha=$target" >> "$GITHUB_OUTPUT"
           echo "previous_sha=$pinned" >> "$GITHUB_OUTPUT"
-          echo "Verified next feature: $(git show -s --format='%h %s' "$target")"
+          echo "Verified staging target: $(git show -s --format='%h %s' "$target")"
 
   tests:
     needs: validate
     runs-on: [self-hosted, Linux, X64, eesoc-ci]
     steps:
+      - name: Repair persistent runner workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.validate.outputs.sha }}
@@ -92,6 +116,8 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: Repair persistent runner workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.validate.outputs.sha }}
@@ -124,6 +150,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Repair persistent runner workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -135,10 +163,11 @@ jobs:
           tar xzf kustomize.tar.gz
           sudo mv kustomize /usr/local/bin/
           rm kustomize.tar.gz
-      - name: Commit only the selected feature SHA to the staging overlay
+      - name: Commit selected release SHA to staging (never production)
         env:
           TARGET_SHA: ${{ needs.validate.outputs.sha }}
           OWNER: ${{ github.repository_owner }}
+          RELEASE_MODE: ${{ inputs.release_mode }}
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
@@ -156,7 +185,15 @@ jobs:
               ':(exclude)deploy/README.md' \
               ':(exclude)deploy/homelab/README.md' \
               ':(exclude)deploy/k8s/overlays/staging/kustomization.yaml' | head -n1)
-            [ "$next" = "$TARGET_SHA" ] || { echo "::error::Staging advanced; next feature is $next"; exit 1; }
+            if [ "$RELEASE_MODE" = all_pending ]; then
+              git merge-base --is-ancestor "$pinned" "$TARGET_SHA" || { echo '::error::Staging is no longer an ancestor of target'; exit 1; }
+              latest=$(git rev-parse origin/main)
+              [ "$latest" = "$TARGET_SHA" ] || { echo "::error::main moved while building ($latest); rerun against latest main"; exit 1; }
+            elif [ "$RELEASE_MODE" = next_feature ]; then
+              [ "$next" = "$TARGET_SHA" ] || { echo "::error::Staging advanced; next feature is $next"; exit 1; }
+            else
+              echo '::error::Invalid staging release mode'; exit 1
+            fi
             (
               cd "$overlay"
               for service in api database union frontend garage-init whatsapp; do
@@ -166,7 +203,7 @@ jobs:
             )
             kustomize build "$overlay" > /dev/null
             git add "$overlay/kustomization.yaml"
-            git commit -q -m "staging: $TARGET_SHA [skip ci]"
+            git commit -q -m "staging: $TARGET_SHA ($RELEASE_MODE) [skip ci]"
             if git push -q origin HEAD:main; then
               echo "Staging pin committed for $TARGET_SHA; ArgoCD will reconcile"
               exit 0

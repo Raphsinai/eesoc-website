@@ -10,7 +10,7 @@ Two environments, two clusters, one branch.
 | Overlay | `deploy/k8s/overlays/staging` | `deploy/k8s/overlays/production` |
 | ArgoCD app | `eesoc-website-staging`, in the staging VM's own ArgoCD | `eesoc-website` |
 | In front | Cloudflare Tunnel (`deploy/homelab/rke2/manifests/cloudflared.yaml`) | edge vhost `deploy/nginx/eesoc.com.conf` |
-| Moves when | someone runs **stage one EESoc feature** for the next approved commit | somebody runs **promote** |
+| Moves when | someone runs **stage EESoc features** (one feature or all pending) | somebody runs **promote** |
 | Database | its own, disposable | the real one |
 | Indexed by Google | no (`X-Robots-Tag` from its ingress controller) | yes |
 
@@ -20,16 +20,17 @@ staging VM is built, reached and kept out of the other VMs' way is in
 [`deploy/homelab/README.md`](homelab/README.md).
 
 GitOps: pushes to `main` run CI and publish immutable SHA image tags; they
-never move staging or production. The **stage one EESoc feature** workflow
-checks that the requested commit is the next unreleased feature, rebuilds its
-six service images and commits that SHA to the staging overlay. ArgoCD in the
+never move staging or production. The **stage EESoc features** workflow
+checks that the selected commit is the next feature (default) or the latest
+`main` HEAD (explicit `all_pending` mode), builds all six service images and
+commits that SHA to the staging overlay. ArgoCD in the
 staging VM deploys the resulting pin. **CI never runs `kubectl`**. Production
 moves only through an explicitly approved **promote to production** dispatch.
 
 ```
 push to main ─> test ─> build & publish images (no environment moves)
 
-Run `stage one EESoc feature` with next full SHA ─> build six images
+Run `stage EESoc features` with selected full SHA ─> build six images
                                                    │
                               pin overlays/staging ─> ArgoCD ─> staging
                                                                 │
@@ -43,11 +44,12 @@ Run `stage one EESoc feature` with next full SHA ─> build six images
 ## Releasing
 
 1. Merge feature code to `main` and let CI test and publish image tags.
-2. Actions -> **stage one EESoc feature** -> *Run workflow*, entering the full
-   SHA of the next feature commit (the workflow rejects skipped features).
-   It builds that commit, verifies regressions, and pins its six images in
-   `overlays/staging`. Wait for ArgoCD to report healthy and review
-   <https://eesoc.raphsinai.dev> before staging another feature.
+2. Actions -> **stage EESoc features** -> *Run workflow*. By default,
+   choose `next_feature` and enter the next feature's full SHA. When the site
+   owner authorises a combined staging rollout, choose `all_pending` and enter
+   the complete current `main` HEAD SHA. Both modes build the selected commit,
+   verify regressions, and pin its six images in `overlays/staging`.
+   Verify ArgoCD reports healthy at <https://eesoc.raphsinai.dev>.
 3. Only once all staged changes are approved, Actions -> **promote to production**
    -> *Run workflow*. Leave the SHA blank to promote the currently staged build.
 

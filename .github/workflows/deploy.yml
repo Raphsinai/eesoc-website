@@ -14,6 +14,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -31,6 +32,10 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, eesoc-ci]
     steps:
+      # Local Docker test containers write files as root in bind-mounted source.
+      # A persistent runner must reclaim those files BEFORE checkout cleans up.
+      - name: Repair persistent runner workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
 
       - name: Create the env files CI needs
@@ -117,6 +122,10 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, eesoc-ci]
     steps:
+      # Local Docker test containers write files as root in bind-mounted source.
+      # A persistent runner must reclaim those files BEFORE checkout cleans up.
+      - name: Repair persistent runner workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -239,6 +248,10 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, eesoc-ci]
     steps:
+      # Local Docker test containers write files as root in bind-mounted source.
+      # A persistent runner must reclaim those files BEFORE checkout cleans up.
+      - name: Repair persistent runner workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -314,6 +327,10 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, eesoc-ci]
     steps:
+      # Local Docker test containers write files as root in bind-mounted source.
+      # A persistent runner must reclaim those files BEFORE checkout cleans up.
+      - name: Repair persistent runner workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -408,6 +425,10 @@ jobs:
           # Runs its own tests in the build (backend/whatsapp/Dockerfile).
           - { name: whatsapp, context: backend/whatsapp }
     steps:
+      # Local Docker test containers write files as root in bind-mounted source.
+      # A persistent runner must reclaim those files BEFORE checkout cleans up.
+      - name: Repair persistent runner workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -466,6 +487,10 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, eesoc-ci]
     steps:
+      # Local Docker test containers write files as root in bind-mounted source.
+      # A persistent runner must reclaim those files BEFORE checkout cleans up.
+      - name: Repair persistent runner workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -486,6 +511,10 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, eesoc-ci]
     steps:
+      # Local Docker test containers write files as root in bind-mounted source.
+      # A persistent runner must reclaim those files BEFORE checkout cleans up.
+      - name: Repair persistent runner workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
 
       - name: Create the env files CI needs
@@ -561,6 +590,10 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, eesoc-ci]
     steps:
+      # Local Docker test containers write files as root in bind-mounted source.
+      # A persistent runner must reclaim those files BEFORE checkout cleans up.
+      - name: Repair persistent runner workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -610,6 +643,10 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, eesoc-ci]
     steps:
+      # Local Docker test containers write files as root in bind-mounted source.
+      # A persistent runner must reclaim those files BEFORE checkout cleans up.
+      - name: Repair persistent runner workspace ownership
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:

@@ -189,7 +189,7 @@ async function addTicket(row) {
             {{ activeMatchId === row.id ? 'Close search' : 'Find existing reservation to link' }}
           </Button>
         </div>
-        <div v-if="can('events.bookings.add') && detailForm[row.id]" class="sales-form">
+        <div v-if="can('events.bookings.add') && can('events.bookings.confirm') && detailForm[row.id]" class="sales-form">
           <label>Email<input v-model="detailForm[row.id].email" type="email" required placeholder="name@example.com" /></label>
           <label>First name<input v-model="detailForm[row.id].first_name" type="text" /></label>
           <label>Last name<input v-model="detailForm[row.id].last_name" type="text" /></label>
@@ -198,7 +198,7 @@ async function addTicket(row) {
           <label v-if="can('events.bookings.capacity_override')" class="sales-check"><input v-model="detailForm[row.id].override_capacity" type="checkbox" /> Override capacity</label>
           <Button v-if="can('events.bookings.add')" size="sm" :disabled="busy || !detailForm[row.id].email.trim()" @click="addTicket(row)">Issue ticket</Button>
         </div>
-        <p v-else class="sales-detail">Requires the Add tickets permission.</p>
+        <p v-else class="sales-detail">Issuing a confirmed ticket from an imported purchase requires Add tickets and Confirm tickets permissions. You can still search for an existing booking to link.</p>
       </div>
       <Button v-if="unreserved.length > shownUnreserved" size="sm" variant="secondary" @click="shownUnreserved += 30">Show more</Button>
     </Card>

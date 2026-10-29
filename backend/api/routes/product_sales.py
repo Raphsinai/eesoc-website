@@ -149,6 +149,8 @@ async def create_ticket_for_sale(
     row = await scoped_row(row_id, session)
     if row['status'] != 'unreserved':
         raise HTTPException(409, 'This imported sale has already been handled')
+    if not session.can('events.bookings.confirm'):
+        raise HTTPException(403, 'Confirmation permission is required to issue a confirmed ticket')
     if override_capacity and not session.can('events.bookings.capacity_override'):
         raise HTTPException(403, 'Capacity override permission required')
     address = normalise_email(email)

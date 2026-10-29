@@ -762,7 +762,7 @@ async def confirm_manually(
     The ordinary path never confirms an unverified sale. It stays held until
     matched locally or via the 06:05 UTC sales refresh the next calendar day.
     """
-    await _reservation_in_scope(reservation_id, session)
+    scoped_reservation = await _reservation_in_scope(reservation_id, session)
     if override:
         if not session.can('events.bookings.confirm_override'):
             raise HTTPException(403, 'Permission required: events.bookings.confirm_override')
@@ -776,6 +776,17 @@ async def confirm_manually(
     if not session.can('events.bookings.confirm'):
         raise HTTPException(403, 'Permission required: events.bookings.confirm')
     value = (order_number or '').strip()
+    # Only a no-order attempt may confirm a free held ticket. Avoid another
+    # adapter call for ordinary paid claims (including legacy regression tests).
+    if not value and scoped_reservation.get('ticket_type_id'):
+        ticket_type = await database.get(
+            f'/ticket-types/{scoped_reservation["ticket_type_id"]}')
+        if ticket_type and not ticket_type.get('requires_purchase', True):
+            confirmed = await database.post(f'/reservations/{reservation_id}/confirm-free',
+                                            params={'actor_user_id': session.user.id})
+            confirmations.trigger()
+            return {'ok': True, 'reservation': confirmed,
+                    'message': 'Free ticket confirmed by an authorised committee member.'}
     if not value or len(value) > 128:
         raise HTTPException(400, 'An order number is required (up to 128 characters)')
     await database.post(f'/reservations/{reservation_id}/submit-order', {
@@ -867,6 +878,7 @@ async def add_ticket(
     note: str | None = Body(default=None, embed=True),
     order_number: str | None = Body(default=None, embed=True),
     override_confirmation: bool = Body(default=False, embed=True),
+    confirm_immediately: bool = Body(default=False, embed=True),
     send_confirmation: bool = Body(default=True, embed=True),
     override_capacity: bool = Body(default=False, embed=True),
     session: AuthSession = Depends(require_booking_editor),
@@ -879,11 +891,17 @@ async def add_ticket(
     immediately; capacity bypass is a separate permission.
     """
     event = await _bookable_event(event_id, session)
+    # Calling this coroutine directly in service tests supplies FastAPI's Body
+    # descriptor as the default; only a literal True opts into confirmation.
+    confirm_immediately = confirm_immediately is True
     # Deny privileged overrides before any user creation or ticket lookup.
     if override_capacity and not session.can('events.bookings.capacity_override'):
         raise HTTPException(403, 'Permission required: events.bookings.capacity_override')
     if override_confirmation and not session.can('events.bookings.confirm_override'):
         raise HTTPException(403, 'Permission required: events.bookings.confirm_override')
+    if confirm_immediately and not (session.can('events.bookings.confirm') or
+                                   session.can('events.bookings.confirm_override')):
+        raise HTTPException(403, 'Permission required: events.bookings.confirm')
     selected = next((t for t in event.get('ticket_types', []) if t['id'] == ticket_type_id), None)
     if selected is None:
         raise HTTPException(404, 'No such ticket type for this event')
@@ -914,6 +932,7 @@ async def add_ticket(
         'added_by': session.user.id, 'send_confirmation': send_confirmation,
         'override_capacity': override_capacity,
         'override_confirmation': override_confirmation,
+        'confirm_immediately': confirm_immediately or override_confirmation,
         'order_number': order,
         'booked_as_guest': holder.get('member_id') is None,
     })
@@ -922,7 +941,7 @@ async def add_ticket(
     # Use the exact same local matcher that checks submitted order numbers on
     # an ordinary reservation. It will never confirm a merely claimed order.
     was_held = row['status'] == 'held'
-    if was_held:
+    if was_held and confirm_immediately:
         await sync_service.reconcile_only()
         current = await database.get(f"/reservations/{row['id']}")
         if current:
@@ -937,9 +956,10 @@ async def add_ticket(
             f'Ticket confirmed for {holder["email"]}.'
             + (' A confirmation email is on its way.' if send_confirmation else '')
             if row['status'] == 'confirmed'
-            else 'Booking added and Union order submitted for verification. '
-                 'The ticket stays held until a sale matches. If not found after '
-                 'the next successful 06:05 UTC sync, it will appear in Review cancellations.'
+            else ('Booking added as unconfirmed. A Union order will be checked '
+                  'during the next daily sales sync; an unmatched order enters '
+                  'Review cancellations.' if needs_proof else
+                  'Unconfirmed free ticket added. An authorised officer can confirm it.')
         ),
     }
 

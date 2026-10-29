@@ -229,6 +229,9 @@ class CommitteeTicket(BaseModel):
     # This is independent of capacity override. Only the API grants it to
     # actors with events.bookings.confirm_override.
     override_confirmation: bool = False
+    # Only permissioned staff may request immediate confirmation; paid claims
+    # still require a real sale, unless a separate override is authorised.
+    confirm_immediately: bool = False
     order_number: str | None = None
     # Imported Union sales are already evidence of payment; do not require
     # checking against a second upstream feed for those rows.

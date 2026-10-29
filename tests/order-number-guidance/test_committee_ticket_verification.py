@@ -75,11 +75,12 @@ def session(*permissions):
                            can=lambda perm: perm in grants)
 
 
-def add(*, actor, order=None, override=False, capacity=False, send=True):
+def add(*, actor, order=None, override=False, capacity=False, send=True, confirm=False):
     return asyncio.run(admin.add_ticket(
         event_id=11, ticket_type_id=7, email='student@example.org',
         first_name='Ada', last_name='Lovelace', quantity=1, note=None,
         order_number=order, override_confirmation=override,
+        confirm_immediately=confirm,
         override_capacity=capacity, send_confirmation=send,
         session=actor,
     ))
@@ -120,13 +121,14 @@ def test_paid_ticket_with_order_stays_held_until_sale_matches(monkeypatch):
     assert db.posts[0][0] == '/reservations/committee'
     assert db.posts[0][1]['order_number'] == 'AB12345'
     assert db.posts[0][1]['override_confirmation'] is False
-    assert calls == {'created': 1, 'sync': 1, 'confirmation': 0}
+    assert calls == {'created': 1, 'sync': 0, 'confirmation': 0}
     assert 'Review cancellations' in result['message']
 
 
 def test_paid_ticket_can_confirm_if_sale_already_matched(monkeypatch):
     _, calls = install(monkeypatch, status='confirmed')
-    result = add(actor=session('events.bookings.add'), order='AB12345')
+    result = add(actor=session('events.bookings.add', 'events.bookings.confirm'),
+                 order='AB12345', confirm=True)
     assert result['reservation']['status'] == 'confirmed'
     assert calls['confirmation'] == 1
 
@@ -144,9 +146,44 @@ def test_authorized_payment_override_confirms_without_order(monkeypatch):
 
 def test_free_ticket_never_requires_a_union_purchase(monkeypatch):
     _, calls = install(monkeypatch, needs_purchase=False, status='confirmed')
-    result = add(actor=session('events.bookings.add'))
+    result = add(actor=session('events.bookings.add', 'events.bookings.confirm'), confirm=True)
     assert result['reservation']['status'] == 'confirmed'
     assert calls['confirmation'] == 1
+
+
+def test_default_manual_paid_ticket_is_unconfirmed_even_with_ordinary_confirm_permission(monkeypatch):
+    db, calls = install(monkeypatch, status='held')
+    result = add(actor=session('events.bookings.add', 'events.bookings.confirm'),
+                 order='ORD-42')
+    assert result['reservation']['status'] == 'held'
+    assert db.posts[0][1]['confirm_immediately'] is False
+    assert calls['sync'] == 0
+
+
+def test_immediate_confirmation_requires_own_permission_before_creating_user(monkeypatch):
+    db, calls = install(monkeypatch, status='held')
+    with pytest.raises(HTTPException) as error:
+        add(actor=session('events.bookings.add'),order='ORDER-42', confirm=True)
+    assert error.value.status_code == 403
+    assert calls['created'] == 0
+    assert not db.posts
+
+
+def test_free_ticket_defaults_to_unconfirmed_without_confirmation_permission(monkeypatch):
+    db, calls = install(monkeypatch, needs_purchase=False, status='held')
+    result = add(actor=session('events.bookings.add'))
+    assert result['reservation']['status'] == 'held'
+    assert db.posts[0][1]['confirm_immediately'] is False
+    assert calls['sync'] == 0 and calls['confirmation'] == 0
+
+
+def test_free_confirmation_requires_correct_backend_and_permission():
+    api = (ROOT / 'backend/api/routes/admin.py').read_text()
+    db = (ROOT / 'backend/database/routes/events.py').read_text()
+    assert '/reservations/{reservation_id}/confirm-free' in db
+    assert "if previous['requires_purchase']" in db
+    assert "if previous['status'] != 'held'" in db
+    assert "f'/reservations/{reservation_id}/confirm-free'" in api
 
 
 def test_editing_held_order_triggers_existing_sale_matcher(monkeypatch):

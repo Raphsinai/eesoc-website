@@ -1283,6 +1283,9 @@ async def committee_ticket(req: CommitteeTicket) -> Reservation:
             raise HTTPException(400, 'Order number must be at most 128 characters')
         pending_payment = bool(tt['requires_purchase'] and not req.import_row_id
                                and not req.override_confirmation)
+        held_free = bool(not tt['requires_purchase'] and not req.confirm_immediately
+                         and not req.import_row_id and not req.override_confirmation)
+        starts_held = pending_payment or held_free
         if pending_payment and not order_number:
             raise HTTPException(400, 'A Union order number is required unless payment verification is overridden')
 
@@ -1318,7 +1321,7 @@ async def committee_ticket(req: CommitteeTicket) -> Reservation:
             """,
             req.event_id, req.ticket_type_id, req.user_id, req.quantity,
             req.note, req.booked_as_guest, req.added_by, req.send_confirmation,
-            pending_payment, order_number,
+            starts_held, order_number,
         )
         if pending_payment:
             # Claim created in the very same transaction as the hold. Never
@@ -1338,10 +1341,12 @@ async def committee_ticket(req: CommitteeTicket) -> Reservation:
                 jsonb_build_object('event_id',$3::bigint,'ticket_type_id',$4::bigint,
                                    'quantity',$5::integer,'override_capacity',$6::boolean,
                                    'override_confirmation',$7::boolean,
-                                   'payment_status',$8::text,'order_number',$9::text))""",
+                                   'payment_status',$8::text,'order_number',$9::text,
+                                   'confirm_immediately',$10::boolean))""",
             req.added_by, row['id'], req.event_id, req.ticket_type_id,
             req.quantity, req.override_capacity, req.override_confirmation,
-            'pending' if pending_payment else 'confirmed', order_number,
+            'pending' if pending_payment else ('held' if held_free else 'confirmed'),
+            order_number, req.confirm_immediately,
         )
     return Reservation(**dict(row))
 
@@ -1610,6 +1615,36 @@ async def confirm_manually(reservation_id: int, order_number: str | None = None,
                 previous['order_number'], row['order_number'])
     if row is None:
         raise HTTPException(404, "No such active reservation")
+    return Reservation(**dict(row))
+
+
+@router.post('/reservations/{reservation_id}/confirm-free')
+async def confirm_free_hold(reservation_id: int, actor_user_id: int | None = None) -> Reservation:
+    """Authorised committee confirmation of a deliberately unconfirmed free ticket.
+
+    The API checks events.bookings.confirm. This DB safeguard ensures the free
+    path cannot be used to bypass paid ticket verification.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        previous = await conn.fetchrow("""SELECT r.status,tt.requires_purchase
+            FROM public.reservations r JOIN public.ticket_types tt ON tt.id=r.ticket_type_id
+            WHERE r.id=$1 FOR UPDATE OF r""", reservation_id)
+        if previous is None:
+            raise HTTPException(404, 'No such reservation')
+        if previous['requires_purchase']:
+            raise HTTPException(409, 'Paid tickets need Union proof or a separately authorised override')
+        if previous['status'] != 'held':
+            raise HTTPException(409, 'Only held free tickets can be confirmed')
+        row = await conn.fetchrow(f"""UPDATE public.reservations
+            SET status='confirmed',confirmed_at=NOW()
+            WHERE id=$1 RETURNING {RESERVATION_COLUMNS}""", reservation_id)
+        await conn.execute("""INSERT INTO public.action_audit
+            (actor_user_id,action,entity_type,entity_id,before_data,after_data)
+            VALUES($1,'reservations.confirm.free','reservation',$2,
+                   jsonb_build_object('status','held'),
+                   jsonb_build_object('status','confirmed'))""",
+            actor_user_id, reservation_id)
     return Reservation(**dict(row))
 
 

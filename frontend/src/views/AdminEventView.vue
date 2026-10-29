@@ -115,7 +115,7 @@ function startConfirmation(row) {
 }
 
 async function submitConfirmation(row) {
-  if (!confirmOverride.value && !confirmationOrder.value.trim()) {
+  if (row.requiresPurchase !== false && !confirmOverride.value && !confirmationOrder.value.trim()) {
     error.value = 'Enter a Union order number to verify, or use the separately permitted override.'
     return
   }
@@ -195,7 +195,7 @@ async function changeTicket(row, event) {
 const adding = ref(false)
 const blankTicket = () => ({
   ticket_type_id: '', email: '', first_name: '', last_name: '', quantity: 1, note: '',
-  order_number: '', override_confirmation: false,
+  order_number: '', override_confirmation: false, confirm_immediately: false,
   send_confirmation: true, override_capacity: false,
 })
 const ticket = reactive(blankTicket())
@@ -218,6 +218,7 @@ async function addTicket() {
     error.value = 'A Union order number is required unless you have payment-verification override permission.'
     return
   }
+  if (ticket.override_confirmation) ticket.confirm_immediately = true
   if (ticket.override_confirmation && !confirm(
     'Confirm this paid ticket without evidence from a Union sale? This is a separate permissioned override.')) return
   if (ticket.override_capacity && !confirm(
@@ -379,6 +380,15 @@ function csv() {
             <Field v-if="paidAddType" label="Union order number" help="Required for paid tickets unless you have payment-verification override permission. The Union sale must match before this ticket is confirmed.">
               <Input v-model="ticket.order_number" maxlength="128" placeholder="From the Union purchase receipt" :required="!ticket.override_confirmation" />
             </Field>
+            <label v-if="can('events.bookings.confirm') || can('events.bookings.confirm_override')"
+              style="display:flex; gap:var(--space-2); align-items:center; font:var(--type-small)">
+              <input v-model="ticket.confirm_immediately" type="checkbox" :disabled="ticket.override_confirmation" />
+              {{ paidAddType ? 'Try to confirm immediately if the Union order already matches a sale' : 'Confirm this free ticket immediately' }}
+            </label>
+            <p v-if="!can('events.bookings.confirm') && !can('events.bookings.confirm_override')"
+              style="font:var(--type-small); color:var(--text-muted)">
+              You can add an unconfirmed booking. Only authorised staff can confirm it immediately.
+            </p>
             <label v-if="paidAddType && can('events.bookings.confirm_override')" style="display:flex; gap:var(--space-2); align-items:center; font:var(--type-small)">
               <input v-model="ticket.override_confirmation" type="checkbox" />
               Override payment verification — confirm immediately without a Union sale
@@ -480,10 +490,10 @@ function csv() {
               <td class="muted">{{ r.status === 'held' ? when(r.holdUntil) : '—' }}</td>
               <td class="actions">
                 <div v-if="confirmingOrder === r.id" class="confirmation-edit">
-                  <input v-model="confirmationOrder" class="order-edit" maxlength="128"
+                  <input v-if="r.requiresPurchase !== false" v-model="confirmationOrder" class="order-edit" maxlength="128"
                          aria-label="Union order number to verify" placeholder="Union order number"
                          :disabled="busy" @keyup.enter="submitConfirmation(r)" />
-                  <label v-if="can('events.bookings.confirm_override')" class="confirm-override">
+                  <label v-if="r.requiresPurchase !== false && can('events.bookings.confirm_override')" class="confirm-override">
                     <input v-model="confirmOverride" type="checkbox" />
                     Override: confirm without verifying payment
                   </label>
@@ -491,9 +501,9 @@ function csv() {
                     This immediately confirms the ticket without a Union sale match.
                   </span>
                   <Button v-if="can('events.bookings.confirm') || can('events.bookings.confirm_override')"
-                          size="sm" :disabled="busy || (!confirmOverride && !confirmationOrder.trim())"
+                          size="sm" :disabled="busy || (r.requiresPurchase !== false && !confirmOverride && !confirmationOrder.trim())"
                           @click="submitConfirmation(r)">
-                    {{ confirmOverride ? 'Confirm override' : 'Verify order' }}
+                    {{ r.requiresPurchase === false ? 'Confirm free ticket' : confirmOverride ? 'Confirm override' : 'Verify order' }}
                   </Button>
                   <Button v-if="can('events.bookings.confirm') || can('events.bookings.confirm_override')"
                           size="sm" variant="ghost" @click="confirmingOrder = null">Cancel</Button>
@@ -502,7 +512,7 @@ function csv() {
                   <Button v-if="can('events.bookings.remind')" size="sm" variant="secondary" :disabled="busy" @click="act(r, 'remind')">Remind</Button>
                   <Button v-if="can('events.bookings.confirm') || can('events.bookings.confirm_override')"
                           size="sm" variant="secondary" :disabled="busy"
-                          @click="startConfirmation(r)">Confirm purchase…</Button>
+                          @click="startConfirmation(r)">{{ r.requiresPurchase === false ? 'Confirm free ticket…' : 'Confirm purchase…' }}</Button>
                 </template>
                 <Button
                   v-if="(r.status === 'confirmed' && ['sent', 'failed', 'skipped', 'suppressed'].includes(r.confirmationEmail)) && (can('events.bookings.resend'))"

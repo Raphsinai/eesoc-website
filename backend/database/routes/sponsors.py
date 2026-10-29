@@ -1,7 +1,7 @@
 """Sponsors, job listings, event claims, requests and assets."""
 
 from asyncpg.exceptions import UniqueViolationError
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.exceptions import HTTPException
 
 from models.sponsors import (
@@ -166,14 +166,98 @@ async def list_sponsor_users(sponsor_id: int) -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT u.id, u.email, u.first_name, u.last_name
+            SELECT u.id, u.email, u.first_name, u.last_name,
+                   u.email_verified, su.created_at
               FROM public.sponsor_users su
               JOIN public.users u ON u.id = su.user_id
-             WHERE su.sponsor_id = $1;
+             WHERE su.sponsor_id = $1
+             ORDER BY su.created_at, u.id;
             """,
             sponsor_id,
         )
     return [dict(r) for r in rows]
+
+
+# Sponsor self-service access changes are separate from committee membership
+# actions. The API checks the actor's sponsorship first; the adapter checks it
+# again while holding a lock on the sponsor row so a concurrently removed user
+# cannot grant new access on the strength of a stale request.
+
+
+def _access_actor(request: Request) -> int:
+    raw = request.headers.get("x-audit-actor-id", "")
+    if not raw.isdecimal():
+        raise HTTPException(403, "Sponsor account required")
+    return int(raw)
+
+
+async def _lock_sponsor_access(conn, sponsor_id: int, actor_id: int) -> None:
+    sponsor = await conn.fetchval(
+        "SELECT id FROM public.sponsors WHERE id = $1 FOR UPDATE", sponsor_id
+    )
+    if sponsor is None:
+        raise HTTPException(404, "No such sponsor")
+    member = await conn.fetchval(
+        "SELECT 1 FROM public.sponsor_users WHERE sponsor_id=$1 AND user_id=$2",
+        sponsor_id, actor_id,
+    )
+    if member is None:
+        raise HTTPException(403, "You no longer have access to this sponsor")
+
+
+@router.post("/{sponsor_id}/portal-access/{user_id}")
+async def grant_portal_access(sponsor_id: int, user_id: int, request: Request) -> dict:
+    actor_id = _access_actor(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        await _lock_sponsor_access(conn, sponsor_id, actor_id)
+        inserted = await conn.fetchval(
+            """INSERT INTO public.sponsor_users (user_id, sponsor_id)
+               VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING user_id""",
+            user_id, sponsor_id,
+        )
+        if inserted is not None:
+            await conn.execute(
+                """INSERT INTO public.action_audit
+                   (actor_user_id, action, entity_type, entity_id, after_data)
+                   VALUES ($1, 'sponsor.access.grant', 'sponsor', $2,
+                           jsonb_build_object('user_id', $3::bigint))""",
+                actor_id, sponsor_id, user_id,
+            )
+    return {"created": inserted is not None}
+
+
+@router.delete("/{sponsor_id}/portal-access/{user_id}")
+async def revoke_portal_access(sponsor_id: int, user_id: int, request: Request) -> dict:
+    actor_id = _access_actor(request)
+    if user_id == actor_id:
+        raise HTTPException(400, "You cannot remove your own access")
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        await _lock_sponsor_access(conn, sponsor_id, actor_id)
+        # Serialising against the sponsor row prevents two concurrent removals
+        # from each seeing two users and leaving the sponsor without any account.
+        count = await conn.fetchval(
+            "SELECT count(*) FROM public.sponsor_users WHERE sponsor_id=$1",
+            sponsor_id,
+        )
+        if count <= 1:
+            raise HTTPException(409, "The last sponsor account cannot be removed")
+        deleted = await conn.fetchval(
+            """DELETE FROM public.sponsor_users
+               WHERE sponsor_id=$1 AND user_id=$2 RETURNING user_id""",
+            sponsor_id, user_id,
+        )
+        if deleted is None:
+            raise HTTPException(404, "That person no longer has access")
+        await conn.execute(
+            """INSERT INTO public.action_audit
+               (actor_user_id, action, entity_type, entity_id, before_data)
+               VALUES ($1, 'sponsor.access.revoke', 'sponsor', $2,
+                       jsonb_build_object('user_id', $3::bigint))""",
+            actor_id, sponsor_id, user_id,
+        )
+    return {"ok": True}
 
 
 # -------------------------------------------------------------------- job listings

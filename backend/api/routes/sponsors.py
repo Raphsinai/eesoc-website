@@ -16,9 +16,12 @@ import re
 from datetime import date, datetime
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
+from pydantic import EmailStr
 
 from clients import database
 from services import agreement, sponsor_notes, storage
+from services.identity import resolve_or_create_user
+from utils.auth import normalise_email
 from models.auth import AuthSession
 from utils.deps import (
     current_session,
@@ -201,6 +204,72 @@ async def portal_sponsor_options() -> dict:
     """
     sponsors = await database.get("/sponsors", {"active_only": False}) or []
     return {"sponsors": [{"id": s["id"], "name": s["name"]} for s in sponsors]}
+
+
+# --------------------------------------------------------------------- access management
+
+
+async def _access_sponsor(session: AuthSession, sponsor_id: int | None) -> int:
+    """Sponsor self-service, or a committee member with the exact admin grant."""
+    permission = "sponsors.users.view"
+    if sponsor_id is None:
+        if session.sponsor_ids:
+            return session.sponsor_ids[0]
+        raise HTTPException(400, "Choose a sponsor before managing access")
+    if sponsor_id not in session.sponsor_ids and not session.can(permission):
+        raise HTTPException(403, "You cannot manage access to that sponsor")
+    return sponsor_id
+
+
+@router.get("/portal/access")
+async def portal_access(
+    sponsor_id: int | None = None,
+    session: AuthSession = Depends(require_sponsor),
+) -> dict:
+    sid = await _access_sponsor(session, sponsor_id)
+    users = await database.get(f"/sponsors/{sid}/users") or []
+    return {"users": users, "currentUserId": session.user.id,
+            "canGrant": sid in session.sponsor_ids or session.can("sponsors.users.grant"),
+            "canRevoke": sid in session.sponsor_ids or session.can("sponsors.users.revoke")}
+
+
+@router.post("/portal/access", dependencies=[Depends(verify_csrf), require_feature("sponsor_portal")])
+async def grant_portal_access(
+    email: EmailStr = Body(embed=True),
+    sponsor_id: int | None = None,
+    session: AuthSession = Depends(require_sponsor),
+) -> dict:
+    sid = await _access_sponsor(session, sponsor_id)
+    if sid not in session.sponsor_ids:
+        if not session.can("sponsors.users.grant"):
+            raise HTTPException(403, "Permission required: sponsors.users.grant")
+        # Committee uses the existing administrative grant, which does not
+        # depend on a personal sponsor link.
+        address = normalise_email(str(email))
+        user = await resolve_or_create_user(address, verified=False)
+        await database.post(f"/sponsors/{sid}/users/{user['id']}")
+        return {"ok": True, "userId": user["id"], "message": "Access granted."}
+    address = normalise_email(str(email))
+    user = await resolve_or_create_user(address, verified=False)
+    result = await database.post(f"/sponsors/{sid}/portal-access/{user['id']}")
+    return {"ok": True, "userId": user["id"], "created": result["created"],
+            "message": "Access granted. They can sign in with their email address." if result["created"]
+                       else "That address already has access."}
+
+
+@router.delete("/portal/access/{user_id}", dependencies=[Depends(verify_csrf), require_feature("sponsor_portal")])
+async def revoke_portal_access(
+    user_id: int, sponsor_id: int | None = None,
+    session: AuthSession = Depends(require_sponsor),
+) -> dict:
+    sid = await _access_sponsor(session, sponsor_id)
+    if sid not in session.sponsor_ids:
+        if not session.can("sponsors.users.revoke"):
+            raise HTTPException(403, "Permission required: sponsors.users.revoke")
+        await database.delete(f"/sponsors/{sid}/users/{user_id}")
+    else:
+        await database.delete(f"/sponsors/{sid}/portal-access/{user_id}")
+    return {"ok": True, "message": "Access removed."}
 
 
 # --------------------------------------------------------------------- dashboard

@@ -91,6 +91,7 @@ export const portalNav = [
   { id: 'contacts', label: 'Contacts' },
   { id: 'merch', label: 'Brand & merch' },
   { id: 'messages', label: 'Messages' },
+  { id: 'access', label: 'Access management' },
 ]
 
 // Flat search index across the whole site — powers the header search.

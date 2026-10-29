@@ -126,6 +126,10 @@ async function loadDashboard() {
 
 async function loadPanel(id) {
   if (id === 'dashboard') return loadDashboard()
+  if (id === 'access') {
+    panel.value = null
+    return loadAccess()
+  }
   if (id === 'profile') {
     panel.value = null
     return loadProfile()
@@ -171,6 +175,7 @@ const sponsorStrapline = computed(() => {
 const portalHeading = computed(() => {
   if (isDash.value) return 'Your year at a glance.'
   if (portal.value === 'profile') return 'How you appear on our sponsors page.'
+  if (portal.value === 'access') return 'Manage who can represent your organisation.'
   return panel.value?.heading || ''
 })
 
@@ -221,6 +226,49 @@ async function uploadLogo(event) {
     flash(res.message)
   }
   event.target.value = ''
+}
+
+// ------------------------------------------------------------- access management
+const accessUsers = ref([])
+const accessFor = ref(null)
+const accessRights = ref({ canGrant: false, canRevoke: false })
+const newAccessEmail = ref('')
+
+async function loadAccess() {
+  error.value = ''
+  accessFor.value = null
+  if (needsSponsor.value || !actingSponsorId.value) return
+  const sponsor = actingSponsorId.value
+  try {
+    const result = await api.get(scoped('/portal/access'))
+    if (portal.value !== 'access' || actingSponsorId.value !== sponsor) return
+    accessUsers.value = result.users || []
+    accessRights.value = { canGrant: result.canGrant, canRevoke: result.canRevoke }
+    accessFor.value = sponsor
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+async function grantAccess() {
+  const email = newAccessEmail.value.trim()
+  if (!email) return
+  const result = await act(() => api.post(scoped('/portal/access'), { email }))
+  if (result) {
+    newAccessEmail.value = ''
+    flash(result.message)
+    await loadAccess()
+  }
+}
+
+async function revokeAccess(user) {
+  if (user.id === session.user?.id) return
+  if (!confirm(`Remove ${user.email}'s access to ${sponsorName.value}?`)) return
+  const result = await act(() => api.del(scoped(`/portal/access/${user.id}`)))
+  if (result) {
+    flash(result.message)
+    await loadAccess()
+  }
 }
 
 // ------------------------------------------------------------- job listings
@@ -936,6 +984,36 @@ usePageTitle(computed(() => `${sponsorName.value ? `${sponsorName.value} · ` : 
                 <span>{{ busy ? 'Uploading…' : 'Upload artwork' }}</span>
               </label>
             </div>
+          </Card>
+        </div>
+      </template>
+
+      <!-- ============================ Access management =================== -->
+      <template v-else-if="portal === 'access' && accessFor === actingSponsorId">
+        <div class="portal-cols">
+          <div style="display:grid; gap:var(--space-4)">
+            <span class="eyebrow">People with access</span>
+            <Card v-for="user in accessUsers" :key="user.id" variant="default">
+              <div class="row-between">
+                <div class="stack-4">
+                  <span class="row-title">{{ [user.first_name, user.last_name].filter(Boolean).join(' ') || user.email }}</span>
+                  <span class="row-meta">{{ user.email }}<template v-if="user.id === session.user?.id"> · You</template></span>
+                  <span class="row-meta">{{ user.email_verified ? 'Signed-in email verified' : 'Awaiting first verified sign-in' }}</span>
+                </div>
+                <Button v-if="accessRights.canRevoke && user.id !== session.user?.id && accessUsers.length > 1" size="sm" variant="danger" :disabled="busy" @click="revokeAccess(user)">Remove</Button>
+              </div>
+            </Card>
+          </div>
+          <Card variant="offset">
+            <form class="aside-stack" @submit.prevent="grantAccess">
+              <span class="eyebrow">Give someone access</span>
+              <p class="aside-text">They will use their own email address and EESoc sign-in code to access this organisation's sponsor portal. They can also manage access.</p>
+              <template v-if="accessRights.canGrant">
+                <Field label="Email address"><Input v-model="newAccessEmail" type="email" placeholder="colleague@company.com" required /></Field>
+                <Button type="submit" block :disabled="busy || !newAccessEmail.trim()">{{ busy ? 'Adding…' : 'Give access' }}</Button>
+              </template>
+              <p v-else class="aside-text">You have view-only access to this list.</p>
+            </form>
           </Card>
         </div>
       </template>

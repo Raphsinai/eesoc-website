@@ -387,6 +387,48 @@ async def _check_society_ticket_eligibility(session:AuthSession, before:list[dic
             raise HTTPException(400,'Unknown society selected for ticket eligibility')
 
 
+async def _check_event_organisers(session: AuthSession, before:dict|None, body:dict) -> None:
+    defaults={'eesoc_organised':True,'organiser_society_ids':[]}
+    baseline={k:(before.get(k,v) if before else v) for k,v in defaults.items()}
+    for k in defaults:
+        if before is not None and k in before:
+            body.setdefault(k,before[k])
+    requested={k:body.get(k,baseline[k]) for k in defaults}
+    if not requested['eesoc_organised'] and not requested['organiser_society_ids']:
+        raise HTTPException(400,'An event needs at least one organising society')
+    if requested!=baseline and not session.can('societies.events.assign'):
+        raise HTTPException(403,'Permission required: societies.events.assign')
+    if requested!=baseline and requested['organiser_society_ids']:
+        known={s['id'] for s in (await database.get('/external-societies') or [])}
+        ids=requested['organiser_society_ids']
+        if len(set(ids))!=len(ids) or any(not isinstance(i,int) or isinstance(i,bool) or i not in known for i in ids):
+            raise HTTPException(400,'Unknown or duplicate organising society')
+
+
+async def _check_event_society_eligibility(session: AuthSession, before:dict|None, body:dict) -> None:
+    fields=('membership_restricted','allow_eesoc_members','eligible_society_ids')
+    defaults={'membership_restricted':False,'allow_eesoc_members':False,'eligible_society_ids':[]}
+    # Legacy clients and roles without this grant must not silently erase an
+    # event's eligibility. Only copy fields actually present in the old event;
+    # older clients/test fixtures need not be changed.
+    baseline={k:(before.get(k,defaults[k]) if before else defaults[k]) for k in fields}
+    for k in fields:
+        if before is not None and k in before:
+            body.setdefault(k,before[k])
+    requested={k:body.get(k,baseline[k]) for k in fields}
+    changed=any(requested[k]!=baseline[k] for k in fields)
+    if changed and not session.can('events.membership_eligibility'):
+        raise HTTPException(403,'Permission required: events.membership_eligibility')
+    if requested['membership_restricted'] and not (requested['allow_eesoc_members'] or requested['eligible_society_ids']):
+        raise HTTPException(400,'Select at least one society for restricted entry')
+    if changed and requested['eligible_society_ids']:
+        known={s['id'] for s in (await database.get('/external-societies') or [])}
+        if (any(not isinstance(i,int) or isinstance(i,bool) or i not in known
+                for i in requested['eligible_society_ids'])
+                or len(set(requested['eligible_society_ids']))!=len(requested['eligible_society_ids'])):
+            raise HTTPException(400,'Unknown or duplicate eligible society')
+
+
 @router.post("/events", dependencies=[Depends(require_action("events.create")), Depends(verify_csrf)])
 async def create_event(
     body: dict = Body(...), session: AuthSession = Depends(require_event_editor)
@@ -395,6 +437,8 @@ async def create_event(
     if body.get("ticket_types") and not session.can("events.ticket_types.create"):
         raise HTTPException(403, "Permission required: events.ticket_types.create")
     await _check_society_ticket_eligibility(session,[],body.get('ticket_types',[]))
+    await _check_event_society_eligibility(session,None,body)
+    await _check_event_organisers(session,None,body)
     if body.get("published") and not session.can("events.publish"):
         raise HTTPException(403, "Permission required: events.publish")
     if not (body.get("slug") or "").strip():
@@ -427,6 +471,8 @@ async def update_event(
     for t in body.get('ticket_types',[]):
         if 'eligible_society_ids' not in t and t.get('id') in older:
             t['eligible_society_ids']=older[t['id']]
+    await _check_event_society_eligibility(session,existing,body)
+    await _check_event_organisers(session,existing,body)
     _assert_ticket_type_changes(session, existing, body)
     if 'ticket_types' in body:
         await _check_society_ticket_eligibility(session,existing.get('ticket_types',[]),body['ticket_types'])

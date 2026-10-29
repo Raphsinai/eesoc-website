@@ -11,6 +11,42 @@ This integration mirrors each society's Union/SUMS members independently from EE
 5. In an EESoc event's ticket editor, choose eligible societies. The backend checks the membership feed again when confirming/claiming reservations. A society-linked ticket's selected societies are alternatives, not a requirement to be a member of every one.
 6. External committee members sign in with their verified `@ic.ac.uk` or `@imperial.ac.uk` address and open **Society committee** in the site header (`/societies`). Their dashboard shows only their own society and assigned events.
 
+## Complete member identities and event admission
+
+The external SUMS sync now retains every field of the original JSON report in
+`external_society_members.union_profile` alongside separately indexed `CID`,
+`Login`, first and last name, Union contact email, `OrderNo` and `MemberType`.
+**Admin → Societies → Synced Union member records** shows searchable, paginated
+records and full report details to staff holding `societies.members.view`.
+
+A verified account is linked against the society roster by its official CID
+(if that account also has a linked EESoc Union record), by its verified Union
+contact email or by its verified Imperial Login. Sign-in returns the caller's
+own connected-society identities (including CID) alongside its EESoc identity.
+Imported external membership never sets the EESoc `member_id` or treats the
+person as an EESoc member. Guests cannot claim external membership by typing
+another student's shortcode, and Union sales are checked against the actual
+external CID and Login during paid-ticket reconciliation.
+
+The event editor also has a distinct **Organising societies** selector.
+EESoc is ticked by default for existing events, but it can be unticked while
+an external society is selected, making the event **external-society-only** in
+its public organiser attribution and external committee management. Selecting
+an organiser automatically makes that society's managing committee eligible
+to manage the event (subject to their individual permissions). The same event
+can be co-organised by EESoc and multiple connected societies. The system
+refuses to delete or unassign the last organiser of an external-only event.
+Organiser affiliation does not, by itself, restrict who may book.
+
+The event editor has a separate **Who can book this event?** selector. Public
+is the default. Restricted events may allow EESoc members, any selected
+external society, or *only* selected external societies with EESoc unchecked.
+An EESoc member with no membership in the selected external society does not
+qualify for an external-only event. Restrictions are checked again when
+reserving, confirming paid or free bookings and offering waitlist places.
+Ticket-type-specific restrictions, if set, must also be satisfied. Existing
+unrestricted events remain public unless explicitly changed.
+
 The imported mailing list is built from the Union `Login` field (strictly validated, lowercased, de-duplicated), then `@ic.ac.uk` is appended. The export and email selector exclude global and relevant topic opt-outs, and explicit negative subscription preferences on matching accounts. Importing the list does not subscribe it to unrelated topics. Bulk mail retains ordinary unsubscribe links and the staging mail allowlist.
 
 ## Announcement scope

@@ -179,6 +179,8 @@ class SessionView(BaseModel):
     user: dict | None = None
     roles: list[str] = []
     is_member: bool = False
+    # Separate from EESoc membership, with each society's own Union CID/login.
+    external_societies: list[dict] = []
     is_admin: bool = False
     is_sponsor: bool = False
     sponsor_ids: list[int] = []

@@ -44,6 +44,7 @@ GROUPS = {
         },
         'Member data': {
             'societies.members.export': 'Export external society email addresses',
+            'societies.members.view': 'View full Union member records for connected societies',
             'societies.members.mail': 'Send announcements to connected society membership lists',
         },
         'WhatsApp group control': {
@@ -75,6 +76,7 @@ GROUPS = {
             'events.ticket_types.delete': 'Delete ticket types',
             'events.ticket_types.product': 'Link Union products to event tickets',
             'events.ticket_types.eligibility': 'Select societies whose members may book each ticket type',
+            'events.membership_eligibility': 'Choose EESoc and external-society eligibility for events',
         },
         'Bookings': {
             'events.bookings.view': 'View attendee bookings',

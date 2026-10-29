@@ -38,8 +38,10 @@ class GroupWrite(BaseModel):
     eesoc_enabled: bool = False
     eesoc_user_ids: list[int] = []
 
-@admin.get('/eligible-lookup',dependencies=[Depends(require_action('events.ticket_types.eligibility'))])
-async def ticket_society_lookup():
+@admin.get('/eligible-lookup')
+async def ticket_society_lookup(session:AuthSession=Depends(require_admin)):
+    if not (session.can('events.ticket_types.eligibility') or session.can('events.membership_eligibility') or session.can('societies.events.assign')):
+        raise HTTPException(403,'Society eligibility permission required')
     return [{'id':s['id'],'name':s['name']} for s in await database.get('/external-societies') or []]
 
 @admin.get('', dependencies=[Depends(require_action('societies.view'))])
@@ -81,6 +83,15 @@ async def sync_one(society_id:int) -> dict:
 @admin.post('/{society_id}/sync', dependencies=[Depends(require_action('societies.sync')),Depends(verify_csrf)])
 async def sync_members(society_id:int):
     return await sync_one(society_id)
+
+@admin.get('/{society_id}/members',dependencies=[Depends(require_action('societies.members.view'))])
+async def member_records(society_id:int,search:str='',limit:int=100,offset:int=0):
+    if not any(s['id']==society_id for s in (await database.get('/external-societies') or [])):
+        raise HTTPException(404,'Unknown society')
+    return await database.get(f'/external-societies/{society_id}/members', {
+        'year':academic_year(),'search':search,'limit':max(1,min(limit,200)),
+        'offset':max(0,offset),
+    })
 
 @admin.get('/{society_id}/committee',dependencies=[Depends(require_action('societies.committee.view'))])
 async def list_committee(society_id:int):

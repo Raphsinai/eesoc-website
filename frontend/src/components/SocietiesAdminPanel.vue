@@ -12,6 +12,11 @@ const societies = ref([])
 const selected = ref(null)
 const committee = ref([])
 const assigned = ref([])
+const memberSearch = ref('')
+const memberPage = ref(0)
+const memberRows = ref([])
+const memberTotal = ref(0)
+const memberDetails = ref(null)
 const name = ref('')
 const centre = ref('')
 const credential = ref('')
@@ -40,6 +45,29 @@ const ACTIONS = [
 const current = computed(() => societies.value.find(s => s.id === selected.value))
 const availableEvents = computed(() => props.events.filter(e => !assigned.value.includes(e.id)))
 const defaultPermissions = () => ACTIONS.map(([key]) => key)
+const memberPageSize = 50
+async function loadMembers() {
+  memberRows.value = []
+  memberTotal.value = 0
+  if (!selected.value || !can('societies.members.view')) return
+  try {
+    const result = await api.get(`/admin/societies/${selected.value}/members`, {
+      search: memberSearch.value, limit: memberPageSize, offset: memberPage.value * memberPageSize,
+    })
+    memberRows.value = result.members || []
+    memberTotal.value = result.total || 0
+  } catch (e) { error.value = e.message }
+}
+async function searchMembers() { memberPage.value = 0; memberDetails.value = null; await loadMembers() }
+async function changeMemberPage(delta) {
+  memberPage.value = Math.max(0, memberPage.value + delta)
+  memberDetails.value = null
+  await loadMembers()
+}
+async function changeSociety() {
+  memberPage.value = 0; memberSearch.value = ''; memberDetails.value = null
+  await details()
+}
 
 async function load() {
   if (!can('societies.view')) return
@@ -50,10 +78,12 @@ async function load() {
 async function details() {
   committee.value = []
   assigned.value = []
+  memberRows.value = []
   if (!selected.value) return
   try {
     if (can('societies.committee.view')) committee.value = await api.get(`/admin/societies/${selected.value}/committee`)
     assigned.value = await api.get(`/admin/societies/${selected.value}/events`)
+    if (can('societies.members.view')) await loadMembers()
   } catch (e) { error.value = e.message }
 }
 async function act(job, success) {
@@ -118,7 +148,7 @@ onMounted(load)
     </Card>
     <Card v-if="can('societies.view')" variant="outline">
       <Field label="Connected society">
-        <select v-model="selected" class="ees-select" @change="details">
+        <select v-model="selected" class="ees-select" @change="changeSociety">
           <option v-for="s in societies" :key="s.id" :value="s.id">{{ s.name }}</option>
         </select>
       </Field>
@@ -132,6 +162,35 @@ onMounted(load)
         <Button v-if="can('societies.sync')" :disabled="busy" @click="sync">Sync members now</Button>
         <a v-if="can('societies.members.export')" class="ees-btn" :href="`/api/admin/societies/${selected}/mailing-list.csv`" download>Export member emails (CSV)</a>
         <Button v-if="can('societies.delete')" variant="ghost" :disabled="busy" @click="remove">Remove society</Button>
+      </div>
+    </Card>
+    <Card v-if="selected && can('societies.members.view')" variant="outline">
+      <h2>Synced Union member records</h2>
+      <p style="font:var(--type-small);color:var(--text-muted)">Includes CID, Login, names, contact email, membership order number, member type and the original SUMS report fields. Only authorised committee users can view this information.</p>
+      <div style="display:flex;gap:var(--space-2);flex-wrap:wrap;align-items:center">
+        <Input v-model="memberSearch" placeholder="Search CID, Login or name" @keyup.enter="searchMembers" />
+        <Button size="sm" variant="secondary" @click="searchMembers">Search</Button>
+      </div>
+      <p style="font:var(--type-small)">{{ memberTotal }} matching records · page {{ memberPage + 1 }}</p>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font:var(--type-small)">
+          <thead><tr><th>CID</th><th>Login</th><th>Member</th><th>Union email</th><th>Type</th><th>Order no.</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="m in memberRows" :key="m.cid" style="border-top:1px solid var(--border-hairline)">
+              <td>{{ m.cid }}</td><td>{{ m.login || '—' }}</td>
+              <td>{{ [m.first_name,m.last_name].filter(Boolean).join(' ') || '—' }}</td>
+              <td>{{ m.email || '—' }}</td><td>{{ m.member_type || '—' }}</td>
+              <td>{{ m.order_no || '—' }}</td>
+              <td><Button size="sm" variant="ghost" @click="memberDetails = memberDetails === m.cid ? null : m.cid">{{ memberDetails === m.cid ? 'Hide' : 'Details' }}</Button></td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-if="!memberRows.length" style="font:var(--type-small)">No matching records in this academic year's synced roster.</p>
+      </div>
+      <pre v-if="memberDetails" style="overflow:auto;max-height:320px;padding:var(--space-3);background:var(--surface-sunken);font:var(--type-2xs)">{{ JSON.stringify(memberRows.find(m => m.cid === memberDetails)?.union_profile || {}, null, 2) }}</pre>
+      <div style="display:flex;gap:var(--space-2)">
+        <Button size="sm" variant="secondary" :disabled="memberPage === 0" @click="changeMemberPage(-1)">Previous</Button>
+        <Button size="sm" variant="secondary" :disabled="(memberPage + 1) * memberPageSize >= memberTotal" @click="changeMemberPage(1)">Next</Button>
       </div>
     </Card>
     <Card v-if="selected && (can('societies.committee.view') || can('societies.committee.edit'))" variant="outline">

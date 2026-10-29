@@ -140,6 +140,7 @@ async function load() {
 }
 
 onMounted(load)
+watch(() => session.authenticated, () => { load() })
 watch(() => route.params.slug, () => {
   waitlistJoined.value = false
   waitlistMessage.value = ''
@@ -155,6 +156,11 @@ const selected = computed(
 // somebody who joined today is not in the Union feed until the morning sync. The
 // booking is taken and verified before it is confirmed, so the honest thing is
 // to warn rather than to lock the option.
+const eventMembershipEligible = computed(() => !event.value?.membershipRestricted || Boolean(event.value?.membershipEligible))
+const eventMembershipNames = computed(() => [
+  ...(event.value?.allowEesocMembers ? ['EESoc'] : []),
+  ...(event.value?.eligibleSocieties || []).map(s => s.name),
+].join(', '))
 const needsMembership = computed(() => Boolean(selected.value?.needsMembership))
 
 // A free ticket is booked outright — confirmed, nothing held — so its button
@@ -180,7 +186,7 @@ const maxQuantity = computed(() => {
 })
 
 const canBook = computed(() => {
-  if (!selected.value?.selectable) return false
+  if (!selected.value?.selectable || !eventMembershipEligible.value) return false
   // A guest's own bookings come back via their visitor cookie, so a second
   // Reserve for a ticket they already hold is refused here, not after the form.
   if (maxQuantity.value <= 0) return false
@@ -263,7 +269,7 @@ async function cancel(reservation) {
 }
 
 const canJoinWaitlist = computed(() => {
-  if (!event.value?.waitlistAvailable || busy.value || waitlistJoined.value || !available('bookings')) return false
+  if (!event.value?.waitlistAvailable || !eventMembershipEligible.value || busy.value || waitlistJoined.value || !available('bookings')) return false
   if (session.authenticated) return true
   if (!guest.value.email.trim().includes('@')) return false
   return !guestIsImperial.value || Boolean(guest.value.shortcode.trim())
@@ -461,6 +467,9 @@ usePageTitle(computed(() => event.value?.title || 'Event'))
               <Badge v-if="!event.published" tone="neutral">Draft</Badge>
             </div>
             <h1 style="margin:0; font:var(--type-h1)">{{ event.title }}</h1>
+            <p v-if="event.organisers?.length" style="margin:0;font:var(--type-small);color:var(--text-muted)">
+              Organised by {{ event.organisers.map(s => s.name).join(' · ') }}
+            </p>
             <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
               {{ event.date }} · {{ event.time }}<span v-if="event.venue"> · {{ event.venue }}</span>
             </p>
@@ -549,7 +558,7 @@ usePageTitle(computed(() => event.value?.title || 'Event'))
         <Card v-else-if="!event.ticketTypes?.length" variant="offset">
           <h2 style="margin:0 0 var(--space-3); font:var(--type-h4)">No booking needed</h2>
           <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
-            This one is free and open to all — just turn up.
+            {{ event.membershipRestricted ? 'This event is for eligible society members; check with the organising society for entry details.' : 'This one is free and open to all — just turn up.' }}
           </p>
         </Card>
 
@@ -671,8 +680,17 @@ usePageTitle(computed(() => event.value?.title || 'Event'))
           </div>
 
           <template v-else>
-          <p v-if="!session.authenticated" style="margin:0 0 var(--space-4); font:var(--type-small); color:var(--text-muted)">
-            Log in to book. Members and guests both welcome.
+          <div v-if="event.membershipRestricted" style="margin:0 0 var(--space-4);padding:var(--space-3);border:1px solid var(--border-faint);font:var(--type-small)">
+            <strong>Bookings restricted to members of: {{ eventMembershipNames }}</strong>
+            <p v-if="!eventMembershipEligible && !session.authenticated" style="margin:var(--space-2) 0 0">
+              <a href="#" @click.prevent="emit('need-login')">Sign in</a> to verify your society membership before booking.
+            </p>
+            <p v-else-if="!eventMembershipEligible" style="margin:var(--space-2) 0 0">
+              Your account does not currently match an eligible society's Union membership roster. Membership lists are refreshed daily.
+            </p>
+          </div>
+          <p v-else-if="!session.authenticated" style="margin:0 0 var(--space-4); font:var(--type-small); color:var(--text-muted)">
+            Log in to book, or continue as a guest.
           </p>
 
           <div v-if="event.ticketTypes?.length" style="display:grid; gap:var(--space-4)">
@@ -689,7 +707,7 @@ usePageTitle(computed(() => event.value?.title || 'Event'))
                   {{ t.name }} — {{ t.price }}<template v-if="t.soldOut"> (sold out)</template>
                   <template v-else-if="t.salesState === 'scheduled'"> · on sale {{ shortWhen(t.salesOpenAt) }}</template>
                   <template v-else-if="t.salesState === 'ended'"> · no longer on sale</template>
-                  <template v-else-if="t.membersOnly"> · members only</template>
+                  <template v-else-if="t.membersOnly || t.eligibleSocietyIds?.length"> · society members only</template>
                   <template v-else-if="t.remaining !== null"> · {{ t.remaining }} left</template>
                 </option>
               </select>

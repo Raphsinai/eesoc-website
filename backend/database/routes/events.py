@@ -27,6 +27,7 @@ from models.events import (
     WaitlistEntry,
 )
 from postgres import get_pool
+from routes.external_societies import EXTERNAL_ACCOUNT_MATCH
 
 router = APIRouter()
 
@@ -45,7 +46,9 @@ EVENT_COLUMNS = """
     requested_by_sponsor_id, academic_year, created_by, created_at, updated_at,
     sales_open_at, sales_announced_at, purchase_url, industry, signup_url,
     map_url, meeting_url, meeting_url_private, target_years,
-    reservations_close_at, union_sales_close_at
+    reservations_close_at, union_sales_close_at,
+    membership_restricted, allow_eesoc_members, eligible_society_ids,
+    eesoc_organised
 """
 
 TT_COLUMNS = """
@@ -136,28 +139,50 @@ MEMBER_THIS_YEAR = """
 """
 
 
-async def _external_member(conn, tt, user_id: int | None, year: str | None) -> bool:
-    """A verified college login in one of this ticket's selected society feeds."""
-    ids=tt.get('eligible_society_ids',[]) if isinstance(tt,dict) else tt['eligible_society_ids']
+def _external_match_sql(user_expression:str, society_expression:str, year_expression:str) -> str:
+    """A verified account's official CID, contact email or Imperial Login.
+
+    Only the trusted Union roster may provide these identifiers; the browser's
+    unverified guest shortcode is not used. Also used by matching/confirmation
+    queries so they cannot disagree with the initial reservation decision.
+    """
+    return f"""EXISTS (SELECT 1 FROM public.users identity_user
+        JOIN public.external_society_members em ON {EXTERNAL_ACCOUNT_MATCH.replace('u.', 'identity_user.')}
+        WHERE identity_user.id={user_expression} AND em.academic_year={year_expression}
+          AND em.society_id=ANY({society_expression}))"""
+
+
+def _eesoc_match_sql(user_expression:str, year_expression:str, *, verified:bool=False) -> str:
+    return f"""EXISTS (SELECT 1 FROM public.users u
+        JOIN public.members own ON own.id=u.member_id
+        WHERE u.id={user_expression} AND own.academic_year={year_expression}
+        {'AND u.email_verified' if verified else ''})"""
+
+
+async def _external_member(conn, ids:list[int], user_id:int|None, year:str|None) -> bool:
     if not ids or not user_id or not year:
         return False
-    return bool(await conn.fetchval("""
-        SELECT EXISTS(
-            SELECT 1 FROM public.users u JOIN public.external_society_members m
-              ON m.login=lower(split_part(u.email,'@',1))
-             WHERE u.id=$1 AND u.email_verified
-               AND lower(split_part(u.email,'@',2)) IN ('ic.ac.uk','imperial.ac.uk')
-               AND m.academic_year=$2 AND m.society_id=ANY($3::bigint[])
-        )
-    """,user_id,year,ids))
+    return bool(await conn.fetchval(f"SELECT {_external_match_sql('$1','$3::bigint[]','$2')}",
+                                    user_id,year,ids))
+
+
+async def _event_membership_allowed(conn,event,user_id:int|None,year:str|None) -> bool:
+    if not event['membership_restricted']:
+        return True
+    if not user_id or not year:
+        return False
+    if event['allow_eesoc_members'] and await conn.fetchval(
+            f"SELECT {_eesoc_match_sql('$1','$2',verified=True)}",user_id,year):
+        return True
+    return await _external_member(conn,event['eligible_society_ids'],user_id,year)
 
 
 async def _external_ticket_allowed(conn, tt, user_id:int|None,year:str|None) -> bool:
     if not tt['eligible_society_ids']:
-        return True
+        return True  # Legacy EESoc-only tickets still permit pending membership
     if tt['members_only'] and user_id and year and await conn.fetchval(MEMBER_THIS_YEAR,user_id,year):
         return True
-    return await _external_member(conn,tt,user_id,year)
+    return await _external_member(conn,tt['eligible_society_ids'],user_id,year)
 
 
 async def _confirms_outright(conn, tt, user_id: int | None, academic_year: str | None) -> bool:
@@ -178,7 +203,7 @@ async def _confirms_outright(conn, tt, user_id: int | None, academic_year: str |
     """
     if tt["requires_purchase"]:
         return False
-    if tt["eligible_society_ids"] and await _external_member(conn,tt,user_id,academic_year):
+    if tt["eligible_society_ids"] and await _external_member(conn,tt['eligible_society_ids'],user_id,academic_year):
         return True
     if not tt["members_only"]:
         return True
@@ -347,7 +372,9 @@ async def _detail(conn, row) -> EventDetail:
     # `target_years` arrives here as the stored comma string ("1,2"); the
     # model's before-validator turns it back into the sorted list of ints the
     # API speaks, so every reader of this row gets the same normalised form.
-    detail = EventDetail(**dict(row), ticket_types=types, taken=taken)
+    organisers=await conn.fetch('SELECT society_id FROM public.external_society_events WHERE event_id=$1 ORDER BY society_id',row['id'])
+    detail = EventDetail(**dict(row), ticket_types=types, taken=taken,
+        organiser_society_ids=[r['society_id'] for r in organisers])
     if detail.capacity is not None:
         detail.remaining = max(detail.capacity - taken, 0)
         detail.sold_out = detail.remaining == 0
@@ -536,9 +563,11 @@ async def create_event(event: EventWrite, created_by: int | None = None) -> Even
                      requested_by_sponsor_id, academic_year, created_by, sales_open_at,
                      purchase_url, industry, signup_url,
                      map_url, meeting_url, meeting_url_private, target_years,
-                     reservations_close_at, union_sales_close_at)
+                     reservations_close_at, union_sales_close_at,
+                     membership_restricted, allow_eesoc_members, eligible_society_ids,
+                     eesoc_organised)
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-                        $19,$20,$21,$22,$23,$24,$25,$26)
+                        $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
                 RETURNING {EVENT_COLUMNS};
                 """,
                 event.slug, event.title, event.category, event.description,
@@ -551,9 +580,15 @@ async def create_event(event: EventWrite, created_by: int | None = None) -> Even
                 event.map_url, event.meeting_url, event.meeting_url_private,
                 _target_years_text(event.target_years),
                 event.reservations_close_at, event.union_sales_close_at,
+                event.membership_restricted, event.allow_eesoc_members,
+                event.eligible_society_ids,event.eesoc_organised,
             )
         except UniqueViolationError:
             raise HTTPException(409, f"An event with slug '{event.slug}' already exists")
+
+        for society_id in event.organiser_society_ids:
+            await conn.execute('INSERT INTO public.external_society_events(society_id,event_id) '
+                'VALUES($1,$2) ON CONFLICT DO NOTHING',society_id,row['id'])
 
         for tt in event.ticket_types:
             await conn.execute(
@@ -596,6 +631,8 @@ async def update_event(event_id: int, event: EventWrite) -> EventDetail:
                 target_years=$24,
                 reservations_close_at=$25,
                 union_sales_close_at=$26,
+                membership_restricted=$27, allow_eesoc_members=$28,
+                eligible_society_ids=$29, eesoc_organised=$30,
                 updated_at=NOW()
              WHERE id=$1
             RETURNING {EVENT_COLUMNS};
@@ -610,9 +647,18 @@ async def update_event(event_id: int, event: EventWrite) -> EventDetail:
             event.map_url, event.meeting_url, event.meeting_url_private,
             _target_years_text(event.target_years),
             event.reservations_close_at, event.union_sales_close_at,
+            event.membership_restricted, event.allow_eesoc_members,
+            event.eligible_society_ids,event.eesoc_organised,
         )
         if row is None:
             raise HTTPException(404, "No such event")
+        await conn.execute('DELETE FROM public.external_society_events '
+            'WHERE event_id=$1 AND NOT (society_id=ANY($2::bigint[]))',
+            event_id,event.organiser_society_ids)
+        for society_id in event.organiser_society_ids:
+            await conn.execute('INSERT INTO public.external_society_events(society_id,event_id) '
+                'VALUES($1,$2) ON CONFLICT DO NOTHING',society_id,event_id)
+
         # Union sales closing earlier than some live holds' deadlines: those
         # deadlines come forward to it, in this transaction, so nobody is told
         # they have until Friday to buy what the shop stops selling on
@@ -842,7 +888,8 @@ async def reserve(req: ReservationRequest) -> ReservationResult:
     async with pool.acquire() as conn, conn.transaction():
         # 1. Serialise every reservation attempt for this event.
         event = await conn.fetchrow(
-            "SELECT id, capacity, hold_hours, published, starts_at, reservations_close_at "
+            "SELECT id, capacity, hold_hours, published, starts_at, reservations_close_at, "
+            "membership_restricted,allow_eesoc_members,eligible_society_ids "
             "FROM public.events WHERE id = $1 FOR UPDATE;",
             req.event_id,
         )
@@ -864,6 +911,8 @@ async def reserve(req: ReservationRequest) -> ReservationResult:
         if _type_off_sale(tt):
             return ReservationResult(ok=False, reason="type_not_on_sale")
 
+        if not await _event_membership_allowed(conn,event,req.user_id,req.academic_year):
+            return ReservationResult(ok=False,reason='society_membership_required')
         if not await _external_ticket_allowed(conn,tt,req.user_id,req.academic_year):
             return ReservationResult(ok=False,reason='society_membership_required')
 
@@ -1727,24 +1776,20 @@ async def match_reservations(academic_year: str | None = None) -> dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
         candidates = await conn.fetch(
-            """
+            f"""
             WITH links AS (
                 SELECT ticket_type_id, event_id, union_product_id, union_product_line_id
                   FROM public.product_links
                  WHERE purpose = 'event_ticket'
             ),
             held AS (
-                SELECT r.id, r.event_id, r.ticket_type_id, r.order_number,
+                SELECT r.id, r.event_id, r.ticket_type_id, r.user_id, r.order_number,
                        u.member_id, m.login, m.cid,
                        tt.members_only, tt.eligible_society_ids,
-                       u.email AS account_email,
-                       EXISTS(SELECT 1 FROM public.external_society_members em
-                           WHERE em.society_id=ANY(tt.eligible_society_ids)
-                             AND em.academic_year=$1
-                             AND em.login=lower(split_part(u.email,'@',1))
-                             AND u.email_verified
-                             AND lower(split_part(u.email,'@',2)) IN ('ic.ac.uk','imperial.ac.uk'))
-                           AS is_external_member,
+                       e.membership_restricted, e.allow_eesoc_members,
+                       u.email_verified AS verified_account,
+                       {_external_match_sql('u.id','tt.eligible_society_ids','$1')} AS is_external_member,
+                       {_external_match_sql('u.id','e.eligible_society_ids','$1')} AS is_event_external_member,
                        -- Membership is annual, so holding a member record is not
                        -- the same as being a member this year.
                        (u.member_id IS NOT NULL
@@ -1752,6 +1797,7 @@ async def match_reservations(academic_year: str | None = None) -> dict:
                   FROM public.reservations r
                   JOIN public.users u        ON u.id  = r.user_id
                   JOIN public.ticket_types tt ON tt.id = r.ticket_type_id
+                  JOIN public.events e ON e.id = r.event_id
                   LEFT JOIN public.members m ON m.id  = u.member_id
                  WHERE r.status = 'held' AND tt.requires_purchase
             ),
@@ -1795,6 +1841,8 @@ async def match_reservations(academic_year: str | None = None) -> dict:
                    -- shows the person is a member this year. Somebody who joined
                    -- today only appears after the morning sync, so this resolves
                    -- itself rather than needing them to book again.
+               AND (NOT h.membership_restricted OR h.is_event_external_member
+                    OR (h.allow_eesoc_members AND h.is_member AND h.verified_account))
                AND (NOT h.members_only OR h.is_member OR h.is_external_member)
                AND (cardinality(h.eligible_society_ids)=0 OR h.is_external_member
                     OR (h.members_only AND h.is_member))
@@ -1804,7 +1852,15 @@ async def match_reservations(academic_year: str | None = None) -> dict:
                  OR (ov.reservation_id IS NULL AND (
                        (h.member_id IS NOT NULL AND h.login IS NOT NULL
                         AND lower(s.customer_login)=lower(h.login))
-                    OR (h.is_external_member AND lower(s.customer_login)=lower(split_part(h.account_email,'@',1)))
+                    -- External memberships supply real CID and Login identities,
+                    -- not a guess from the account's email local part.
+                    OR EXISTS (
+                        SELECT 1 FROM public.users u
+                        JOIN public.external_society_members em ON {EXTERNAL_ACCOUNT_MATCH}
+                        WHERE u.id=h.user_id AND em.academic_year=$1
+                          AND ((s.customer_cid IS NOT NULL AND em.cid=s.customer_cid)
+                               OR (s.customer_login IS NOT NULL AND em.login IS NOT NULL
+                                   AND lower(em.login)=lower(s.customer_login))))
                     OR (h.member_id IS NOT NULL AND h.cid IS NOT NULL
                         AND s.customer_cid=h.cid)
                     OR (h.order_number IS NOT NULL
@@ -1845,32 +1901,23 @@ async def match_reservations(academic_year: str | None = None) -> dict:
         # hold an older pod made mid-rollout. Nothing to match a sale to —
         # being allowed the ticket is the whole of the confirmation.
         freed = await conn.fetch(
-            """
+            f"""
             UPDATE public.reservations r
                SET status = 'confirmed', confirmed_at = NOW()
               FROM public.ticket_types tt
+              JOIN public.events e ON e.id=tt.event_id
              WHERE tt.id = r.ticket_type_id
                AND NOT tt.requires_purchase
                AND r.status = 'held' AND r.expires_at > NOW()
-               AND (NOT tt.members_only OR EXISTS (
-                      SELECT 1 FROM public.users u
-                        JOIN public.members m ON m.id = u.member_id
-                       WHERE u.id = r.user_id AND m.academic_year = $1)
-                    OR EXISTS (SELECT 1 FROM public.users u
-                        JOIN public.external_society_members em
-                          ON em.login=lower(split_part(u.email,'@',1))
-                       WHERE u.id=r.user_id AND u.email_verified
-                         AND lower(split_part(u.email,'@',2)) IN ('ic.ac.uk','imperial.ac.uk')
-                         AND em.society_id=ANY(tt.eligible_society_ids) AND em.academic_year=$1))
-               AND (cardinality(tt.eligible_society_ids)=0 OR EXISTS (
-                      SELECT 1 FROM public.users u JOIN public.external_society_members em
-                        ON em.login=lower(split_part(u.email,'@',1))
-                       WHERE u.id=r.user_id AND u.email_verified
-                         AND lower(split_part(u.email,'@',2)) IN ('ic.ac.uk','imperial.ac.uk')
-                         AND em.society_id=ANY(tt.eligible_society_ids) AND em.academic_year=$1)
-                    OR (tt.members_only AND EXISTS (
-                      SELECT 1 FROM public.users u JOIN public.members m ON m.id=u.member_id
-                       WHERE u.id=r.user_id AND m.academic_year=$1)))
+               AND (NOT e.membership_restricted
+                    OR (e.allow_eesoc_members AND {_eesoc_match_sql('r.user_id','$1',verified=True)})
+                    OR {_external_match_sql('r.user_id','e.eligible_society_ids','$1')})
+               AND (NOT tt.members_only
+                    OR {_eesoc_match_sql('r.user_id','$1')}
+                    OR {_external_match_sql('r.user_id','tt.eligible_society_ids','$1')})
+               AND (cardinality(tt.eligible_society_ids)=0
+                    OR {_external_match_sql('r.user_id','tt.eligible_society_ids','$1')}
+                    OR (tt.members_only AND {_eesoc_match_sql('r.user_id','$1')}))
             RETURNING r.id;
             """,
             academic_year,
@@ -1953,7 +2000,7 @@ async def create_draft(req: ReservationRequest, minutes: int = 15) -> Reservatio
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction():
         event = await conn.fetchrow(
-            "SELECT id, capacity, reservations_close_at FROM public.events "
+            "SELECT id, capacity, reservations_close_at, membership_restricted FROM public.events "
             "WHERE id = $1 FOR UPDATE;",
             req.event_id,
         )
@@ -1961,6 +2008,8 @@ async def create_draft(req: ReservationRequest, minutes: int = 15) -> Reservatio
             raise HTTPException(404, "No such event")
         if _reservations_closed(event):
             return ReservationResult(ok=False, reason="reservations_closed")
+        if event['membership_restricted']:
+            return ReservationResult(ok=False, reason='society_membership_required')
 
         tt = await conn.fetchrow(
             f"SELECT {TT_COLUMNS} FROM public.ticket_types WHERE id = $1 AND event_id = $2;",
@@ -2027,7 +2076,9 @@ async def claim_draft(
             """
             SELECT r.id, r.event_id, r.ticket_type_id, r.quantity, r.expires_at,
                    r.status, r.visitor_hash, e.hold_hours, e.starts_at, tt.max_per_user,
-                   tt.requires_purchase, tt.members_only, tt.eligible_society_ids, e.reservations_close_at,
+                   tt.requires_purchase, tt.members_only, tt.eligible_society_ids,
+                   e.membership_restricted,e.allow_eesoc_members,e.eligible_society_ids AS event_eligible_society_ids,
+                   e.reservations_close_at,
                    tt.sales_open_at, tt.sales_close_at
               FROM public.reservations r
               JOIN public.events e        ON e.id  = r.event_id
@@ -2074,6 +2125,13 @@ async def claim_draft(
             )
             return ReservationResult(ok=False, reason="over_user_limit")
 
+        if not await _event_membership_allowed(conn,{
+            'membership_restricted':draft['membership_restricted'],
+            'allow_eesoc_members':draft['allow_eesoc_members'],
+            'eligible_society_ids':draft['event_eligible_society_ids'],
+        },user_id,academic_year):
+            await conn.execute("DELETE FROM public.reservations WHERE id=$1",draft['id'])
+            return ReservationResult(ok=False,reason='society_membership_required')
         if not await _external_ticket_allowed(conn,draft,user_id,academic_year):
             await conn.execute("DELETE FROM public.reservations WHERE id=$1",draft['id'])
             return ReservationResult(ok=False,reason='society_membership_required')
@@ -2121,6 +2179,15 @@ async def release_draft(draft_token: str) -> None:
 async def join_waitlist(entry: WaitlistEntry) -> WaitlistEntry:
     pool = await get_pool()
     async with pool.acquire() as conn:
+        event = await conn.fetchrow("SELECT id,academic_year,membership_restricted,allow_eesoc_members,eligible_society_ids FROM public.events WHERE id=$1",entry.event_id)
+        if event is None:
+            raise HTTPException(404,'No such event')
+        if not await _event_membership_allowed(conn,event,entry.user_id,event['academic_year']):
+            raise HTTPException(403,'Society membership required for this event')
+        if entry.preferred_ticket_type_id is not None:
+            tt = await conn.fetchrow(f'SELECT {TT_COLUMNS} FROM public.ticket_types WHERE id=$1 AND event_id=$2',entry.preferred_ticket_type_id,entry.event_id)
+            if not tt or not await _external_ticket_allowed(conn,tt,entry.user_id,event['academic_year']):
+                raise HTTPException(403,'Not eligible for that ticket type')
         try:
             row = await conn.fetchrow(
                 f"""
@@ -2216,7 +2283,8 @@ async def promote_waitlist(academic_year: str | None = None) -> dict:
             event_id = record["event_id"]
             async with conn.transaction():
                 event = await conn.fetchrow(
-                    "SELECT id, capacity, hold_hours, starts_at, reservations_close_at "
+                    "SELECT id, capacity, hold_hours, starts_at, reservations_close_at, "
+                    "membership_restricted, allow_eesoc_members, eligible_society_ids "
                     "FROM public.events WHERE id=$1 FOR UPDATE;",
                     event_id,
                 )
@@ -2239,6 +2307,9 @@ async def promote_waitlist(academic_year: str | None = None) -> dict:
                     )
                     if waiter is None:
                         break
+                    if not await _event_membership_allowed(conn,event,waiter['user_id'],academic_year):
+                        await conn.execute("UPDATE public.waitlist_entries SET released_at=NOW() WHERE id=$1",waiter['id'])
+                        continue
 
                     # Their preferred type if it has room, otherwise any type
                     # that does — the queue is event-wide, so the offer should
@@ -2260,14 +2331,10 @@ async def promote_waitlist(academic_year: str | None = None) -> dict:
                            AND (tt.capacity IS NULL
                                 OR tt.capacity - COALESCE(live.taken,0) >= $2)
                            AND (cardinality(tt.eligible_society_ids)=0 OR
-                                (tt.members_only AND EXISTS(
-                                    SELECT 1 FROM public.users u JOIN public.members m ON m.id=u.member_id
-                                     WHERE u.id=$4 AND m.academic_year=$5)) OR
-                                EXISTS(SELECT 1 FROM public.users u
-                                    JOIN public.external_society_members em ON em.login=lower(split_part(u.email,'@',1))
-                                    WHERE u.id=$4 AND u.email_verified
-                                      AND lower(split_part(u.email,'@',2)) IN ('ic.ac.uk','imperial.ac.uk')
-                                      AND em.society_id=ANY(tt.eligible_society_ids) AND em.academic_year=$5))
+                                (tt.members_only AND {_eesoc_match_sql('$4','$5')})
+                                OR {_external_match_sql('$4','tt.eligible_society_ids','$5')})
+                           AND (NOT tt.members_only OR {_eesoc_match_sql('$4','$5')}
+                                OR {_external_match_sql('$4','tt.eligible_society_ids','$5')})
                          ORDER BY (tt.id = $3) DESC, tt.sort_order
                          LIMIT 1;
                         """,

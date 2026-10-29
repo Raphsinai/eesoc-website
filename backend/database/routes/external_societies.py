@@ -2,8 +2,24 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
+import json
 from pydantic import BaseModel, Field
 from postgres import get_pool
+
+# Used by event admission and sale reconciliation. Only an authenticated,
+# email-verified account may use roster identity, whether through its official
+# CID, its verified Union contact address, or its Imperial Login. A shortcode
+# merely typed on a guest booking is never proof of society membership.
+EXTERNAL_ACCOUNT_MATCH = """(
+    u.email_verified AND (
+        (u.member_id IS NOT NULL AND em.cid = (
+            SELECT own.cid FROM public.members own WHERE own.id=u.member_id))
+        OR (em.email IS NOT NULL AND lower(em.email)=lower(u.email))
+        OR (em.login IS NOT NULL
+            AND lower(split_part(u.email,'@',2)) IN ('ic.ac.uk','imperial.ac.uk')
+            AND lower(em.login)=lower(split_part(u.email,'@',1)))
+    )
+)"""
 
 router = APIRouter(prefix="/external-societies")
 
@@ -23,6 +39,10 @@ class ExternalMember(BaseModel):
     login: str | None = None
     first_name: str | None = None
     last_name: str | None = None
+    email: str | None = None
+    order_no: str | None = None
+    member_type: str | None = None
+    union_profile: dict = Field(default_factory=dict)
 
 @router.get("")
 async def societies():
@@ -48,6 +68,16 @@ async def credential(society_id: int):
 @router.delete("/{society_id}")
 async def remove_society(society_id: int):
     async with (await get_pool()).acquire() as conn, conn.transaction():
+        # Refuse to orphan an event that has no EESoc organiser and no other
+        # external organiser. Reassign the event before disconnecting society.
+        orphan=await conn.fetchval("""SELECT e.id FROM public.events e
+            JOIN public.external_society_events link ON link.event_id=e.id
+            WHERE link.society_id=$1 AND NOT e.eesoc_organised
+              AND NOT EXISTS (SELECT 1 FROM public.external_society_events other
+                  WHERE other.event_id=e.id AND other.society_id<>$1)
+            LIMIT 1 FOR UPDATE OF e""",society_id)
+        if orphan is not None:
+            raise HTTPException(409,f'Reassign event {orphan} before removing its only organiser')
         # Disable groups before deleting the society. ON DELETE SET NULL alone
         # would leave EESoc enabled in former society groups by accident.
         await conn.execute('''UPDATE public.whatsapp_group_settings
@@ -71,9 +101,13 @@ async def save_members(society_id: int, year: str, rows: list[ExternalMember]):
             if m.cid and m.cid not in seen:
                 seen.add(m.cid)
                 login=(m.login or '').strip().lower()
-                entries.append((society_id,year,m.cid,login or None,m.first_name,m.last_name))
+                entries.append((society_id,year,m.cid,login or None,m.first_name,m.last_name,
+                    (m.email or '').strip().lower() or None,m.order_no,m.member_type,
+                    json.dumps(m.union_profile)))
         if entries:
-            await conn.executemany("INSERT INTO public.external_society_members(society_id,academic_year,cid,login,first_name,last_name) VALUES($1,$2,$3,$4,$5,$6)",entries)
+            await conn.executemany("""INSERT INTO public.external_society_members
+                (society_id,academic_year,cid,login,first_name,last_name,email,order_no,member_type,union_profile)
+                VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)""",entries)
         await conn.execute("UPDATE public.external_societies SET synced_year=$2,synced_at=NOW(),sync_error=NULL WHERE id=$1",society_id,year)
         return {"count":len(entries)}
 
@@ -102,6 +136,67 @@ async def mailing_audience(society_id:int, year:str):
              ORDER BY lower(m.login),m.cid
         """,society_id,year)
         return [dict(r) for r in rows]
+
+@router.get('/lookup-member')
+async def lookup_member(email:str, year:str):
+    """Union identity for a verified mailbox (API only; never public)."""
+    address=email.strip().lower()
+    login,_,domain=address.partition('@')
+    college=domain in ('ic.ac.uk','imperial.ac.uk')
+    async with (await get_pool()).acquire() as conn:
+        row=await conn.fetchrow("""SELECT em.society_id,em.cid,em.login,em.first_name,
+                   em.last_name,em.email,em.order_no,em.member_type,em.academic_year
+            FROM public.external_society_members em
+            WHERE em.academic_year=$2 AND (
+                (em.email IS NOT NULL AND lower(em.email)=$1)
+                OR ($3::boolean AND lower(em.login)=$4))
+            ORDER BY (lower(em.email)=$1) DESC, em.society_id LIMIT 1""",
+            address,year,college,login)
+        if not row: raise HTTPException(404,'No matching member')
+        return dict(row)
+
+@router.get('/for-user/{user_id}/memberships')
+async def memberships_for_user(user_id:int,year:str):
+    """The verified account's own external rosters; includes official CID."""
+    async with (await get_pool()).acquire() as conn:
+        rows=await conn.fetch(f"""SELECT s.id AS society_id,s.name AS society_name,
+                   em.cid,em.login,em.first_name,em.last_name,em.email,
+                   em.order_no,em.member_type,em.academic_year
+            FROM public.users u JOIN public.external_society_members em
+              ON {EXTERNAL_ACCOUNT_MATCH}
+            JOIN public.external_societies s ON s.id=em.society_id
+            WHERE u.id=$1 AND em.academic_year=$2 ORDER BY s.name,em.cid""",
+            user_id,year)
+        return [dict(r) for r in rows]
+
+@router.get('/{society_id}/members')
+async def society_member_records(society_id:int,year:str,search:str='',limit:int=100,offset:int=0):
+    """Full roster only to callers authorised by the EESoc public API."""
+    limit=max(1,min(limit,200))
+    term=search.strip().lower()[:100]
+    async with (await get_pool()).acquire() as conn:
+        rows=await conn.fetch("""SELECT cid,login,first_name,last_name,email,
+                order_no,member_type,academic_year,union_profile
+            FROM public.external_society_members
+            WHERE society_id=$1 AND academic_year=$2 AND (
+               $3='' OR lower(cid) LIKE '%'||$3||'%'
+                OR lower(coalesce(login,'')) LIKE '%'||$3||'%'
+                OR lower(coalesce(first_name,'')||' '||coalesce(last_name,'')) LIKE '%'||$3||'%')
+            ORDER BY login NULLS LAST,cid LIMIT $4 OFFSET $5""",
+            society_id,year,term,limit,offset)
+        total=await conn.fetchval("""SELECT count(*) FROM public.external_society_members
+            WHERE society_id=$1 AND academic_year=$2 AND (
+                $3='' OR lower(cid) LIKE '%'||$3||'%'
+                OR lower(coalesce(login,'')) LIKE '%'||$3||'%'
+                OR lower(coalesce(first_name,'')||' '||coalesce(last_name,'')) LIKE '%'||$3||'%')""",
+            society_id,year,term)
+        members=[]
+        for row in rows:
+            member=dict(row)
+            if isinstance(member.get('union_profile'),str):
+                member['union_profile']=json.loads(member['union_profile'])
+            members.append(member)
+        return {'total':total,'members':members}
 
 @router.get("/{society_id}/committee")
 async def committee(society_id:int):
@@ -147,7 +242,15 @@ async def assign_event(society_id:int,event_id:int):
 
 @router.delete("/{society_id}/events/{event_id}")
 async def unassign_event(society_id:int,event_id:int):
-    async with (await get_pool()).acquire() as conn:
+    async with (await get_pool()).acquire() as conn, conn.transaction():
+        current=await conn.fetchrow('SELECT eesoc_organised FROM public.events WHERE id=$1 FOR UPDATE',event_id)
+        if current and not current['eesoc_organised']:
+            remaining=await conn.fetchval("""SELECT count(*)
+                FROM public.external_society_events WHERE event_id=$1 AND society_id<>$2""",event_id,society_id)
+            is_assigned=await conn.fetchval("""SELECT EXISTS(SELECT 1 FROM public.external_society_events
+                WHERE event_id=$1 AND society_id=$2)""",event_id,society_id)
+            if is_assigned and not remaining:
+                raise HTTPException(409,'Reassign the event before removing its only organiser')
         await conn.execute("DELETE FROM public.external_society_events WHERE society_id=$1 AND event_id=$2",society_id,event_id)
         return {"ok":True}
 
@@ -157,9 +260,14 @@ async def assigned(society_id:int,event_id:int):
         return {"assigned":bool(await conn.fetchval("SELECT EXISTS(SELECT 1 FROM public.external_society_events WHERE society_id=$1 AND event_id=$2)",society_id,event_id))}
 
 @router.get("/{society_id}/ticket-eligible")
-async def ticket_eligible(society_id:int,login:str,year:str):
+async def ticket_eligible(society_id:int,user_id:int,year:str):
     async with (await get_pool()).acquire() as conn:
-        return {"eligible":bool(await conn.fetchval("SELECT EXISTS(SELECT 1 FROM public.external_society_members WHERE society_id=$1 AND login=$2 AND academic_year=$3)",society_id,login,year))}
+        eligible=await conn.fetchval(f"""SELECT EXISTS(
+            SELECT 1 FROM public.users u JOIN public.external_society_members em
+              ON {EXTERNAL_ACCOUNT_MATCH}
+            WHERE u.id=$1 AND em.society_id=$2 AND em.academic_year=$3)""",
+            user_id,society_id,year)
+        return {'eligible':bool(eligible)}
 
 class GroupConfig(BaseModel):
     account_key: str

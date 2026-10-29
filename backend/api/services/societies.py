@@ -80,14 +80,18 @@ async def mailing_list(society_id:int) -> list[dict]:
     return await database.get(f'/external-societies/{society_id}/audience', {'year': academic_year()}) or []
 
 
-async def eligible_societies(user_email:str,ids:list[int]) -> set[int]:
-    email=user_email.lower()
-    login,_,domain=email.partition('@')
-    if domain not in ('ic.ac.uk','imperial.ac.uk') or not LOGIN_RE.fullmatch(login):
+async def eligible_societies(user_id:int|None, ids:list[int]) -> set[int]:
+    """Read the verified account's Union identities, not a browser shortcode.
+
+    Users linked to EESoc via CID, members on a society Union contact email,
+    and verified Imperial Login aliases are all covered by the same SQL gate.
+    """
+    if not user_id or not ids:
         return set()
     matched=set()
-    for society_id in ids:
-        row=await database.get(f'/external-societies/{society_id}/ticket-eligible', {'login':login,'year':academic_year()})
+    for society_id in set(ids):
+        row=await database.get(f'/external-societies/{society_id}/ticket-eligible', {
+            'user_id':user_id,'year':academic_year()})
         if row and row.get('eligible'):
             matched.add(society_id)
     return matched

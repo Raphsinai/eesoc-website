@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 from clients import database
 from utils.auth import normalise_email
+from utils.year import academic_year
 
 log = logging.getLogger("api.identity")
 
@@ -116,6 +117,19 @@ async def find_member(email: str, shortcode: str | None = None) -> dict | None:
     return None
 
 
+async def find_external_member(email: str) -> dict | None:
+    """Use an externally connected Union roster to identify a verified user.
+
+    This only informs canonical login, CID lookup and name. It intentionally
+    does NOT create an EESoc member record or set users.member_id.
+    """
+    # A verified personal email can also be the Union's contact address.
+    # The bridge lookup only accepts an exact address match for that case.
+    return await database.get('/external-societies/lookup-member', {
+        'email':normalise_email(email),'year':academic_year(),
+    })
+
+
 async def resolve_or_create_user(
     email: str,
     first_name: str | None = None,
@@ -135,9 +149,13 @@ async def resolve_or_create_user(
     """
     address = normalise_email(email)
     member = await find_member(address, shortcode)
+    # A connected society provides the same official identity fields as the
+    # EESoc roster, but is never treated as EESoc membership.
+    external = await find_external_member(address) if verified and member is None else None
+    identity = member or external
     # Collapse Imperial identities to shortcode@ic.ac.uk so a guest booking and
     # a later sign-in land on the same account.
-    address = canonical_email(address, shortcode, member)
+    address = canonical_email(address, shortcode if member else None, identity)
 
     payload: dict = {"email": address}
     if member is not None:
@@ -146,6 +164,10 @@ async def resolve_or_create_user(
         payload["first_name"] = member.get("first_name") or first_name
         payload["last_name"] = member.get("last_name") or last_name
         payload["shortcode"] = member.get("login") or clean_shortcode(shortcode)
+    elif external is not None:
+        payload['first_name'] = external.get('first_name') or first_name
+        payload['last_name'] = external.get('last_name') or last_name
+        payload['shortcode'] = external.get('login') or shortcode_from_email(address)
     else:
         payload["first_name"] = first_name
         payload["last_name"] = last_name

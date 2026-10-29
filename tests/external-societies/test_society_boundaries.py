@@ -88,8 +88,8 @@ def test_external_membership_matches_login_for_only_requested_societies(monkeypa
         assert path.endswith('/ticket-eligible')
         return {'eligible':path.startswith('/external-societies/3/')}
     monkeypatch.setattr(database,'get',get)
-    assert run(societies.eligible_societies('abc123@ic.ac.uk',[3,4]))=={3}
-    assert run(societies.eligible_societies('abc123@gmail.com',[3]))==set()
+    assert run(societies.eligible_societies(7,[3,4]))=={3}
+    assert run(societies.eligible_societies(None,[3]))==set()
 
 
 def test_disabled_and_unassigned_whatsapp_groups_cannot_be_selected(monkeypatch):

@@ -280,6 +280,9 @@ async def _view(session: AuthSession, csrf_token: str | None = None) -> SessionV
     passkeys = await database.get(f"/passkeys/count/{session.user.id}") or 0
 
     user = session.user
+    external = (await database.get(
+        f'/external-societies/for-user/{user.id}/memberships', {'year':year}
+    ) or []) if user.email_verified else []
     name = " ".join(p for p in [user.first_name, user.last_name] if p) or None
     return SessionView(
         authenticated=True,
@@ -289,11 +292,15 @@ async def _view(session: AuthSession, csrf_token: str | None = None) -> SessionV
             "name": name,
             "first_name": user.first_name,
             "last_name": user.last_name,
-            "cid": session.member.cid if session.member else None,
-            "login": session.member.login if session.member else None,
+            # EESoc membership remains a separate boolean; the user's
+            # verified external Union CID/Login are still useful for account
+            # display and booking even if they are not an EESoc member.
+            "cid": session.member.cid if session.member else (external[0].get('cid') if external else None),
+            "login": session.member.login if session.member else (external[0].get('login') if external else None),
         },
         roles=roles,
         is_member=is_member,
+        external_societies=external,
         is_admin=session.is_admin,
         is_sponsor=bool(session.sponsor_ids),
         sponsor_ids=session.sponsor_ids,
@@ -309,6 +316,7 @@ async def _view(session: AuthSession, csrf_token: str | None = None) -> SessionV
         # Members get their name from the Union feed and sponsors are set up by
         # the committee, so neither is ever asked.
         needs_name=not is_member
+        and not external
         and not session.sponsor_ids
         and not (user.first_name or "").strip(),
         csrf_token=csrf_token,

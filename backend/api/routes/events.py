@@ -92,6 +92,23 @@ REASONS = {
 }
 
 
+async def _event_member_allowed(event:dict, session:AuthSession|None) -> bool:
+    """The event-level group selector is independent of ticket restrictions."""
+    if not event.get('membership_restricted'):
+        return True
+    if not session or not session.user.email_verified:
+        return False
+    if event.get('allow_eesoc_members') and session.is_member_now:
+        return True
+    from services.societies import eligible_societies
+    return bool(await eligible_societies(session.user.id, event.get('eligible_society_ids') or []))
+
+
+async def _require_event_member(event:dict, session:AuthSession|None) -> None:
+    if not await _event_member_allowed(event,session):
+        raise HTTPException(403,REASONS['society_membership_required'])
+
+
 def _ticket_view(tt: dict, is_member: bool) -> dict:
     return {
         "id": tt["id"],
@@ -231,6 +248,14 @@ async def get_event(
     ]
 
     card = event_card(event)
+    member_allowed = await _event_member_allowed(event,session)
+    ids=set(event.get('eligible_society_ids') or [])
+    organiser_ids=set(event.get('organiser_society_ids') or [])
+    directory=(await database.get('/external-societies') or []) if ids or organiser_ids else []
+    names=[{'id':s['id'],'name':s['name']} for s in directory if s['id'] in ids]
+    organisers=([{'id':None,'name':'EESoc'}] if event.get('eesoc_organised',True) else []) + [
+        {'id':s['id'],'name':s['name']} for s in directory if s['id'] in organiser_ids
+    ]
     # The calendar/link fields live here and not in `event_card`: cards never
     # need them, and other sections depend on that shape staying put. The map
     # is public (a venue map helps anybody find the room); the meeting link
@@ -255,6 +280,12 @@ async def get_event(
             "meetingUrl": event.get("meeting_url") if show_meeting_url else None,
             "meetingUrlPrivate": bool(event.get("meeting_url_private")),
             "targetYears": event.get("target_years") or [],
+            "membershipRestricted": bool(event.get('membership_restricted')),
+            "allowEesocMembers": bool(event.get('allow_eesoc_members')),
+            "eligibleSocieties": names,
+            "organisers": organisers,
+            "organisedByEesoc": bool(event.get('eesoc_organised',True)),
+            "membershipEligible": member_allowed,
             "ticketTypes": [
                 _ticket_view(t, is_member) for t in event.get("ticket_types", [])
             ],
@@ -388,6 +419,7 @@ async def reserve(
     if event is None or not event["published"]:
         raise HTTPException(404, "No such event")
     _require_sales_open(event)
+    await _require_event_member(event,session)
 
     ticket = next(
         (t for t in event.get("ticket_types", []) if t["id"] == ticket_type_id), None
@@ -443,7 +475,7 @@ async def reserve(
     if ticket.get('eligible_society_ids'):
         from services.societies import eligible_societies
         ids=set(ticket['eligible_society_ids'])
-        valid=(await eligible_societies(str(session.user.email),list(ids))) if session and session.user.email_verified else set()
+        valid=(await eligible_societies(session.user.id,list(ids))) if session and session.user.email_verified else set()
         if not valid and not (ticket['members_only'] and is_member):
             raise HTTPException(403,REASONS['society_membership_required'])
         if valid:
@@ -793,6 +825,7 @@ async def hold_seat(
     if event is None or not event["published"]:
         raise HTTPException(404, "No such event")
     _require_sales_open(event)
+    await _require_event_member(event,session)
 
     ticket = next(
         (t for t in event.get("ticket_types", []) if t["id"] == ticket_type_id), None
@@ -803,7 +836,7 @@ async def hold_seat(
 
     if ticket.get('eligible_society_ids'):
         from services.societies import eligible_societies
-        valid=(await eligible_societies(str(session.user.email),ticket['eligible_society_ids'])) if session and session.user.email_verified else set()
+        valid=(await eligible_societies(session.user.id,ticket['eligible_society_ids'])) if session and session.user.email_verified else set()
         if not valid and not (ticket['members_only'] and session and session.is_member_now):
             raise HTTPException(403,REASONS['society_membership_required'])
 
@@ -871,6 +904,7 @@ async def join_waitlist(
     _require_sales_open(event)
     if not event.get("waitlist_enabled", True) or event.get("signup_url") or not event.get("ticket_types"):
         raise HTTPException(409, "The waitlist is not available for this event.")
+    await _require_event_member(event,session)
 
     if session:
         user_id = session.user.id

@@ -230,7 +230,17 @@ async def external_members(req: ExternalMembersRequest):
         raw = await client.external_members(req.centre_code,req.credential,req.year)
     except client.UnionAPIError as exc:
         raise HTTPException(502, 'Union refused membership request') from exc
-    return [{'cid':str(m.get('CID') or '').strip(),
-             'login':(m.get('Login') or '').strip().lower() or None,
-             'first_name':m.get('FirstName'),'last_name':m.get('Surname')}
-            for m in raw if m.get('CID')]
+    if not isinstance(raw,list):
+        raise HTTPException(502,'Union returned an invalid membership report')
+    return [{
+        'cid':str(m.get('CID') or '').strip(),
+        'login':str(m.get('Login') or '').strip().lower() or None,
+        'first_name':m.get('FirstName'),
+        'last_name':m.get('Surname'),
+        'email':str(m.get('Email') or '').strip().lower() or None,
+        'order_no':None if m.get('OrderNo') is None else str(m['OrderNo']).strip(),
+        'member_type':m.get('MemberType'),
+        # Keep any additional Union fields without pretending that this is
+        # an EESoc membership or replacing the authenticated account record.
+        'union_profile':m,
+    } for m in raw if isinstance(m,dict) and str(m.get('CID') or '').strip()]

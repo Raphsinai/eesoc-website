@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 
 class TicketType(BaseModel):
@@ -72,6 +72,14 @@ class Event(BaseModel):
     waitlist_enabled: bool = True
     hold_hours: int = 48
     published: bool = False
+    # By default events stay public. When restricted, eligibility is the union
+    # of the explicitly enabled EESoc option and listed external societies.
+    membership_restricted: bool = False
+    allow_eesoc_members: bool = False
+    eligible_society_ids: list[int] = []
+    # Display and management ownership; independent from booking eligibility.
+    eesoc_organised: bool = True
+    organiser_society_ids: list[int] = []
     # When tickets go on sale. None = not announced yet, which the site
     # shows as "On sale soon" and refuses to book.
     sales_open_at: datetime | None = None
@@ -145,6 +153,12 @@ class EventWrite(BaseModel):
     capacity: int | None = None
     hold_hours: int = 48
     published: bool = False
+    membership_restricted: bool = False
+    allow_eesoc_members: bool = False
+    eligible_society_ids: list[int] = []
+    # Display and management ownership; independent from booking eligibility.
+    eesoc_organised: bool = True
+    organiser_society_ids: list[int] = []
     # When tickets go on sale. None = not announced yet, which the site shows
     # as "On sale soon" and refuses to book. Must be on THIS model, not just
     # on Event: create and update both read it off the write payload.
@@ -172,6 +186,19 @@ class EventWrite(BaseModel):
     target_years: list[int] = []
     academic_year: str | None = None
     ticket_types: list[TicketType] = []
+
+    @model_validator(mode='after')
+    def _check_membership_access(self):
+        if (self.membership_restricted and not self.allow_eesoc_members
+                and not self.eligible_society_ids):
+            raise ValueError('Select EESoc or at least one external society for a restricted event')
+        if len(set(self.eligible_society_ids)) != len(self.eligible_society_ids) or any(i < 1 for i in self.eligible_society_ids):
+            raise ValueError('Invalid or duplicate eligible societies')
+        if not self.eesoc_organised and not self.organiser_society_ids:
+            raise ValueError('An event must be organised by at least one society')
+        if len(set(self.organiser_society_ids)) != len(self.organiser_society_ids) or any(i < 1 for i in self.organiser_society_ids):
+            raise ValueError('Invalid or duplicate organising societies')
+        return self
 
     @field_validator("target_years", mode="before")
     @classmethod

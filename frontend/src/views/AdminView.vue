@@ -126,7 +126,7 @@ function changeEventPage(delta) {
 const products = ref([])
 const eligibleSocieties = ref([])
 onMounted(async () => {
-  if (can('events.ticket_types.eligibility')) {
+  if (can('events.ticket_types.eligibility') || can('events.membership_eligibility') || can('societies.events.assign')) {
     try { eligibleSocieties.value = await api.get('/admin/societies/eligible-lookup') } catch {}
   }
 })
@@ -384,6 +384,8 @@ async function reconcile() {
 const blank = () => ({
   slug: '', title: '', photo_short_name: '', category: 'Social', description: '', image_url: '', venue: '',
   starts_at: '', ends_at: '', doors_close_at: '', capacity: null, published: false,
+  membership_restricted: false, allow_eesoc_members: false, eligible_society_ids: [],
+  eesoc_organised: true, organiser_society_ids: [],
   // Holds are whole days ending at midnight London time (section 17); the
   // form edits days and sends hold_hours = days × 24.
   hold_days: 2,
@@ -480,6 +482,11 @@ function editEvent(e) {
     meeting_url: e.meeting_url ?? '',
     meeting_url_private: Boolean(e.meeting_url_private),
     target_years: e.target_years ?? [],
+    membership_restricted: Boolean(e.membership_restricted),
+    allow_eesoc_members: Boolean(e.allow_eesoc_members),
+    eligible_society_ids: [...(e.eligible_society_ids || [])],
+    eesoc_organised: e.eesoc_organised !== false,
+    organiser_society_ids: [...(e.organiser_society_ids || [])],
     ticket_types: (e.ticket_types ?? []).map((t) => ({
       ...t,
       price_pounds: toPounds(t.price_pence),
@@ -2473,6 +2480,42 @@ usePageTitle(computed(() => `Committee · ${TABS.find(([id]) => id === tab.value
                 <input v-model="draft.meeting_url_private" type="checkbox" />
                 Meeting link visible to booked attendees only
               </label>
+
+              <fieldset style="margin:0; padding:var(--space-3); border:1px solid var(--border-hairline); display:grid; gap:var(--space-3)">
+                <legend style="padding:0 var(--space-2); font:var(--type-label)">Organising societies</legend>
+                <p style="margin:0;font:var(--type-2xs);color:var(--text-muted)">Select the societies running this event. An external society's managing committee can manage the event when assigned. Booking restrictions are set separately below.</p>
+                <template v-if="can('societies.events.assign')">
+                  <label style="font:var(--type-small)"><input v-model="draft.eesoc_organised" type="checkbox" /> EESoc</label>
+                  <label v-for="society in eligibleSocieties" :key="society.id" style="font:var(--type-small)">
+                    <input v-model="draft.organiser_society_ids" type="checkbox" :value="society.id" /> {{ society.name }}
+                  </label>
+                  <p v-if="!draft.eesoc_organised && !draft.organiser_society_ids.length" style="margin:0;color:var(--danger);font:var(--type-small)">Select at least one organiser.</p>
+                  <p style="margin:0;font:var(--type-2xs);color:var(--text-muted)">For an external-only event, untick EESoc and choose the external society.</p>
+                  <p v-if="!draft.eesoc_organised && draft.organiser_society_ids.length && !draft.membership_restricted" style="margin:0;font:var(--type-2xs);color:var(--text-muted)">Booking is still public. To make this members-only, use the separate booking eligibility selector below.</p>
+                </template>
+                <p v-else style="margin:0;font:var(--type-small);color:var(--text-muted)">
+                  {{ [draft.eesoc_organised ? 'EESoc' : null, ...eligibleSocieties.filter(s => draft.organiser_society_ids.includes(s.id)).map(s => s.name)].filter(Boolean).join(', ') || 'No organisers' }}
+                </p>
+              </fieldset>
+
+              <fieldset style="margin:0; padding:var(--space-3); border:1px solid var(--border-hairline); display:grid; gap:var(--space-3)">
+                <legend style="padding:0 var(--space-2); font:var(--type-label)">Who can book this event?</legend>
+                <template v-if="can('events.membership_eligibility')">
+                  <label style="font:var(--type-small)"><input v-model="draft.membership_restricted" type="radio" :value="false" /> Everyone (no event-level membership requirement)</label>
+                  <label style="font:var(--type-small)"><input v-model="draft.membership_restricted" type="radio" :value="true" /> Members of the selected societies only</label>
+                  <div v-if="draft.membership_restricted" style="display:grid;gap:var(--space-2);padding-left:var(--space-4)">
+                    <label style="font:var(--type-small)"><input v-model="draft.allow_eesoc_members" type="checkbox" /> EESoc members</label>
+                    <label v-for="society in eligibleSocieties" :key="society.id" style="font:var(--type-small)">
+                      <input v-model="draft.eligible_society_ids" type="checkbox" :value="society.id" /> {{ society.name }} members
+                    </label>
+                    <p style="margin:0;font:var(--type-2xs);color:var(--text-muted)">Leave EESoc unticked for an external-society-only event. Students belonging to any ticked society qualify. Ticket-specific restrictions still apply.</p>
+                    <p v-if="!draft.allow_eesoc_members && !draft.eligible_society_ids.length" style="margin:0;color:var(--danger);font:var(--type-small)">Select at least one society to restrict bookings.</p>
+                  </div>
+                </template>
+                <p v-else style="margin:0;font:var(--type-small);color:var(--text-muted)">
+                  {{ draft.membership_restricted ? `Restricted: ${draft.allow_eesoc_members ? 'EESoc, ' : ''}${draft.eligible_society_ids.length} external societies` : 'Public event' }}
+                </p>
+              </fieldset>
 
               <!-- Who the event is for. Nothing is emailed from here — the
                    year groups are recorded so a future announcement can aim

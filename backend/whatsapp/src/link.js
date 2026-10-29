@@ -102,6 +102,7 @@ export class Link {
     this.lastSentAt = 0
     this.chain = Promise.resolve()
     this.updates = Promise.resolve()
+    this.credentialWrites = Promise.resolve()
   }
 
   status() {
@@ -149,6 +150,9 @@ export class Link {
     this.stopping = true
     clearTimeout(this.timer)
     this._end()
+    // Let queued Baileys key/credential writes reach the persistent volume
+    // before Kubernetes unmounts it during a deployment.
+    await this.credentialWrites
   }
 
   /** Start linking. With a phone number, WhatsApp gives an eight-character
@@ -227,7 +231,14 @@ export class Link {
       cachedGroupMetadata: async (jid) => this.meta.get(jid),
     })
     this.sock = sock
-    sock.ev.on('creds.update', saveCreds)
+    sock.ev.on('creds.update', () => {
+      // Baileys fires writes without awaiting them. Serialize them and keep
+      // shutdown alive until the last write has settled.
+      this.credentialWrites = this.credentialWrites
+        .catch(() => {})
+        .then(() => saveCreds())
+        .catch((e) => this.log.error({ err: String(e) }, 'could not save WhatsApp credentials'))
+    })
     // One at a time, in order: handling a close wipes files and reconnects,
     // and the next update must not start on a half-handled one.
     sock.ev.on('connection.update', (update) => {

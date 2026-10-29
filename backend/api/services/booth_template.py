@@ -23,6 +23,8 @@ INK = '#0B0D12'
 WHITE = '#FFFFFF'
 GOLD = '#E7B570'
 MUTED = '#8A93A6'
+QR_PAPER = '#F7F1E7'
+QR_GOLD = '#E7B570'
 
 
 @lru_cache(maxsize=1)
@@ -128,33 +130,36 @@ def _draw_text(page: Image.Image, draw: ImageDraw.ImageDraw, text: str, *, x: fl
             pen += draw.textlength(cluster, font=font) + spacing
 
 
-# Place the code directly in the 52px white tile, not the handoff's
-# conservative 44px code box. Short links use a tight two-module margin;
-# denser links get a little more white space to stay easy to scan. The three
-# finder targets have rounded corners; data modules stay crisp squares.
-QR_SHORT_QUIET_MODULES = 2
-QR_DENSE_QUIET_MODULES = 3.5
-QR_DENSE_THRESHOLD = 33
-QR_FINDER_RADIUS_MODULES = 0.8
-QR_DENSE_FINDER_RADIUS_MODULES = 0.4
+# Warm ivory chip package. Browser SVG and PNG output both use the same
+# 62-unit carrier, H correction, 4-module quiet zone and 9-module E badge.
+QR_QUIET_MODULES = 4
+QR_BADGE_MODULES = 9
+QR_CHIP_MODULES = 6.45
+QR_MARK_W_MODULES = 4.6
+QR_MARK_H_MODULES = 3.8
+
+
+@lru_cache(maxsize=1)
+def _qr_e_mask() -> Image.Image:
+    # Generated from the actual first E in the EESoc wordmark by
+    # scripts/build_booth_qr_e.mjs; no font substitution on the server.
+    with Image.open(ROOT / 'qr-e-mask.png') as image:
+        return image.convert('L')
 
 
 def _draw_qr(draw: ImageDraw.ImageDraw, url: str) -> None:
-    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=0)
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_H, border=0)
     qr.add_data(url)
     qr.make(fit=True)
     matrix = qr.get_matrix()
     modules = len(matrix)
     tile = spec()['fixed']['qrTile']
-    dense = modules > QR_DENSE_THRESHOLD
-    quiet = QR_DENSE_QUIET_MODULES if dense else QR_SHORT_QUIET_MODULES
-    finder_radius = QR_DENSE_FINDER_RADIUS_MODULES if dense else QR_FINDER_RADIUS_MODULES
-    pitch = min(tile['w'], tile['h']) * SCALE / (modules + 2*quiet)
+    pitch = min(tile['w'], tile['h']) * SCALE / (modules + 2*QR_QUIET_MODULES)
     if pitch < 2.5:
         raise ValueError('QR URL too long for printable tile')
 
-    # Snap the cumulative module boundaries to output pixels instead of
-    # truncating the pitch. This fills the tile without antialiasing the code.
+    # Snap each module boundary to the nearest 300dpi pixel; modules should
+    # never be blurred on a real SELPHY print.
     origin_x = (tile['x'] + (tile['w'] - modules*pitch/SCALE)/2) * SCALE
     origin_y = (tile['y'] + (tile['h'] - modules*pitch/SCALE)/2) * SCALE
     xs = [round(origin_x + index*pitch) for index in range(modules+1)]
@@ -169,18 +174,45 @@ def _draw_qr(draw: ImageDraw.ImageDraw, url: str) -> None:
             if dark and not is_finder(x, y):
                 draw.rectangle((xs[x], ys[y], xs[x+1]-1, ys[y+1]-1), fill=INK)
 
-    # Slightly rounded finder corners make the code feel intentional. The
-    # complete 7/5/3 finder geometry stays intact for scanning.
+    # Rounded, but otherwise perfectly standard 7/5/3 finder targets.
     for fx, fy in finders:
         for inset, span, color, radius in (
-            (0, 7, INK, finder_radius),
-            (1, 5, WHITE, finder_radius*.75),
-            (2, 3, INK, finder_radius*.6),
+            (0, 7, INK, .65),
+            (1, 5, QR_PAPER, .46),
+            (2, 3, INK, .3),
         ):
             x0, y0 = xs[fx+inset], ys[fy+inset]
             x1, y1 = xs[fx+inset+span]-1, ys[fy+inset+span]-1
             draw.rounded_rectangle((x0, y0, x1, y1),
                                    radius=max(1, round(pitch*radius)), fill=color)
+
+    # An opaque 9-module clearing protects the emblem from neighbouring data.
+    # H correction absorbs this deliberately small missing portion of the code.
+    cx = origin_x + modules*pitch/2
+    cy = origin_y + modules*pitch/2
+    half = QR_BADGE_MODULES*pitch/2
+    draw.rounded_rectangle((round(cx-half), round(cy-half),
+                            round(cx+half), round(cy+half)),
+                           radius=round(.95*pitch), fill=QR_PAPER)
+
+    # Six fine gold contacts and a bordered miniature processor package.
+    chip_half = QR_CHIP_MODULES*pitch/2
+    for offset in (-1.85, 0, 1.85):
+        y = round(cy+offset*pitch)
+        for side in (-1, 1):
+            x1 = round(cx+side*(chip_half+.85*pitch))
+            x2 = round(cx+side*(chip_half-.08*pitch))
+            draw.line([(x1,y),(x2,y)], fill=QR_GOLD,
+                      width=max(1,round(.35*pitch)))
+    draw.rounded_rectangle((round(cx-chip_half), round(cy-chip_half),
+                            round(cx+chip_half), round(cy+chip_half)),
+                           radius=round(.75*pitch), fill=QR_PAPER,
+                           outline=QR_GOLD, width=max(1,round(.32*pitch)))
+
+    width = max(1,round(QR_MARK_W_MODULES*pitch))
+    height = max(1,round(QR_MARK_H_MODULES*pitch))
+    mask = _qr_e_mask().resize((width,height), Image.Resampling.LANCZOS)
+    draw.bitmap((round(cx-width/2), round(cy-height/2)), mask, fill=INK)
 
 
 def render(photos: list[bytes], title: str, url: str, orientation: str = 'portrait',

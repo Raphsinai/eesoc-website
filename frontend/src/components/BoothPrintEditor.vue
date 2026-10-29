@@ -63,57 +63,63 @@ function geometry(rect, {width: iw, height: ih}, p = {}) {
     top: rect.y+(rect.h-dh)*Number(p.y ?? .5),
   }
 }
-// Keep the live SVG preview aligned with the server's full-tile QR geometry.
-const QR_TILE = { x: 308, y: 477, width: 52, height: 52 }
-const QR_SHORT_QUIET_MODULES = 2
-const QR_DENSE_QUIET_MODULES = 3.5
-const QR_DENSE_THRESHOLD = 33
-const QR_FINDER_RADIUS_MODULES = 0.8
-const QR_DENSE_FINDER_RADIUS_MODULES = 0.4
-const QR_INK = '#0B0D12' // Match the page's deep navy exactly.
+// Keep the browser preview identical to the printable 300 DPI QR.
+const QR_TILE = { x: 300, y: 470, width: 62, height: 62 }
+const QR_QUIET = 4
+const QR_INK = '#0B0D12'
+const QR_PAPER = '#F7F1E7'
+const QR_GOLD = '#E7B570'
 
 function createQr(doc, group, value) {
   if (!value) return
-  const qr = qrGenerator(0, 'M')
+  const qr = qrGenerator(0, 'H')
   qr.addData(value)
   qr.make()
   const n = qr.getModuleCount()
-  const dense = n > QR_DENSE_THRESHOLD
-  const quiet = dense ? QR_DENSE_QUIET_MODULES : QR_SHORT_QUIET_MODULES
-  const finderRadius = dense ? QR_DENSE_FINDER_RADIUS_MODULES : QR_FINDER_RADIUS_MODULES
-  const pitch = Math.min(QR_TILE.width, QR_TILE.height) / (n + 2 * quiet)
+  const pitch = QR_TILE.width / (n + 2 * QR_QUIET)
   if (pitch * 300 / 96 < 2.5) throw new Error('QR URL is too long for a printable tile')
   const x0 = QR_TILE.x + (QR_TILE.width - n * pitch) / 2
   const y0 = QR_TILE.y + (QR_TILE.height - n * pitch) / 2
+  const cx = x0 + n*pitch/2, cy = y0 + n*pitch/2
   const finders = [[0, 0], [n - 7, 0], [0, n - 7]]
-
-  const rect = (x, y, w, h, fill, r = 0) => {
-    const node = doc.createElementNS(svgNS, 'rect')
-    node.setAttribute('x', String(x))
-    node.setAttribute('y', String(y))
-    node.setAttribute('width', String(w))
-    node.setAttribute('height', String(h))
-    node.setAttribute('fill', fill)
-    if (r) node.setAttribute('rx', String(r))
-    group.appendChild(node)
+  const rect = (x,y,w,h,fill,r=0,stroke=null,sw=0) => {
+    const el = doc.createElementNS(svgNS, 'rect')
+    Object.entries({ x, y, width:w, height:h, fill }).forEach(([k,v]) => el.setAttribute(k,String(v)))
+    if (r) el.setAttribute('rx',String(r))
+    if (stroke) { el.setAttribute('stroke',stroke); el.setAttribute('stroke-width',String(sw)) }
+    group.appendChild(el)
+    return el
   }
-  const inFinder = (x, y) => finders.some(([fx, fy]) =>
-    x >= fx && x < fx + 7 && y >= fy && y < fy + 7)
-
-  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
-    if (qr.isDark(y, x) && !inFinder(x, y)) {
-      rect(x0 + x * pitch, y0 + y * pitch, pitch + 0.002, pitch + 0.002, QR_INK)
+  const inFinder = (x,y) => finders.some(([fx,fy]) => x>=fx && x<fx+7 && y>=fy && y<fy+7)
+  for (let y=0; y<n; y++) for (let x=0; x<n; x++) {
+    if (qr.isDark(y,x) && !inFinder(x,y)) rect(x0+x*pitch,y0+y*pitch,pitch+.002,pitch+.002,QR_INK)
+  }
+  for (const [fx,fy] of finders) {
+    for (const [inset,span,color,radius] of [[0,7,QR_INK,.65],[1,5,QR_PAPER,.46],[2,3,QR_INK,.3]]) {
+      rect(x0+(fx+inset)*pitch,y0+(fy+inset)*pitch,span*pitch,span*pitch,color,radius*pitch)
     }
   }
-  for (const [fx, fy] of finders) {
-    for (const [inset, span, color, radius] of [
-      [0, 7, QR_INK, finderRadius],
-      [1, 5, '#FFFFFF', finderRadius * 0.75],
-      [2, 3, QR_INK, finderRadius * 0.6],
-    ]) {
-      rect(x0 + (fx + inset) * pitch, y0 + (fy + inset) * pitch,
-        span * pitch, span * pitch, color, radius * pitch)
-    }
+  rect(cx-4.5*pitch,cy-4.5*pitch,9*pitch,9*pitch,QR_PAPER,.95*pitch)
+  for (const offset of [-1.85,0,1.85]) for (const side of [-1,1]) {
+    const x = cx + side*3.225*pitch
+    rect(x-0.85*pitch,cy+(offset-.175)*pitch,1.7*pitch,.35*pitch,QR_GOLD,.1*pitch)
+  }
+  rect(cx-3.225*pitch,cy-3.225*pitch,6.45*pitch,6.45*pitch,QR_PAPER,.75*pitch,QR_GOLD,.32*pitch)
+  // Clone the first E vector from the actual embedded EESoc wordmark.
+  const logo = doc.getElementById('logo')
+  const ePath = [...logo.querySelectorAll('path')].find(p => p.getAttribute('d')?.startsWith('M1996.76 '))
+  if (ePath) {
+    const inner = doc.createElementNS(svgNS,'svg')
+    inner.setAttribute('x',String(cx-2.3*pitch))
+    inner.setAttribute('y',String(cy-1.9*pitch))
+    inner.setAttribute('width',String(4.6*pitch))
+    inner.setAttribute('height',String(3.8*pitch))
+    inner.setAttribute('viewBox','400 680 2120 1750')
+    inner.setAttribute('preserveAspectRatio','none')
+    const path = ePath.cloneNode(true)
+    path.setAttribute('fill',QR_INK)
+    inner.appendChild(path)
+    group.appendChild(inner)
   }
 }
 

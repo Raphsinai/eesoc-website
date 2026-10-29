@@ -40,10 +40,10 @@ def test_exact_postcard_dimensions_and_determinism(pictures, count):
         assert img.size == (1181, 1747)
         assert img.mode == 'RGB'
         assert img.info['dpi'][0] == pytest.approx(300, abs=1)
-        # Black ink background, gold top pins, preserved white QR tile.
+        # Navy background, gold pins and the warm ivory QR chip carrier.
         assert img.getpixel((3, 200)) == (11, 13, 18)
         assert img.getpixel((23, 12)) == (231, 181, 112)
-        assert img.getpixel((965, 1495)) == (255, 255, 255)
+        assert img.getpixel((round(302*booth_template.SCALE), round(472*booth_template.SCALE))) == (247, 241, 231)
 
 
 @pytest.mark.parametrize('count', (1, 2, 3, 4))
@@ -86,40 +86,28 @@ def test_handoff_logo_and_font_sources_exist():
         assert (assets / 'fonts' / font).exists()
 
 
-@pytest.mark.parametrize('url,min_coverage,expected_quiet', [
-    ('https://eesoc.com/api/p/AbCdEfGhIjKl', .87, 2),
-    ('https://eesoc.raphsinai.dev/api/p/AbCdEfGhIjKl', .88, 2),
-    ('https://eesoc.raphsinai.dev/photos/0123456789abcdef0123456789abcdef', .83, 3.5),
+@pytest.mark.parametrize('url', [
+    'https://eesoc.com/api/p/AbCdEfGhIjKl',
+    'https://eesoc.raphsinai.dev/api/p/AbCdEfGhIjKl',
+    'https://eesoc.raphsinai.dev/photos/0123456789abcdef0123456789abcdef',
 ])
-def test_qr_fills_the_white_tile_in_background_navy(url, min_coverage, expected_quiet):
-    """QR ink covers the tile without losing the scannable margin."""
+def test_branded_qr_keeps_4_module_quiet_zone_and_logo(url):
     import qrcode
-    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=0)
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_H, border=0)
     qr.add_data(url)
     qr.make(fit=True)
-    modules = len(qr.get_matrix())
-    expected = (booth_template.QR_SHORT_QUIET_MODULES if modules <=
-                booth_template.QR_DENSE_THRESHOLD else
-                booth_template.QR_DENSE_QUIET_MODULES)
-    assert expected == expected_quiet
-
-    layout = booth_template.spec()['fixed']['qrTile']
-    scale = booth_template.SCALE
-    page = Image.new('RGB', (1181, 1747), booth_template.WHITE)
+    n = len(qr.get_matrix())
+    assert booth_template.QR_QUIET_MODULES == 4
+    assert booth_template.QR_BADGE_MODULES == 9
+    tile = booth_template.spec()['fixed']['qrTile']
+    page = Image.new('RGB', (1181, 1747), booth_template.QR_PAPER)
     booth_template._draw_qr(ImageDraw.Draw(page), url)
-    ink = ImageChops.difference(page, Image.new('RGB', page.size, booth_template.WHITE))
-    bounds = ink.getbbox()
-    assert bounds is not None
-    left, top, right, bottom = bounds
-    tile_left = round(layout['x'] * scale)
-    tile_top = round(layout['y'] * scale)
-    tile_right = round((layout['x'] + layout['w']) * scale)
-    tile_bottom = round((layout['y'] + layout['h']) * scale)
-    assert tile_left < left < right < tile_right
-    assert tile_top < top < bottom < tile_bottom
-    assert (right - left) / (tile_right - tile_left) >= min_coverage
-    # Finder corners are subtly rounded, while data modules remain opaque navy.
-    assert page.getpixel((left, top)) == (255, 255, 255)
-    assert page.getpixel((left + 5, top)) == (11, 13, 18)
-    for point in ((left, top + 8), (right - 5, top), (left + 8, bottom - 1)):
-        assert page.getpixel(point) in ((11, 13, 18), (255, 255, 255))
+    scale = booth_template.SCALE
+    cx = round((tile['x']+tile['w']/2)*scale)
+    cy = round((tile['y']+tile['h']/2)*scale)
+    assert page.getpixel((cx,cy)) != (247,241,231)  # real E in the chip
+    pitch = tile['w']*scale/(n+8)
+    left = round((tile['x']+tile['w']/2-n*pitch/(2*scale))*scale)
+    # At least three entire modules of untouched quiet zone on each side.
+    assert page.getpixel((round(left-2*pitch),cy)) == (247,241,231)
+    assert (ROOT / 'backend/api/assets/booth/qr-e-mask.png').exists()

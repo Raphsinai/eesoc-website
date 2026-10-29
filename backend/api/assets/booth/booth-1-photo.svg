@@ -162,7 +162,19 @@
 <text id="event-name" x="18" y="494.61" fill="#FFFFFF" font-family="'Space Mono', monospace" font-weight="700" font-size="14" letter-spacing="-0.28">{{EVENT_NAME}}</text>
 <text id="event-details" x="18" y="510.38" fill="#E7B570" font-family="'IBM Plex Mono', monospace" font-weight="400" font-size="9" letter-spacing="1.26">{{EVENT_DETAILS}}</text>
 <text id="scan-text" x="18" y="526.38" fill="#8A93A6" font-family="'IBM Plex Mono', monospace" font-weight="400" font-size="9">Scan for the digital copy</text>
-<rect id="qr-tile" x="308" y="477" width="52" height="52" fill="#FFFFFF"/>
+<g id="qr-pin-contacts" fill="#E7B570">
+<rect x="296.5" y="480" width="3.5" height="1.35" rx="0.3"/>
+<rect x="362" y="480" width="3.5" height="1.35" rx="0.3"/>
+<rect x="296.5" y="491" width="3.5" height="1.35" rx="0.3"/>
+<rect x="362" y="491" width="3.5" height="1.35" rx="0.3"/>
+<rect x="296.5" y="502" width="3.5" height="1.35" rx="0.3"/>
+<rect x="362" y="502" width="3.5" height="1.35" rx="0.3"/>
+<rect x="296.5" y="513" width="3.5" height="1.35" rx="0.3"/>
+<rect x="362" y="513" width="3.5" height="1.35" rx="0.3"/>
+<rect x="296.5" y="524" width="3.5" height="1.35" rx="0.3"/>
+<rect x="362" y="524" width="3.5" height="1.35" rx="0.3"/>
+</g>
+<rect id="qr-tile" x="300" y="470" width="62" height="62" rx="5.5" fill="#F7F1E7" stroke="#DAB783" stroke-width="0.65"/>
 <!-- QR: draw the code inside the 44×44 box at x=312 y=481 (4 px white margin on every side). -->
 <g id="qr"></g>
 </svg>

@@ -84,17 +84,13 @@
       }
     ],
     "qrTile": {
-      "x": 308,
-      "y": 477,
-      "w": 52,
-      "h": 52,
+      "x": 300,
+      "y": 470,
+      "w": 62,
+      "h": 62,
       "fill": "qrPaper",
-      "codeBox": {
-        "x": 312,
-        "y": 481,
-        "w": 44,
-        "h": 44
-      }
+      "quietModules": 4,
+      "badgeModules": 9
     },
     "text": {
       "maxWidth": 276,

@@ -48,10 +48,10 @@ Draw order, back to front:
 | `event-name` | Text, token `{{EVENT_NAME}}` | baseline (18, 494.61) |
 | `event-details` | Text, token `{{EVENT_DETAILS}}` | baseline (18, 510.38) |
 | `scan-text` | Fixed text "Scan for the digital copy" | baseline (18, 526.38) |
-| `qr-tile` | White square behind the QR | 308, 477, 52 × 52 |
-| `qr` | **Empty `<g>`. Insert the QR here**, inside the 44 × 44 box at (312, 481). | 312, 481, 44 × 44 |
+| `qr-tile` | Warm ivory rounded carrier with thin gold rim behind the QR | 300, 470, 62 × 62 |
+| `qr` | **Empty `<g>`. Insert H-corrected QR modules, rounded finders and central E-chip here.** | centred within 300, 470, 62 × 62 |
 
-Colours: background `#0B0D12`, gold `#E7B570`, empty window `#14171F`, title `#FFFFFF`, muted `#8A93A6`, QR ink `#0B0D12` on `#FFFFFF`.
+Colours: background `#0B0D12`, gold `#E7B570`, empty window `#14171F`, title `#FFFFFF`, muted `#8A93A6`, QR ink `#0B0D12` on warm ivory `#F7F1E7`; gold `#E7B570` contacts and logo-chip outline.
 
 ## 5. Photo windows per layout
 
@@ -176,11 +176,11 @@ The interactions work in design px:
 
 - **Content**: the URL of that print's digital copy.
   - Keep it short (about 25 characters or fewer) so the code stays coarse enough to scan on a 13.8 mm tile.
-- **Error correction**: M.
-- **Placement**: centre the code in the 44 × 44 box at (312, 481) inside the white `qr-tile`. The tile's 4 px margin is the quiet zone.
-- **Sharpness**: at 300 dpi the box is 137.5 px. Use an **integer module size** of `floor(137.5 / modules)` px and centre the code. Without this, modules blur together.
-  - Draw it as `<rect>` modules in the SVG, or as a 1:1 pixel bitmap in a raster pipeline.
-- **Ink**: `#0B0D12` on white.
+- **Error correction**: H, reserving enough redundancy for a small central EESoc chip emblem.
+- **Placement**: centre the code on the 62 × 62 carrier at (300, 470), keeping 4 modules of quiet space on every side. The carrier has softened corners and short gold contacts *outside* the quiet zone.
+- **Central chip**: a 9-module ivory knock-out, gold inner chip outline/contacts and the actual first E path of the EESoc wordmark in navy. The visual mark is deliberately small so scanner alignment/error correction remains effective.
+- **Sharpness**: snap each module boundary to an output pixel at 300 dpi (do not antialias data modules); only the finder and logo edges are rounded/smoothed.
+- **Ink**: `#0B0D12` on `#F7F1E7`. Keep print and live SVG geometry in sync and test decoding at final printed size.
 
 ## 9. Website behaviour
 

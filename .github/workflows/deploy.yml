@@ -93,6 +93,23 @@ jobs:
           ! grep -qE '^\s*dev_login_enabled:\s*bool\s*=\s*True' backend/api/config.py
       - name: Run Python regression tests (including migration safety)
         run: python3 -m pytest tests -q
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run browser regression tests against the same isolated stack
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npx playwright test --config frontend/playwright.config.js
+      - name: Browser report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore
       - name: Logs on failure
         if: failure()
         run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs --tail 100

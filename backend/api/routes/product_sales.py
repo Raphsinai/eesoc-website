@@ -110,14 +110,24 @@ async def scoped_row(row_id: int, session: AuthSession) -> dict:
     return row
 
 
+@router.get('/rows/{row_id}/candidates', dependencies=[Depends(require_action('events.bookings.import.view'))])
+async def search_import_reservations(row_id: int, q: str = '', limit: int = 30,
+                                     session: AuthSession = Depends(require_admin)) -> dict:
+    row = await scoped_row(row_id, session)
+    if row['status'] not in ('review', 'unreserved'):
+        raise HTTPException(409, 'Sale is no longer awaiting reconciliation')
+    return await database.get(f'/product-sales/rows/{row_id}/candidates',
+                              {'q': q, 'limit': limit}) or {'candidates': [], 'total': 0}
+
+
 @router.post('/rows/{row_id}/approve', dependencies=[Depends(require_action('events.bookings.confirm')), Depends(verify_csrf)])
 async def approve_import_match(row_id: int, reservation_id: int = Body(embed=True),
                                session: AuthSession = Depends(require_admin)) -> dict:
     row = await scoped_row(row_id, session)
-    if row['status'] != 'review':
-        raise HTTPException(409, 'Sale is not awaiting approval')
-    # DB adapter rechecks scope, status, quantity and suggestion membership in
-    # the same transaction as changing the reservation and recording attribution.
+    if row['status'] not in ('review', 'unreserved'):
+        raise HTTPException(409, 'Sale is not awaiting a reservation link')
+    # The DB adapter rechecks status, event/ticket scope, quantity and duplicate
+    # purchase evidence atomically. No longer restricted to fuzzy suggestions.
     result = await database.post(f'/product-sales/rows/{row_id}/approve', {
         'reservation_id': reservation_id, 'actor_id': session.user.id,
     })

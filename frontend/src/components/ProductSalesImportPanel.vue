@@ -4,6 +4,7 @@ import api from '@/api'
 import { can } from '@/stores/session'
 import Card from '@/components/ds/Card.vue'
 import Button from '@/components/ds/Button.vue'
+import SaleMatchExplorer from '@/components/SaleMatchExplorer.vue'
 
 const props = defineProps({ eventId: { type: Number, required: true } })
 const emit = defineEmits(['refresh'])
@@ -15,8 +16,16 @@ const targetId = ref('')
 const busy = ref(false)
 const error = ref('')
 const notice = ref('')
-const approvalChoice = reactive({})
 const detailForm = reactive({})
+const activeMatchId = ref(null)
+const activeMatch = computed(() => rows.value.find(row => row.id === activeMatchId.value) || null)
+function openMatch(row) { activeMatchId.value = activeMatchId.value === row.id ? null : row.id }
+async function linkedReservation(row) {
+  notice.value = `Linked reservation #${row.id} and confirmed the ticket against its Union sale.`
+  activeMatchId.value = null
+  await refresh()
+  emit('refresh')
+}
 const shownReview = ref(30)
 const shownUnreserved = ref(30)
 
@@ -55,9 +64,6 @@ async function refresh() {
     rows.value = items.rows || []
     imports.value = batches.imports || []
     for (const row of rows.value) {
-      if (row.status === 'review' && approvalChoice[row.id] === undefined) {
-        approvalChoice[row.id] = row.suggested_reservation_id || row.suggestions?.[0]?.id || ''
-      }
       if (row.status === 'unreserved' && !detailForm[row.id]) {
         detailForm[row.id] = {
           email: row.email || '', ...names(row), note: '', send_confirmation: true,
@@ -91,21 +97,6 @@ async function upload() {
     notice.value = result.existing
       ? 'This file has already been imported. No duplicate tickets were issued.'
       : `Imported ${Object.values(result.counts || {}).reduce((sum, value) => sum + value, 0)} sales: ${result.counts.confirmed || 0} confirmed, ${result.counts.review || 0} need approval, ${result.counts.unreserved || 0} have no reservation.`
-    await refresh()
-    emit('refresh')
-  } catch (e) { error.value = e.message }
-  finally { busy.value = false }
-}
-
-async function approve(row) {
-  if (!approvalChoice[row.id]) { error.value = 'Select the intended reservation.'; return }
-  busy.value = true
-  error.value = ''
-  try {
-    await api.post(`/admin/product-sales/rows/${row.id}/approve`, {
-      reservation_id: Number(approvalChoice[row.id]),
-    })
-    notice.value = `Confirmed the selected reservation for ${row.buyer_name || row.cid}.`
     await refresh()
     emit('refresh')
   } catch (e) { error.value = e.message }
@@ -166,19 +157,22 @@ async function addTicket(row) {
       </div>
     </Card>
 
+    <SaleMatchExplorer v-if="activeMatch && can('events.bookings.import.view')" :sale="activeMatch"
+      @close="activeMatchId = null" @linked="linkedReservation" />
+
     <Card v-if="review.length && can('events.bookings.import.view')" variant="offset">
       <h3 style="font:var(--type-h5);margin:0">Matches needing approval ({{ review.length }})</h3>
       <p style="font:var(--type-small);color:var(--text-muted);margin:0">No ticket is confirmed until an authorised committee member selects and approves a matching reservation.</p>
       <div v-for="row in review.slice(0,shownReview)" :key="row.id" class="sales-row">
         <div><b>{{ row.buyer_name || 'Unnamed buyer' }}</b> · {{ row.cid || 'no CID' }} · {{ row.ticket_type_name }} · qty {{ row.quantity }}</div>
         <div class="sales-detail">Order {{ row.order_number || 'not supplied' }} · {{ row.matched_on }}</div>
-        <div v-if="row.suggestions?.length" class="sales-actions">
-          <select v-model.number="approvalChoice[row.id]" class="ees-select" :disabled="busy">
-            <option v-for="candidate in row.suggestions" :key="candidate.id" :value="candidate.id">
-              {{ candidate.name }} · reservation #{{ candidate.id }} · qty {{ candidate.quantity }} · {{ Math.round(candidate.score * 100) }}% similarity
-            </option>
-          </select>
-          <Button v-if="can('events.bookings.confirm')" size="sm" :disabled="busy || !approvalChoice[row.id]" @click="approve(row)">Approve match</Button>
+        <div class="sales-actions">
+          <Button size="sm" variant="secondary" @click="openMatch(row)">
+            {{ activeMatchId === row.id ? 'Close search' : 'Search and link reservation' }}
+          </Button>
+          <span v-if="row.suggestions?.length" class="sales-detail">
+            {{ row.suggestions.length }} suggested match(es) — open search to review
+          </span>
         </div>
       </div>
       <Button v-if="review.length > shownReview" size="sm" variant="secondary" @click="shownReview += 30">Show more</Button>
@@ -186,10 +180,15 @@ async function addTicket(row) {
 
     <Card v-if="unreserved.length && can('events.bookings.import.view')" variant="offset">
       <h3 style="font:var(--type-h5);margin:0">Bought but did not reserve ({{ unreserved.length }})</h3>
-      <p style="font:var(--type-small);color:var(--text-muted);margin:0">Complete the details below to issue a ticket. No ticket is created automatically.</p>
+      <p style="font:var(--type-small);color:var(--text-muted);margin:0">Search for an existing reservation first, including by email or reservation ID. If none exists, complete the details to issue a ticket. No ticket is created automatically.</p>
       <div v-for="row in unreserved.slice(0,shownUnreserved)" :key="row.id" class="sales-row">
         <div><b>{{ row.buyer_name || 'Unnamed buyer' }}</b> · CID {{ row.cid || 'not given' }} · {{ row.ticket_type_name }} · qty {{ row.quantity }}</div>
         <div class="sales-detail">Order {{ row.order_number || 'not supplied' }} · {{ row.filename }}</div>
+        <div class="sales-actions">
+          <Button size="sm" variant="secondary" @click="openMatch(row)">
+            {{ activeMatchId === row.id ? 'Close search' : 'Find existing reservation to link' }}
+          </Button>
+        </div>
         <div v-if="can('events.bookings.add') && detailForm[row.id]" class="sales-form">
           <label>Email<input v-model="detailForm[row.id].email" type="email" required placeholder="name@example.com" /></label>
           <label>First name<input v-model="detailForm[row.id].first_name" type="text" /></label>

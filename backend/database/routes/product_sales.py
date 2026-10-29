@@ -6,6 +6,7 @@ again is idempotent. No fuzzy matches are ever approved automatically.
 from __future__ import annotations
 
 import json
+from difflib import SequenceMatcher
 
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
@@ -241,6 +242,87 @@ async def one_row(row_id: int) -> dict:
     return decode_row(dict(row))
 
 
+@router.get('/rows/{row_id}/candidates')
+async def reservation_candidates(row_id: int, q: str = '', limit: int = 30) -> dict:
+    """Find eligible reservations for an imported sale, never automatically link.
+
+    The import can be 'review' or 'unreserved'; lack of an automatic suggestion
+    must not prevent a committee officer from finding an existing reservation.
+    Results are scoped to the imported row's event and exact ticket type.
+    """
+    if len(q) > 120 or limit < 1 or limit > 100:
+        raise HTTPException(400, 'Invalid reservation search')
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        sale = await conn.fetchrow("""SELECT r.status,r.quantity,r.buyer_name,r.cid,
+                    r.email,i.event_id,r.ticket_type_id
+                FROM public.product_sales_import_rows r
+                JOIN public.product_sales_imports i ON i.id=r.import_id
+                WHERE r.id=$1""", row_id)
+        if sale is None:
+            raise HTTPException(404, 'Imported sale not found')
+        if sale['status'] not in ('review', 'unreserved'):
+            raise HTTPException(409, 'This sale has already been handled')
+        search = q.strip()
+        # Use a literal substring search, not an attacker-supplied SQL wildcard.
+        escape = chr(92)
+        needle = ('%' + search.replace(escape, escape * 2)
+                  .replace('%', escape + '%').replace('_', escape + '_') + '%') if search else None
+        candidates = await conn.fetch("""SELECT r.id,r.quantity,r.status,r.created_at,
+                       r.order_number,u.email, u.first_name,u.last_name,
+                       m.cid,m.first_name AS member_first_name,m.last_name AS member_last_name
+                    FROM public.reservations r
+                    JOIN public.users u ON u.id=r.user_id
+                    LEFT JOIN public.members m ON m.id=u.member_id
+                    WHERE r.event_id=$1 AND r.ticket_type_id=$2
+                      AND r.status='held'
+                      AND ($3::text IS NULL OR
+                           r.id::text=$4 OR
+                           u.email ILIKE $3 ESCAPE '\' OR
+                           m.cid ILIKE $3 ESCAPE '\' OR
+                           trim(concat_ws(' ',u.first_name,u.last_name)) ILIKE $3 ESCAPE '\' OR
+                           trim(concat_ws(' ',m.first_name,m.last_name)) ILIKE $3 ESCAPE '\' OR
+                           coalesce(r.order_number,'') ILIKE $3 ESCAPE '\')
+                    ORDER BY r.created_at DESC LIMIT 1000""",
+                    sale['event_id'],sale['ticket_type_id'],needle,search)
+    from sale_matching import normalized_name, normalized_cid
+    buyer = normalized_name(sale['buyer_name'])
+    parts = buyer.split()
+    buyer_first, buyer_last = (parts[0], parts[-1]) if parts else ('', '')
+    result = []
+    for record in candidates:
+        record = dict(record)
+        name = ' '.join(filter(None,(record.get('member_first_name') or record.get('first_name'),
+                                     record.get('member_last_name') or record.get('last_name'))))
+        name_normalized = normalized_name(name)
+        chunks = name_normalized.split()
+        first = chunks[0] if chunks else ''
+        last = chunks[-1] if chunks else ''
+        score = round(SequenceMatcher(None,buyer,name_normalized).ratio(),3) if buyer and name_normalized else 0
+        if buyer_first and buyer_last and first and last:
+            score = max(score,round((SequenceMatcher(None,buyer_first,first).ratio()+
+                                    SequenceMatcher(None,buyer_last,last).ratio())/2,3))
+        cid_match = bool(sale['cid'] and record['cid'] and
+                         normalized_cid(sale['cid']) == normalized_cid(record['cid']))
+        email_match = bool(sale['email'] and record['email'] and
+                           sale['email'].strip().casefold() == record['email'].strip().casefold())
+        if cid_match:
+            score = 1
+        elif email_match:
+            score = max(score,.99)
+        result.append({'id':record['id'],'name':name or record['email'],
+                       'email':record['email'],'cid':record['cid'],
+                       'quantity':record['quantity'],'status':record['status'],
+                       'created_at':record['created_at'],'order_number':record['order_number'],
+                       'score':score,'cid_match':cid_match,'email_match':email_match,
+                       'quantity_matches':record['quantity']==sale['quantity']})
+    # Display eligible rows first, then the strongest matches. Never select one
+    # for the officer; the separate approval endpoint rechecks every invariant.
+    result.sort(key=lambda r:(not r['quantity_matches'],-r['score'], -r['id']))
+    return {'candidates':result[:limit],'total':len(result),
+            'truncated':len(candidates)==1000}
+
+
 @router.post('/rows/{row_id}/approve')
 async def approve_row(row_id: int, reservation_id: int = Body(embed=True), actor_id: int = Body(embed=True)) -> dict:
     pool = await get_pool()
@@ -248,11 +330,11 @@ async def approve_row(row_id: int, reservation_id: int = Body(embed=True), actor
         row = await conn.fetchrow("""SELECT r.*,i.event_id FROM public.product_sales_import_rows r
             JOIN public.product_sales_imports i ON i.id=r.import_id
             WHERE r.id=$1 FOR UPDATE OF r""", row_id)
-        if row is None or row['status'] != 'review':
-            raise HTTPException(409, 'Sale is no longer awaiting approval')
-        suggestions = json.loads(row['suggestions']) if isinstance(row['suggestions'], str) else row['suggestions']
-        if reservation_id not in [v['id'] for v in suggestions]:
-            raise HTTPException(400, 'Choose a reservation from the suggested matches')
+        if row is None or row['status'] not in ('review', 'unreserved'):
+            raise HTTPException(409, 'Sale has already been handled')
+        # Serialise confirmations for one event so two separate imported rows
+        # cannot both claim the same Union order in concurrent transactions.
+        await conn.fetchval('SELECT id FROM public.events WHERE id=$1 FOR UPDATE', row['event_id'])
         reservation = await conn.fetchrow("SELECT id, ticket_type_id, event_id, status, quantity FROM public.reservations WHERE id=$1 FOR UPDATE", reservation_id)
         if (reservation is None or reservation['event_id'] != row['event_id'] or
             reservation['ticket_type_id'] != row['ticket_type_id'] or
@@ -260,13 +342,26 @@ async def approve_row(row_id: int, reservation_id: int = Body(embed=True), actor
             raise HTTPException(409, 'Reservation is not eligible for this sale')
         if reservation['quantity'] != row['quantity']:
             raise HTTPException(409, 'Sale and reservation quantities differ. Resolve quantities before confirming.')
+        # Never reuse one Union purchase to confirm several reservations.
+        # The row lock above serialises this reservation; imported row locks
+        # serialise the sale. Check for an already-confirmed matching order too.
+        if row['order_number']:
+            used = await conn.fetchval("""SELECT EXISTS(SELECT 1 FROM public.reservations
+                WHERE id<>$1 AND event_id=$2 AND ticket_type_id=$3 AND status='confirmed'
+                  AND upper(btrim(order_number))=upper(btrim($4::text)))""",
+                reservation_id, row['event_id'], row['ticket_type_id'], row['order_number'])
+            if used:
+                raise HTTPException(409, 'This Union order already confirms another reservation')
         await conn.execute("""UPDATE public.reservations SET status='confirmed', confirmed_at=NOW(),
             order_number=COALESCE($2,order_number) WHERE id=$1""", reservation_id, row['order_number'])
         await conn.execute("""UPDATE public.product_sales_import_rows SET status='confirmed',
-            reservation_id=$2,reviewed_by=$3,reviewed_at=NOW(),matched_on='committee_approved'
+            reservation_id=$2,reviewed_by=$3,reviewed_at=NOW(),matched_on='committee_linked'
             WHERE id=$1""", row_id, reservation_id, actor_id)
         await _record_verified_import_order(conn, reservation_id, row['order_number'], actor_id)
         await conn.execute("""INSERT INTO public.action_audit(actor_user_id,action,entity_type,entity_id,after_data)
             VALUES ($1,'reservations.sale_import.approve','reservation',$2,
-                    jsonb_build_object('import_row_id',$3::bigint))""", actor_id, reservation_id, row_id)
+                    jsonb_build_object('import_row_id',$3::bigint,'source_status',$4::text,
+                                       'order_number',$5::text,'quantity',$6::integer,
+                                       'status','confirmed'))""", actor_id, reservation_id,
+                row_id, row['status'], row['order_number'], row['quantity'])
     return {'ok': True, 'reservation_id': reservation_id}

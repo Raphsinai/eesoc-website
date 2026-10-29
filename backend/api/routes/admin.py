@@ -1167,8 +1167,11 @@ def _is_standing(email: str | None) -> bool:
 
 
 @router.get('/audit', dependencies=[Depends(require_action('access.audit.view'))])
-async def audit_actions(limit: int = 100, session: AuthSession = Depends(require_admin)) -> dict:
-    rows = await database.get('/audit/actions', {'limit': min(max(limit, 1), 200)}) or []
+async def audit_actions(limit: int = 100, include_requests: bool = False,
+                        session: AuthSession = Depends(require_admin)) -> dict:
+    rows = await database.get('/audit/actions', {
+        'limit': min(max(limit, 1), 200), 'include_requests': include_requests,
+    }) or []
     return {'actions': rows}
 
 

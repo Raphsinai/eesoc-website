@@ -1,4 +1,6 @@
 import logging
+import json
+from audit_changes import target_for, snapshot, change_values
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -78,11 +80,37 @@ async def audit_adapter_write(request, call_next):
     if request.method not in ('POST', 'PUT', 'PATCH', 'DELETE') or request.url.path == '/audit/actions':
         return await call_next(request)
     status = 500
+    target = target_for(request.method, request.url.path)
+    previous = None
+    if target:
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                previous = await snapshot(conn, target)
+        except Exception:
+            log.exception('Could not capture old values for %s', request.url.path)
+            target = None
     try:
         response = await call_next(request)
         status = response.status_code
         return response
     finally:
+        if target and 200 <= status < 300:
+            try:
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    latest = await snapshot(conn, target)
+                    before_data, after_data = change_values(previous, latest)
+                    if before_data or after_data:
+                        actor = request.headers.get('x-audit-actor-id')
+                        await conn.execute("""INSERT INTO public.action_audit
+                            (actor_user_id,action,entity_type,entity_id,before_data,after_data)
+                            VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb)""",
+                            int(actor) if actor else None, 'changed.' + target[0],
+                            target[0][:-1], target[1],
+                            json.dumps(before_data), json.dumps(after_data))
+            except Exception:
+                log.exception('Could not capture changed fields for %s', request.url.path)
         try:
             route = request.scope.get('route')
             path = getattr(route, 'path', '(unmatched)')

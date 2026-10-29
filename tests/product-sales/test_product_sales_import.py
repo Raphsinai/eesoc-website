@@ -127,7 +127,9 @@ def test_approval_and_add_ticket_endpoints_are_separately_permissioned():
     assert 'await event_for_import(' in source
     db_route = (ROOT / 'backend' / 'database' / 'routes' / 'product_sales.py').read_text()
     assert "reservation['status'] != 'held'" in db_route
-    assert "if reservation_id not in" in db_route
+    assert "row['status'] not in ('review', 'unreserved')" in db_route
+    assert 'reservation_candidates' in db_route
+    assert 'This Union order already confirms another reservation' in db_route
     assert "FOR UPDATE" in db_route
     assert "status='ticket_added'" in (ROOT / 'backend' / 'database' / 'routes' / 'events.py').read_text()
 

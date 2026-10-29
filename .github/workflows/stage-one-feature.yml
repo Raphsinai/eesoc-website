@@ -79,137 +79,65 @@ jobs:
           echo "previous_sha=$pinned" >> "$GITHUB_OUTPUT"
           echo "Verified staging target: $(git show -s --format='%h %s' "$target")"
 
-  tests:
+  publish-staging-pr:
     needs: validate
-    runs-on: [self-hosted, Linux, X64, eesoc-ci]
-    steps:
-      - name: Repair persistent runner workspace ownership
-        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.validate.outputs.sha }}
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Run focused feature and migration regression tests
-        run: |
-          set -euo pipefail
-          python3 -m pip install -r backend/api/requirements-dev.txt
-          python3 -m pip install -r backend/database/requirements.txt
-          suites=(tests/permissions tests/zero-downtime/test_check_migrations.py)
-          [ ! -d tests/product-sales ] || suites+=(tests/product-sales)
-          python3 -m pytest "${suites[@]}" -q
-
-  images:
-    needs: [validate, tests]
-    runs-on: [self-hosted, Linux, X64, eesoc-ci]
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - { name: api, context: backend/api }
-          - { name: database, context: backend/database }
-          - { name: union, context: backend/union }
-          - { name: frontend, context: frontend }
-          - { name: garage-init, context: deploy/garage-init }
-          - { name: whatsapp, context: backend/whatsapp }
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Repair persistent runner workspace ownership
-        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.validate.outputs.sha }}
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Normalise the registry owner
-        env:
-          OWNER: ${{ github.repository_owner }}
-        run: echo "OWNER_LC=${OWNER,,}" >> "$GITHUB_ENV"
-      - name: Build exactly the selected commit, not latest main
-        uses: docker/build-push-action@v6
-        with:
-          context: ${{ matrix.context }}
-          push: true
-          tags: ghcr.io/${{ env.OWNER_LC }}/eesoc-${{ matrix.name }}:${{ needs.validate.outputs.sha }}
-          build-args: |
-            VITE_API_BASE=/api
-            PREVIOUS_FRONTEND_IMAGE=ghcr.io/${{ env.OWNER_LC }}/eesoc-frontend:${{ needs.validate.outputs.previous_sha }}
-          cache-from: type=gha,scope=feature-${{ matrix.name }}
-          cache-to: type=gha,scope=feature-${{ matrix.name }},mode=max
-
-  pin-staging:
-    needs: [validate, tests, images]
     runs-on: [self-hosted, Linux, X64, eesoc-ci]
     environment: staging
     permissions:
       contents: write
+      pull-requests: write
     steps:
-      - name: Repair persistent runner workspace ownership
+      - name: Reclaim checkout
         run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Confirm all required CI jobs passed for the exact release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.validate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Builds from a failed or merely queued CI run must never deploy.
+          python3 scripts/check-ci-release.py "$RELEASE_SHA"
       - name: Install kustomize
         run: |
           set -euo pipefail
-          curl -fsSLo kustomize.tar.gz \
-            https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz
-          tar xzf kustomize.tar.gz
-          sudo mv kustomize /usr/local/bin/
-          rm kustomize.tar.gz
-      - name: Commit selected release SHA to staging (never production)
+          curl -fsSLo "$RUNNER_TEMP/kustomize.tar.gz" 'https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz'
+          tar -xzf "$RUNNER_TEMP/kustomize.tar.gz" -C "$RUNNER_TEMP" kustomize
+      - name: Open protected staging pin pull request
         env:
-          TARGET_SHA: ${{ needs.validate.outputs.sha }}
-          OWNER: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.validate.outputs.sha }}
           RELEASE_MODE: ${{ inputs.release_mode }}
+          OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          branch="release/staging-${RELEASE_SHA}"
           owner_lc=${OWNER,,}
+          git fetch -q origin main
+          git reset -q --hard origin/main
           overlay=deploy/k8s/overlays/staging
-          for attempt in 1 2 3; do
-            git fetch -q origin main
-            git reset -q --hard origin/main
-            pinned=$(grep -m1 'newTag:' "$overlay/kustomization.yaml" | awk '{print $2}')
-            [ "$pinned" != "$TARGET_SHA" ] || { echo 'Already staged'; exit 0; }
-            next=$(git rev-list --reverse --first-parent "$pinned"..origin/main -- . \
-              ':(exclude).github/workflows' \
-              ':(exclude)docs' \
-              ':(exclude)deploy/README.md' \
-              ':(exclude)deploy/homelab/README.md' \
-              ':(exclude)deploy/k8s/overlays/staging/kustomization.yaml' | head -n1)
-            if [ "$RELEASE_MODE" = all_pending ]; then
-              git merge-base --is-ancestor "$pinned" "$TARGET_SHA" || { echo '::error::Staging is no longer an ancestor of target'; exit 1; }
-              latest=$(git rev-parse origin/main)
-              [ "$latest" = "$TARGET_SHA" ] || { echo "::error::main moved while building ($latest); rerun against latest main"; exit 1; }
-            elif [ "$RELEASE_MODE" = next_feature ]; then
-              [ "$next" = "$TARGET_SHA" ] || { echo "::error::Staging advanced; next feature is $next"; exit 1; }
-            else
-              echo '::error::Invalid staging release mode'; exit 1
-            fi
-            (
-              cd "$overlay"
-              for service in api database union frontend garage-init whatsapp; do
-                kustomize edit set image \
-                  "ghcr.io/OWNER/eesoc-${service}=ghcr.io/${owner_lc}/eesoc-${service}:${TARGET_SHA}"
-              done
-            )
-            kustomize build "$overlay" > /dev/null
-            git add "$overlay/kustomization.yaml"
-            git commit -q -m "staging: $TARGET_SHA ($RELEASE_MODE) [skip ci]"
-            if git push -q origin HEAD:main; then
-              echo "Staging pin committed for $TARGET_SHA; ArgoCD will reconcile"
-              exit 0
-            fi
-            echo "Push raced with main; retrying (${attempt}/3)"
+          pinned=$(awk '/newTag:/ {print $2; exit}' "$overlay/kustomization.yaml")
+          [ "$pinned" != "$RELEASE_SHA" ] || { echo 'Already staged'; exit 0; }
+          git merge-base --is-ancestor "$pinned" "$RELEASE_SHA" || { echo '::error::Staging is ahead of target'; exit 1; }
+          next=$(git rev-list --reverse --first-parent "$pinned"..origin/main -- . \
+            ':(exclude).github/workflows' ':(exclude)docs' \
+            ':(exclude)deploy/README.md' ':(exclude)deploy/homelab/README.md' \
+            ':(exclude)deploy/k8s/overlays/staging/kustomization.yaml' | head -n1)
+          if [ "$RELEASE_MODE" = next_feature ]; then
+            [ "$next" = "$RELEASE_SHA" ] || { echo "::error::Next release has changed: $next"; exit 1; }
+          else
+            [ "$(git rev-parse origin/main)" = "$RELEASE_SHA" ] || { echo '::error::Bulk release must be current main'; exit 1; }
+          fi
+          git switch -c "$branch"
+          for service in api database union frontend garage-init whatsapp; do
+            (cd "$overlay" && "$RUNNER_TEMP/kustomize" edit set image "ghcr.io/OWNER/eesoc-${service}=ghcr.io/${owner_lc}/eesoc-${service}:${RELEASE_SHA}")
           done
-          echo '::error::Unable to publish the staging pin after 3 tries'
-          exit 1
+          "$RUNNER_TEMP/kustomize" build "$overlay" > /dev/null
+          git add "$overlay/kustomization.yaml"
+          git commit -m "staging: deploy checked $RELEASE_SHA [skip ci]"
+          git push -u origin "$branch"
+          gh pr create --base main --head "$branch" --title "Stage EESoc $RELEASE_SHA" --body "Promotes the exact commit whose CI checks and six image builds completed successfully. Release mode: $RELEASE_MODE. Only staging image pins change. Merge this PR after GitHub's required checks pass."

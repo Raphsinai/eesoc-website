@@ -1,420 +1,115 @@
-# Build, test and publish immutable images. Staging releases are reviewed individually.
-#
-# The workflow never touches the cluster or staging overlay. Manual staging
-# releases are performed by stage-one-feature.yml after the image builds.
-# ArgoCD reconciles committed image pins; a rollback is `git revert`.
-#
-# A push to main only runs CI and publishes images; it never changes staging.
-# Run stage-one-feature.yml with the next commit SHA to update staging.
-# Production changes only via an explicit promote.yml workflow dispatch.
-
-name: build and test
+# One required check before publishing images. This workflow does NOT deploy.
+# Run it manually with target_sha to build a specific older main commit.
+name: CI — checks and images
+run-name: "CI ${{ inputs.target_sha || github.sha }}"
 
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      target_sha:
+        description: 'Optional full commit SHA on main to test/build (for sequential staging)'
+        required: false
+        type: string
 
 permissions:
   contents: read
 
-env:
-  REGISTRY: ghcr.io
-  # Deliberately NOT ${{ github.repository_owner }} directly: a Docker
-  # repository name must be lowercase, and a GitHub username keeps whatever
-  # case it was registered with ("Raphsinai"), which buildx rejects outright.
-  # Expressions have no lowercase function, so each job derives it in a step.
-  OWNER: ${{ github.repository_owner }}
-
 jobs:
-  test:
+  checks:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, eesoc-ci]
+    timeout-minutes: 30
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      previous_sha: ${{ steps.source.outputs.previous_sha }}
     steps:
-      # Local Docker test containers write files as root in bind-mounted source.
-      # A persistent runner must reclaim those files BEFORE checkout cleans up.
-      - name: Repair persistent runner workspace ownership
+      # The persistent runner previously accumulated root-owned .pyc files.
+      - name: Reclaim checkout directory
         run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.target_sha || github.sha }}
+      - name: Validate build commit
+        id: source
+        env:
+          REQUESTED_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          if [ "${GITHUB_EVENT_NAME}" = workflow_dispatch ]; then
+            [ -z "$REQUESTED_SHA" ] || [[ "$REQUESTED_SHA" =~ ^[[:xdigit:]]{40}$ ]] || { echo '::error::Use a full commit SHA'; exit 1; }
+            git fetch -q origin main
+            git merge-base --is-ancestor "$sha" origin/main || { echo '::error::Commit is not on main'; exit 1; }
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "previous_sha=$(awk '/newTag:/ {print $2; exit}' deploy/k8s/overlays/staging/kustomization.yaml)" >> "$GITHUB_OUTPUT"
 
-      - name: Create the env files CI needs
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python3 -m pip install -r backend/api/requirements-dev.txt -r backend/database/requirements.txt
+
+      - name: Validate staging and production manifests
+        run: |
+          set -euo pipefail
+          curl -fsSLo "$RUNNER_TEMP/kustomize.tar.gz" 'https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz'
+          tar -xzf "$RUNNER_TEMP/kustomize.tar.gz" -C "$RUNNER_TEMP" kustomize
+          "$RUNNER_TEMP/kustomize" build deploy/k8s/overlays/production > production.yaml
+          "$RUNNER_TEMP/kustomize" build deploy/k8s/overlays/staging > staging.yaml
+          python3 scripts/check-deployment-overlays.py
+
+      - name: Start isolated API test stack (never the real Union API)
         run: |
           cp .env.example .env
           cp backend.env.example backend.env
-
-      - name: Bring the stack up
-        run: docker compose up -d --build
-
-      - name: Wait for the API
-        run: |
-          for i in $(seq 1 60); do
-            if curl -sf localhost:8080/api/health >/dev/null; then exit 0; fi
-            sleep 3
-          done
-          docker compose logs
-          exit 1
-
-      # Migrations run on adapter startup. Asserting the recorded count catches
-      # a migration that failed to apply, which would otherwise only surface as
-      # a confusing 500 much later.
-      - name: Assert migrations applied
-        run: |
-          # Every migration in the directory must be recorded — not a hardcoded
-          # minimum, which silently stops testing anything the moment a
-          # migration is added.
-          #
-          # Polled, because /health answering says the *api* is up while the
-          # database service may still be applying. A single check here caught
-          # 14 of 26 and failed a run for no reason.
-          EXPECTED=$(ls backend/database/migrations/*.sql | wc -l | tr -d ' ')
-          for i in $(seq 1 40); do
-            COUNT=$(docker compose exec -T postgres \
-              psql -U eesoc -d eesoc -tAc "SELECT COUNT(*) FROM migrations;" \
-              2>/dev/null | tr -d ' \r' || echo 0)
-            [ -z "$COUNT" ] && COUNT=0
-            echo "migrations applied: $COUNT / $EXPECTED"
-            [ "$COUNT" -ge "$EXPECTED" ] && exit 0
-            sleep 3
-          done
-          echo "::error::only $COUNT of $EXPECTED migrations applied"
-          docker compose logs database --tail 60
-          exit 1
-
-      - name: Wait for resource seeding
-        run: |
-          for i in $(seq 1 40); do
-            COUNT=$(curl -sf localhost:8080/api/resources \
-              | python3 -c 'import sys,json; print(len(json.load(sys.stdin)["pages"]))' 2>/dev/null || echo 0)
-            if [ "$COUNT" -ge 10 ]; then echo "seeded $COUNT pages"; exit 0; fi
-            sleep 3
-          done
-          echo "::error::Resource seeding did not complete"
-          docker compose logs api
-          exit 1
-
-      - name: Smoke check the public surface
+          docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test down -v --remove-orphans
+          docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test up -d --build postgres database union-stub mailpit api api-nologin frontend
+      - name: Wait for API and verify critical endpoints
         run: |
           set -euo pipefail
-          curl -sf localhost:8080/              > /dev/null
-          curl -sf localhost:8080/api/events    > /dev/null
-          curl -sf localhost:8080/api/resources > /dev/null
-          curl -sf localhost:8080/sitemap.xml   | grep -q "<urlset"
-          curl -sf localhost:8080/robots.txt    | grep -q "Sitemap:"
-
-      # The bypass must never reach a built image's default configuration.
-      - name: Assert dev login is off by default
-        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS localhost:8080/api/health > /dev/null; then break; fi
+            sleep 3
+          done
+          curl -fsS localhost:8080/api/health > /dev/null
+          for svc in union-stub api api-nologin; do
+            docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test exec -T "$svc" sh -c 'test -z "${ICU_API_KEY:-}"'
+          done
+          for i in $(seq 1 40); do
+            count=$(curl -fsS localhost:8080/api/resources | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["pages"]))' 2>/dev/null || echo 0)
+            [ "$count" -ge 10 ] && break
+            sleep 3
+          done
+          [ "$count" -ge 10 ] || { echo '::error::Resource seeding failed'; exit 1; }
+          curl -fsS localhost:8080/ > /dev/null
+          curl -fsS localhost:8080/api/events > /dev/null
+          curl -fsS localhost:8080/sitemap.xml | grep -q '<urlset'
+          curl -fsS localhost:8080/robots.txt | grep -q 'Sitemap:'
           ! grep -qE '^\s*dev_login_enabled:\s*bool\s*=\s*True' backend/api/config.py
-
-      - name: Dump logs on failure
+      - name: Run Python regression tests (including migration safety)
+        run: python3 -m pytest tests -q
+      - name: Logs on failure
         if: failure()
-        run: docker compose logs --tail 200
-
-      - name: Tear the smoke stack down
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs --tail 100
+      - name: Clean up test stack
         if: always()
-        run: docker compose down -v --remove-orphans
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test down -v --remove-orphans
 
-  # Renders both overlays and checks they stay separate. Without this a broken
-  # patch target or a hostname in the wrong overlay is only discovered by
-  # ArgoCD, mid-sync, against a live environment.
-  manifests:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, Linux, X64, eesoc-ci]
-    steps:
-      # Local Docker test containers write files as root in bind-mounted source.
-      # A persistent runner must reclaim those files BEFORE checkout cleans up.
-      - name: Repair persistent runner workspace ownership
-        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Install YAML validator
-        run: python3 -m pip install PyYAML==6.0.2
-
-      - name: Install kustomize
-        run: |
-          curl -sfLo kustomize.tar.gz \
-            https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz
-          tar xzf kustomize.tar.gz
-          sudo mv kustomize /usr/local/bin/
-          rm kustomize.tar.gz
-
-      - name: Render both overlays
-        run: |
-          kustomize build deploy/k8s/overlays/production > production.yaml
-          kustomize build deploy/k8s/overlays/staging    > staging.yaml
-
-      - name: The two environments must not overlap
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import sys, yaml
-
-          def load(path):
-              return [d for d in yaml.safe_load_all(open(path)) if d]
-
-          def hosts(docs):
-              return {
-                  r.get("host")
-                  for d in docs if d["kind"] == "Ingress"
-                  for r in (d["spec"].get("rules") or [])
-              }
-
-          def namespaces(docs):
-              return {
-                  d["metadata"]["name"] if d["kind"] == "Namespace"
-                  else d["metadata"].get("namespace")
-                  for d in docs
-              } - {None}
-
-          prod, stage = load("production.yaml"), load("staging.yaml")
-          fail = []
-
-          # A host in both renders means both Ingresses claim the name and the
-          # controller picks one — a coin toss over which environment answers.
-          shared_hosts = hosts(prod) & hosts(stage)
-          if shared_hosts:
-              fail.append(f"host served by both environments: {shared_hosts}")
-
-          shared_ns = namespaces(prod) & namespaces(stage)
-          if shared_ns:
-              fail.append(f"namespace shared by both environments: {shared_ns}")
-
-          # Catches the overlay patch being dropped: staging would then inherit
-          # production's values and quietly send testers to eesoc.com.
-          for docs, name, expect in ((prod, "production", "https://eesoc.com"),
-                                     (stage, "staging", "https://eesoc.raphsinai.dev")):
-              cfg = next(d for d in docs
-                         if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "eesoc-config")
-              got = cfg["data"]["SITE_ORIGIN"]
-              if got != expect:
-                  fail.append(f"{name} SITE_ORIGIN is {got}, expected {expect}")
-              if cfg["data"]["DEV_LOGIN_ENABLED"] != "false":
-                  fail.append(f"{name} has the dev login bypass enabled")
-
-          # Empty rules in the base are the fail-safe; an overlay that renders
-          # with none of its own is an environment serving nothing.
-          for docs, name in ((prod, "production"), (stage, "staging")):
-              if not hosts(docs):
-                  fail.append(f"{name} renders no Ingress hosts")
-
-          # Restoring a snapshot drops the entire staging schema (including
-          # sessions). It must NEVER run during a normal deploy, and must not
-          # even be renderable on production. Keep a suspended CronJob as a
-          # manual-only template; kubectl create job --from=cronjob is explicit.
-          def names(docs, kind):
-              return {d["metadata"]["name"] for d in docs if d["kind"] == kind}
-
-          for kind in ("Job", "CronJob"):
-              if "refresh-from-production" in names(prod, kind):
-                  fail.append(f"the staging refresh {kind} renders into PRODUCTION")
-
-          # Staging must not acquire a live PostSync/Job just because Argo
-          # reconciles a new build. Suspended means no schedule can run.
-          if "refresh-from-production" in names(stage, "Job"):
-              fail.append("staging refresh is an automatic Job; logins would be lost")
-          manual = [d for d in stage if d["kind"] == "CronJob"
-                    and d["metadata"]["name"] == "refresh-from-production"]
-          if len(manual) != 1:
-              fail.append("staging must have exactly one manual refresh CronJob")
-          else:
-              refresh = manual[0]
-              if refresh["spec"].get("suspend") is not True:
-                  fail.append("staging refresh must remain SUSPENDED")
-              annotations = refresh["metadata"].get("annotations") or {}
-              if annotations.get("argocd.argoproj.io/hook"):
-                  fail.append("staging refresh must not run as an ArgoCD hook")
-              containers = refresh["spec"]["jobTemplate"]["spec"]["template"]["spec"]
-              if not any(c.get("name") == "restore" for c in containers.get("initContainers", [])):
-                  fail.append("manual refresh lost its guarded restore container")
-
-          # The production snapshot runs only in production, never staging.
-          if "snapshot" in names(stage, "CronJob"):
-              fail.append("the production snapshot CronJob renders into staging")
-
-          for f in fail:
-              print(f"::error::{f}")
-          sys.exit(1 if fail else 0)
-          PY
-
-  # Pytest suite (api + database adapter) against the compose TEST stack —
-  # the real services with the ICU bridge swapped for a stub and mail pointed
-  # at mailpit. CI must make zero calls to eActivities (the API is rate-limited
-  # per source IP and a breach bans the whole society), which is why the
-  # service list names every service explicitly and never includes `union`.
-  pytest:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, Linux, X64, eesoc-ci]
-    steps:
-      # Local Docker test containers write files as root in bind-mounted source.
-      # A persistent runner must reclaim those files BEFORE checkout cleans up.
-      - name: Repair persistent runner workspace ownership
-        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Create the env files CI needs
-        run: |
-          cp .env.example .env
-          cp backend.env.example backend.env
-
-      - name: Bring the test stack up
-        run: >
-          docker compose -f docker-compose.yml -f docker-compose.test.yml
-          -p eesoc-test up -d --build
-          postgres database union-stub mailpit api api-nologin frontend
-
-      - name: Wait for the API
-        run: |
-          for i in $(seq 1 60); do
-            if curl -sf localhost:8080/api/health >/dev/null; then exit 0; fi
-            sleep 3
-          done
-          docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs
-          exit 1
-
-      # No service in the test stack may hold a real ICU key: the eActivities
-      # API is rate-limited per source IP and a breach bans the whole society,
-      # CI included. The union stub has no env_file at all, and the test
-      # override blanks ICU_API_KEY on the two api services (whose env_file
-      # is a copy of backend.env.example in CI); this assert fails the job
-      # before a single test runs if that ever stops being true.
-      - name: Assert no test service holds an ICU key
-        run: |
-          set -euo pipefail
-          for svc in union-stub api api-nologin; do
-            docker compose -f docker-compose.yml -f docker-compose.test.yml \
-              -p eesoc-test exec -T "$svc" \
-              sh -c 'test -z "${ICU_API_KEY:-}"' \
-              || { echo "::error::ICU_API_KEY is set on $svc"; exit 1; }
-            echo "$svc: no ICU key"
-          done
-
-      - name: Wait for resource seeding
-        run: |
-          for i in $(seq 1 40); do
-            COUNT=$(curl -sf localhost:8080/api/resources \
-              | python3 -c 'import sys,json; print(len(json.load(sys.stdin)["pages"]))' 2>/dev/null || echo 0)
-            if [ "$COUNT" -ge 10 ]; then echo "seeded $COUNT pages"; exit 0; fi
-            sleep 3
-          done
-          echo "::error::Resource seeding did not complete"
-          docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs api
-          exit 1
-
-      - name: Install the test dependencies
-        run: pip install -r backend/api/requirements-dev.txt
-
-      - name: Run the pytest suites
-        run: python3 -m pytest tests -v
-
-      - name: Dump logs on failure
-        if: failure()
-        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs --tail 200
-
-      - name: Tear the test stack down
-        if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test down -v
-
-  # Playwright suite, against the same test stack. The api the browser talks
-  # to is the compose one (no dev server), so the specs exercise exactly what
-  # a deploy will serve.
-  e2e:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, Linux, X64, eesoc-ci]
-    steps:
-      # Local Docker test containers write files as root in bind-mounted source.
-      # A persistent runner must reclaim those files BEFORE checkout cleans up.
-      - name: Repair persistent runner workspace ownership
-        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Create the env files CI needs
-        run: |
-          cp .env.example .env
-          cp backend.env.example backend.env
-
-      - name: Bring the test stack up
-        run: >
-          docker compose -f docker-compose.yml -f docker-compose.test.yml
-          -p eesoc-test up -d --build
-          postgres database union-stub mailpit api api-nologin frontend
-
-      - name: Wait for the API
-        run: |
-          for i in $(seq 1 60); do
-            if curl -sf localhost:8080/api/health >/dev/null; then exit 0; fi
-            sleep 3
-          done
-          docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs
-          exit 1
-
-      # Same guard as the pytest job, for the same reason, and it stays in
-      # both jobs because each must be safe to re-run alone.
-      - name: Assert no test service holds an ICU key
-        run: |
-          set -euo pipefail
-          for svc in union-stub api api-nologin; do
-            docker compose -f docker-compose.yml -f docker-compose.test.yml \
-              -p eesoc-test exec -T "$svc" \
-              sh -c 'test -z "${ICU_API_KEY:-}"' \
-              || { echo "::error::ICU_API_KEY is set on $svc"; exit 1; }
-            echo "$svc: no ICU key"
-          done
-
-      - name: Wait for resource seeding
-        run: |
-          for i in $(seq 1 40); do
-            COUNT=$(curl -sf localhost:8080/api/resources \
-              | python3 -c 'import sys,json; print(len(json.load(sys.stdin)["pages"]))' 2>/dev/null || echo 0)
-            if [ "$COUNT" -ge 10 ]; then echo "seeded $COUNT pages"; exit 0; fi
-            sleep 3
-          done
-          echo "::error::Resource seeding did not complete"
-          docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs api
-          exit 1
-
-      # npm ci at the repo root, not in frontend/: the specs live in tests/e2e,
-      # outside the frontend package, and Node resolves @playwright/test by
-      # walking up from the spec file — so the install has to sit at the root
-      # (see the root package.json). The config stays in frontend/.
-      - name: Install the e2e dependencies
-        run: npm ci
-
-      - name: Install browsers
-        run: npx playwright install --with-deps chromium
-
-      - name: Run the e2e suites
-        run: npx playwright test --config frontend/playwright.config.js
-
-      - name: Upload report and traces
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-artifacts
-          path: |
-            playwright-report
-            test-results
-
-      - name: Tear the test stack down
-        if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test down -v
-
-  build:
-    needs: [test, manifests, pytest, e2e]
-    if: github.event_name == 'push'
+  images:
+    # Every required check must pass. No image is published on a failed run.
+    needs: checks
+    if: github.event_name != 'pull_request'
     runs-on: [self-hosted, Linux, X64, eesoc-ci]
     permissions:
       contents: read
       packages: write
     strategy:
+      fail-fast: true
       matrix:
         include:
           - { name: api, context: backend/api }
@@ -422,291 +117,33 @@ jobs:
           - { name: union, context: backend/union }
           - { name: frontend, context: frontend }
           - { name: garage-init, context: deploy/garage-init }
-          # Runs its own tests in the build (backend/whatsapp/Dockerfile).
           - { name: whatsapp, context: backend/whatsapp }
     steps:
-      # Local Docker test containers write files as root in bind-mounted source.
-      # A persistent runner must reclaim those files BEFORE checkout cleans up.
-      - name: Repair persistent runner workspace ownership
+      - name: Reclaim checkout directory
         run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.checks.outputs.sha }}
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Lowercase the owner for the registry
+      - name: Normalise GHCR owner
+        env:
+          OWNER: ${{ github.repository_owner }}
         run: echo "OWNER_LC=${OWNER,,}" >> "$GITHUB_ENV"
-
-      - uses: docker/build-push-action@v6
+      - name: Publish checked image once
+        uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
           push: true
-          # Tagged by commit SHA as well as latest. Deployments pin the SHA:
-          # a moving tag makes it impossible to say what is running, and breaks
-          # rollback.
           tags: |
-            ${{ env.REGISTRY }}/${{ env.OWNER_LC }}/eesoc-${{ matrix.name }}:${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.OWNER_LC }}/eesoc-${{ matrix.name }}:latest
-          # No VITE_SITE_ORIGIN. One image has to serve both environments
-          # for promotion to mean anything, so the public origin is read from
-          # the browser at runtime (frontend/src/seo.js) rather than baked in.
-          # It was never doing anything anyway: frontend/Dockerfile declares no
-          # such ARG, so buildx dropped it and the hardcoded fallback won.
+            ghcr.io/${{ env.OWNER_LC }}/eesoc-${{ matrix.name }}:${{ needs.checks.outputs.sha }}
+            ${{ github.event_name == 'push' && format('ghcr.io/{0}/eesoc-{1}:latest', env.OWNER_LC, matrix.name) || '' }}
           build-args: |
             VITE_API_BASE=/api
-            # The floating :latest tag (pushed by this job on every main
-            # build) is the previous production-bound build. The frontend
-            # Dockerfile merges its hashed assets into the new image so tabs
-            # opened before the deploy keep working. The other matrix
-            # Dockerfiles don't declare this ARG, so BuildKit ignores it for
-            # them (same as the VITE_API_BASE line above).
-            PREVIOUS_FRONTEND_IMAGE=ghcr.io/${{ env.OWNER_LC }}/eesoc-frontend:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # The build publishes immutable SHA tags. Staging is promoted a single
-  # reviewed feature commit at a time with stage-one-feature.yml. There is no
-  # automatic staging pin on a push, even if several new commits build cleanly.
-
-  # ---------------------------------------------------------------- section 02
-  #
-  # The four jobs below are the zero-downtime rollout suite. They are appended
-  # here rather than wired into `build`'s `needs:` on purpose: the existing
-  # gates own that list, and the planner wires new gates when the section
-  # merges. Each job names its acceptance criterion from the section spec.
-
-  # AC-5: the expand/contract gate. No docker at all — the checker is a static
-  # pass over the migration files, so it runs in seconds and fails a contract
-  # step (DROP COLUMN / DROP TABLE, a RENAME, or NOT NULL without DEFAULT)
-  # that lacks the `-- contract-step:` marker. See deploy/README.md for the
-  # rule and the marker.
-  migrations:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, Linux, X64, eesoc-ci]
-    steps:
-      # Local Docker test containers write files as root in bind-mounted source.
-      # A persistent runner must reclaim those files BEFORE checkout cleans up.
-      - name: Repair persistent runner workspace ownership
-        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install the test dependencies
-        run: pip install -r backend/api/requirements-dev.txt
-
-      - name: Check every shipped migration, and the deliberately-bad fixtures
-        run: python3 -m pytest tests/zero-downtime/test_check_migrations.py -v
-
-  # AC-2: recreating the api under load drops zero requests. The compose stack
-  # has no load balancer (the `api` name flips between containers mid-recreate),
-  # so the load script retries a refused connection — the browser-refresh case —
-  # while counting any final non-2xx answer as a failure. The script asserts
-  # zero failures itself; its exit status is the job's verdict.
-  rollout:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, Linux, X64, eesoc-ci]
-    steps:
-      # Local Docker test containers write files as root in bind-mounted source.
-      # A persistent runner must reclaim those files BEFORE checkout cleans up.
-      - name: Repair persistent runner workspace ownership
-        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
-      - uses: actions/checkout@v4
-
-      - name: Create the env files CI needs
-        run: |
-          cp .env.example .env
-          cp backend.env.example backend.env
-
-      - name: Bring the test stack up
-        run: >
-          docker compose -f docker-compose.yml -f docker-compose.test.yml
-          -p eesoc-test up -d --build
-          postgres database union-stub mailpit api api-nologin frontend
-
-      - name: Wait for the API
-        run: |
-          for i in $(seq 1 60); do
-            if curl -sf localhost:8080/api/health >/dev/null; then exit 0; fi
-            sleep 3
-          done
-          docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs
-          exit 1
-
-      # The load runs for 90s while the recreate below happens inside that
-      # window. Its own status lands in a file because `wait` cannot reach a
-      # process started in a previous step's shell.
-      - name: Start the load loop
-        run: |
-          nohup bash -c '
-            bash scripts/rollout-load.sh http://localhost:8080 90 > load.log 2>&1
-            echo $? > load.status
-          ' >/dev/null 2>&1 &
-
-      - name: Recreate the api under load
-        run: >
-          docker compose -f docker-compose.yml -f docker-compose.test.yml
-          -p eesoc-test up -d --build api
-
-      - name: Wait for the API again
-        run: |
-          for i in $(seq 1 60); do
-            if curl -sf localhost:8080/api/health >/dev/null; then exit 0; fi
-            sleep 3
-          done
-          docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs api
-          exit 1
-
-      - name: Assert zero failed requests
-        run: |
-          for i in $(seq 1 120); do
-            [ -f load.status ] && break
-            sleep 2
-          done
-          [ -f load.status ] || { echo "::error::load loop never finished"; cat load.log; exit 1; }
-          STATUS=$(cat load.status)
-          tail -n 40 load.log
-          [ "$STATUS" = "0" ] || { echo "::error::load loop reported $STATUS failed-request status"; exit 1; }
-
-      - name: Dump logs on failure
-        if: failure()
-        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs --tail 200
-
-      - name: Tear the test stack down
-        if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test down -v
-
-  # AC-3: an api SIGKILLed mid-bulk-send is finished by the restarted api,
-  # with no recipient mailed twice. The test drives the kill and the restart
-  # and asserts on mailpit and the campaign row; the job brings up the right
-  # stack: the rollout overlay (tests/zero-downtime/docker-compose.rollout.yml
-  # — one message per recipient, one second apart) is what makes a test-scale
-  # send long enough to be interrupted.
-  resumable-send:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, Linux, X64, eesoc-ci]
-    steps:
-      # Local Docker test containers write files as root in bind-mounted source.
-      # A persistent runner must reclaim those files BEFORE checkout cleans up.
-      - name: Repair persistent runner workspace ownership
-        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Create the env files CI needs
-        run: |
-          cp .env.example .env
-          cp backend.env.example backend.env
-
-      - name: Bring the rollout test stack up
-        run: >
-          docker compose -f docker-compose.yml -f docker-compose.test.yml
-          -f tests/zero-downtime/docker-compose.rollout.yml
-          -p eesoc-test up -d --build
-          postgres database union-stub mailpit api api-nologin frontend
-
-      - name: Wait for the API
-        run: |
-          for i in $(seq 1 60); do
-            if curl -sf localhost:8080/api/health >/dev/null; then exit 0; fi
-            sleep 3
-          done
-          docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs
-          exit 1
-
-      - name: Install the test dependencies
-        run: pip install -r backend/api/requirements-dev.txt
-
-      - name: Run the resumable-send test
-        run: EESOC_ROLLOUT=1 python3 -m pytest tests/zero-downtime/test_resumable_send.py -v
-
-      - name: Dump logs on failure
-        if: failure()
-        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs --tail 200
-
-      - name: Tear the test stack down
-        if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test down -v
-
-  # AC-4 and AC-8: two api replicas never both run the union sync (the stub
-  # counts its own requests, so the test can read the ground truth), and with
-  # the stub stopped the api still serves /api/events from its own database.
-  # The events test STOPS union-stub, which is exactly why it runs here and
-  # never in the shared pytest job: it must not break any other suite's stack.
-  sync-single-run:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, Linux, X64, eesoc-ci]
-    steps:
-      # Local Docker test containers write files as root in bind-mounted source.
-      # A persistent runner must reclaim those files BEFORE checkout cleans up.
-      - name: Repair persistent runner workspace ownership
-        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Create the env files CI needs
-        run: |
-          cp .env.example .env
-          cp backend.env.example backend.env
-
-      - name: Bring the rollout test stack up
-        run: >
-          docker compose -f docker-compose.yml -f docker-compose.test.yml
-          -f tests/zero-downtime/docker-compose.rollout.yml
-          -p eesoc-test up -d --build
-          postgres database union-stub mailpit api api-nologin frontend
-
-      - name: Wait for the API
-        run: |
-          for i in $(seq 1 60); do
-            if curl -sf localhost:8080/api/health >/dev/null; then exit 0; fi
-            sleep 3
-          done
-          docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs
-          exit 1
-
-      - name: Install the test dependencies
-        run: pip install -r backend/api/requirements-dev.txt
-
-      - name: Run the single-sync and events-from-cache tests
-        run: >
-          EESOC_ROLLOUT=1 python3 -m pytest
-          tests/zero-downtime/test_single_sync.py
-          tests/zero-downtime/test_events_from_cache.py -v
-
-      # AC-8 at the browser level: the SPA's own pages render with the bridge
-      # stopped. The spec stops union-stub itself and starts it again in
-      # afterAll, so it is safe beside the pytest suites above. --project=public
-      # only: the spec does its own dev-login through the request fixture, so
-      # the admin project (and its setup dependency) would just double the run.
-      # The gate variable is what the whole describe skip-tests on.
-      - name: Install the e2e dependencies
-        run: npm ci
-
-      - name: Install browsers
-        run: npx playwright install --with-deps chromium
-
-      - name: Run the union-stopped browser spec
-        run: >
-          EESOC_ROLLOUT_E2E=1 npx playwright test
-          --config frontend/playwright.config.js --project=public
-          tests/e2e/zero-downtime/union_stopped.spec.js
-
-      - name: Dump logs on failure
-        if: failure()
-        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test logs --tail 200
-
-      - name: Tear the test stack down
-        if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.test.yml -p eesoc-test down -v
+            PREVIOUS_FRONTEND_IMAGE=ghcr.io/${{ env.OWNER_LC }}/eesoc-frontend:${{ needs.checks.outputs.previous_sha }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max

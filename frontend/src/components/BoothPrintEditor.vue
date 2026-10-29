@@ -63,23 +63,60 @@ function geometry(rect, {width: iw, height: ih}, p = {}) {
     top: rect.y+(rect.h-dh)*Number(p.y ?? .5),
   }
 }
+// Keep the live SVG preview aligned with the server's full-tile QR geometry.
+const QR_TILE = { x: 308, y: 477, width: 52, height: 52 }
+const QR_SHORT_QUIET_MODULES = 2
+const QR_DENSE_QUIET_MODULES = 3.5
+const QR_DENSE_THRESHOLD = 33
+const QR_FINDER_RADIUS_MODULES = 0.8
+const QR_DENSE_FINDER_RADIUS_MODULES = 0.4
+const QR_INK = '#0B0D12' // Match the page's deep navy exactly.
+
 function createQr(doc, group, value) {
   if (!value) return
   const qr = qrGenerator(0, 'M')
   qr.addData(value)
   qr.make()
   const n = qr.getModuleCount()
-  const size = 44/n
-  for (let y=0; y<n; y++) for(let x=0; x<n; x++) if(qr.isDark(y,x)) {
-    const cell = doc.createElementNS(svgNS, 'rect')
-    cell.setAttribute('x', String(312+x*size))
-    cell.setAttribute('y', String(481+y*size))
-    cell.setAttribute('width', String(size+.002))
-    cell.setAttribute('height', String(size+.002))
-    cell.setAttribute('fill', '#0B0D12')
-    group.appendChild(cell)
+  const dense = n > QR_DENSE_THRESHOLD
+  const quiet = dense ? QR_DENSE_QUIET_MODULES : QR_SHORT_QUIET_MODULES
+  const finderRadius = dense ? QR_DENSE_FINDER_RADIUS_MODULES : QR_FINDER_RADIUS_MODULES
+  const pitch = Math.min(QR_TILE.width, QR_TILE.height) / (n + 2 * quiet)
+  if (pitch * 300 / 96 < 2.5) throw new Error('QR URL is too long for a printable tile')
+  const x0 = QR_TILE.x + (QR_TILE.width - n * pitch) / 2
+  const y0 = QR_TILE.y + (QR_TILE.height - n * pitch) / 2
+  const finders = [[0, 0], [n - 7, 0], [0, n - 7]]
+
+  const rect = (x, y, w, h, fill, r = 0) => {
+    const node = doc.createElementNS(svgNS, 'rect')
+    node.setAttribute('x', String(x))
+    node.setAttribute('y', String(y))
+    node.setAttribute('width', String(w))
+    node.setAttribute('height', String(h))
+    node.setAttribute('fill', fill)
+    if (r) node.setAttribute('rx', String(r))
+    group.appendChild(node)
+  }
+  const inFinder = (x, y) => finders.some(([fx, fy]) =>
+    x >= fx && x < fx + 7 && y >= fy && y < fy + 7)
+
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+    if (qr.isDark(y, x) && !inFinder(x, y)) {
+      rect(x0 + x * pitch, y0 + y * pitch, pitch + 0.002, pitch + 0.002, QR_INK)
+    }
+  }
+  for (const [fx, fy] of finders) {
+    for (const [inset, span, color, radius] of [
+      [0, 7, QR_INK, finderRadius],
+      [1, 5, '#FFFFFF', finderRadius * 0.75],
+      [2, 3, QR_INK, finderRadius * 0.6],
+    ]) {
+      rect(x0 + (fx + inset) * pitch, y0 + (fy + inset) * pitch,
+        span * pitch, span * pitch, color, radius * pitch)
+    }
   }
 }
+
 async function fitText() {
   await nextTick()
   const root = stage.value?.querySelector('svg')

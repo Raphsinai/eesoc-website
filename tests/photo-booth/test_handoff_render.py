@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'backend' / 'api'))
@@ -43,7 +43,7 @@ def test_exact_postcard_dimensions_and_determinism(pictures, count):
         # Black ink background, gold top pins, preserved white QR tile.
         assert img.getpixel((3, 200)) == (11, 13, 18)
         assert img.getpixel((23, 12)) == (231, 181, 112)
-        assert img.getpixel((973, 1504)) == (255, 255, 255)
+        assert img.getpixel((965, 1495)) == (255, 255, 255)
 
 
 @pytest.mark.parametrize('count', (1, 2, 3, 4))
@@ -84,3 +84,42 @@ def test_handoff_logo_and_font_sources_exist():
         assert (assets / f'overlay-{count}.png').exists()
     for font in ('SpaceMono-Bold.ttf', 'IBMPlexMono-Regular.ttf'):
         assert (assets / 'fonts' / font).exists()
+
+
+@pytest.mark.parametrize('url,min_coverage,expected_quiet', [
+    ('https://eesoc.com/api/p/AbCdEfGhIjKl', .87, 2),
+    ('https://eesoc.raphsinai.dev/api/p/AbCdEfGhIjKl', .88, 2),
+    ('https://eesoc.raphsinai.dev/photos/0123456789abcdef0123456789abcdef', .83, 3.5),
+])
+def test_qr_fills_the_white_tile_in_background_navy(url, min_coverage, expected_quiet):
+    """QR ink covers the tile without losing the scannable margin."""
+    import qrcode
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=0)
+    qr.add_data(url)
+    qr.make(fit=True)
+    modules = len(qr.get_matrix())
+    expected = (booth_template.QR_SHORT_QUIET_MODULES if modules <=
+                booth_template.QR_DENSE_THRESHOLD else
+                booth_template.QR_DENSE_QUIET_MODULES)
+    assert expected == expected_quiet
+
+    layout = booth_template.spec()['fixed']['qrTile']
+    scale = booth_template.SCALE
+    page = Image.new('RGB', (1181, 1747), booth_template.WHITE)
+    booth_template._draw_qr(ImageDraw.Draw(page), url)
+    ink = ImageChops.difference(page, Image.new('RGB', page.size, booth_template.WHITE))
+    bounds = ink.getbbox()
+    assert bounds is not None
+    left, top, right, bottom = bounds
+    tile_left = round(layout['x'] * scale)
+    tile_top = round(layout['y'] * scale)
+    tile_right = round((layout['x'] + layout['w']) * scale)
+    tile_bottom = round((layout['y'] + layout['h']) * scale)
+    assert tile_left < left < right < tile_right
+    assert tile_top < top < bottom < tile_bottom
+    assert (right - left) / (tile_right - tile_left) >= min_coverage
+    # Finder corners are subtly rounded, while data modules remain opaque navy.
+    assert page.getpixel((left, top)) == (255, 255, 255)
+    assert page.getpixel((left + 5, top)) == (11, 13, 18)
+    for point in ((left, top + 8), (right - 5, top), (left + 8, bottom - 1)):
+        assert page.getpixel(point) in ((11, 13, 18), (255, 255, 255))

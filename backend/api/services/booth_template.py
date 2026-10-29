@@ -128,24 +128,59 @@ def _draw_text(page: Image.Image, draw: ImageDraw.ImageDraw, text: str, *, x: fl
             pen += draw.textlength(cluster, font=font) + spacing
 
 
+# Place the code directly in the 52px white tile, not the handoff's
+# conservative 44px code box. Short links use a tight two-module margin;
+# denser links get a little more white space to stay easy to scan. The three
+# finder targets have rounded corners; data modules stay crisp squares.
+QR_SHORT_QUIET_MODULES = 2
+QR_DENSE_QUIET_MODULES = 3.5
+QR_DENSE_THRESHOLD = 33
+QR_FINDER_RADIUS_MODULES = 0.8
+QR_DENSE_FINDER_RADIUS_MODULES = 0.4
+
+
 def _draw_qr(draw: ImageDraw.ImageDraw, url: str) -> None:
     qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=0)
     qr.add_data(url)
     qr.make(fit=True)
     matrix = qr.get_matrix()
     modules = len(matrix)
-    tile = spec()['fixed']['qrTile']['codeBox']
-    size = min(tile['w'], tile['h']) * SCALE
-    module = math.floor(size / modules)
-    if module < 1:
+    tile = spec()['fixed']['qrTile']
+    dense = modules > QR_DENSE_THRESHOLD
+    quiet = QR_DENSE_QUIET_MODULES if dense else QR_SHORT_QUIET_MODULES
+    finder_radius = QR_DENSE_FINDER_RADIUS_MODULES if dense else QR_FINDER_RADIUS_MODULES
+    pitch = min(tile['w'], tile['h']) * SCALE / (modules + 2*quiet)
+    if pitch < 2.5:
         raise ValueError('QR URL too long for printable tile')
-    ox = round(tile['x']*SCALE+(tile['w']*SCALE-modules*module)/2)
-    oy = round(tile['y']*SCALE+(tile['h']*SCALE-modules*module)/2)
+
+    # Snap the cumulative module boundaries to output pixels instead of
+    # truncating the pitch. This fills the tile without antialiasing the code.
+    origin_x = (tile['x'] + (tile['w'] - modules*pitch/SCALE)/2) * SCALE
+    origin_y = (tile['y'] + (tile['h'] - modules*pitch/SCALE)/2) * SCALE
+    xs = [round(origin_x + index*pitch) for index in range(modules+1)]
+    ys = [round(origin_y + index*pitch) for index in range(modules+1)]
+    finders = ((0, 0), (modules-7, 0), (0, modules-7))
+
+    def is_finder(x: int, y: int) -> bool:
+        return any(ax <= x < ax+7 and ay <= y < ay+7 for ax, ay in finders)
+
     for y, row in enumerate(matrix):
         for x, dark in enumerate(row):
-            if dark:
-                l, t = ox + x*module, oy + y*module
-                draw.rectangle((l, t, l+module-1, t+module-1), fill=INK)
+            if dark and not is_finder(x, y):
+                draw.rectangle((xs[x], ys[y], xs[x+1]-1, ys[y+1]-1), fill=INK)
+
+    # Slightly rounded finder corners make the code feel intentional. The
+    # complete 7/5/3 finder geometry stays intact for scanning.
+    for fx, fy in finders:
+        for inset, span, color, radius in (
+            (0, 7, INK, finder_radius),
+            (1, 5, WHITE, finder_radius*.75),
+            (2, 3, INK, finder_radius*.6),
+        ):
+            x0, y0 = xs[fx+inset], ys[fy+inset]
+            x1, y1 = xs[fx+inset+span]-1, ys[fy+inset+span]-1
+            draw.rounded_rectangle((x0, y0, x1, y1),
+                                   radius=max(1, round(pitch*radius)), fill=color)
 
 
 def render(photos: list[bytes], title: str, url: str, orientation: str = 'portrait',

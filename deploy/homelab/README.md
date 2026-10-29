@@ -27,11 +27,15 @@ visitor ─https─> Cloudflare ─tunnel─> cloudflared (in the cluster, dials
 | Public access | Cloudflare Tunnel `eesoc-staging` (`ee536f2b-…`), connector `rke2/manifests/cloudflared.yaml` |
 | SSH | `ssh eesoc-staging` (user `raph`; jumps through pve2 over the tailnet) |
 
-The deploy flow uses a separate manual **stage EESoc features** GitHub
-Actions workflow. Pushes to `main` test and publish images but do not update
-staging. The feature workflow builds the selected next commit and pins its
-images in `deploy/k8s/overlays/staging`; ArgoCD in this VM picks the pin up
-within about three minutes. CI does not need direct access to this cluster.
+**Temporary while CI is under repair:** Run **Deploy staging manually
+(temporary)** from GitHub Actions on `main`. This single dispatch builds and
+publishes all six images, then updates only the `staging-deploy` branch with
+image tags pinned to the exact main SHA. ArgoCD follows that branch and syncs
+staging automatically. No CI tests, second workflow, staging PR or manual pin
+edit are needed. If image publication fails, the staging branch does not move.
+The source of truth for release source code is still `main`; do not merge
+`staging-deploy` into `main`. Production remains separate and unchanged. When
+restoring the normal CI release path, switch ArgoCD back to `main` deliberately.
 
 ## Getting in
 

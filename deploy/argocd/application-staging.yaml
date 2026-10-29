@@ -5,15 +5,11 @@
 # (deploy/homelab), not production's: since 2026-10-19 the two environments
 # are separate clusters. It is that cluster's only Application.
 #
-# This is the one that moves on its own: every push to main pins a new image
-# tag in deploy/k8s/overlays/staging and Argo syncs it. Production is a
-# separate Application watching a separate overlay and only moves when somebody
-# runs the promote workflow.
-#
-# Same repo, same branch — the two environments are separated by directory, not
-# by branch. A staging branch would mean promotion was a merge, and a merge can
-# carry changes that were never on staging. The homelab ArgoCD reads the repo
-# with its own read-only deploy key ("argocd homelab staging").
+# TEMPORARY: staging follows the staging-deploy GitOps branch while CI is
+# being repaired. This branch is rebuilt from main by the manual staging
+# workflow, after its images have successfully published. Production still
+# follows its separate overlay on main; promotion must use tested image SHAs,
+# never merge staging-deploy into main. The deploy key is read-only.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -28,7 +24,7 @@ spec:
     # `eesoc-website-repo` secret. HTTPS would need a token with repo scope;
     # a deploy key is scoped to this one repository and cannot write.
     repoURL: git@github.com:Raphsinai/eesoc-website.git
-    targetRevision: main
+    targetRevision: staging-deploy
     path: deploy/k8s/overlays/staging
   destination:
     server: https://kubernetes.default.svc

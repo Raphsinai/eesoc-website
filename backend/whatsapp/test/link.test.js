@@ -229,6 +229,27 @@ describe('staying linked', () => {
     assert.equal(link.status().state, 'linking')
   })
 
+  it('waits for pending credential saves before stopping for a rollout', async () => {
+    let finishSave
+    const saved = new Promise((resolve) => { finishSave = resolve })
+    let saveStarted = false
+    const link = makeLink({ auth: async () => ({
+      state: { creds: {} },
+      saveCreds: async () => { saveStarted = true; await saved },
+    }) })
+    await link.link()
+    sockets[0].emit('creds.update', {})
+    await new Promise((r) => setImmediate(r))
+    assert.equal(saveStarted, true)
+    let stopped = false
+    const stopping = link.stop().then(() => { stopped = true })
+    await new Promise((r) => setImmediate(r))
+    assert.equal(stopped, false)
+    finishSave()
+    await stopping
+    assert.equal(stopped, true)
+  })
+
   it('reconnects with a saved session at startup, and starts clean without one', async () => {
     await fs.writeFile(path.join(dir, 'registered'), '')
     const restored = makeLink()

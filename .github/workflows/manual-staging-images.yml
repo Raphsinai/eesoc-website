@@ -1,0 +1,85 @@
+# Deliberate emergency/manual publisher. Dispatch only; no automatic deployment.
+# Used when full CI is under repair; this publishes immutable images, not a staging pin.
+name: Manual staging image publisher
+run-name: "Manual image build ${{ inputs.release_sha }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Full SHA of an existing commit on main
+        type: string
+        required: true
+      previous_frontend_sha:
+        description: SHA of the last staging frontend (retain old hashed assets)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: [self-hosted, Linux, X64, eesoc-ci]
+    timeout-minutes: 90
+    steps:
+      - name: Reclaim persistent runner checkout
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.release_sha }}
+      - name: Check the exact requested source commit
+        env:
+          RELEASE_SHA: ${{ inputs.release_sha }}
+          PREVIOUS_SHA: ${{ inputs.previous_frontend_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$PREVIOUS_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [ "$(git rev-parse HEAD)" = "$RELEASE_SHA" ] || exit 1
+          git fetch -q origin main
+          git merge-base --is-ancestor "$RELEASE_SHA" origin/main || { echo '::error::release commit is not on main'; exit 1; }
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish all six images (no full CI)
+        env:
+          RELEASE_SHA: ${{ inputs.release_sha }}
+          PREVIOUS_SHA: ${{ inputs.previous_frontend_sha }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner_lc=${OWNER,,}
+          for svc in garage-init api database union whatsapp frontend; do
+            case "$svc" in
+              garage-init) context=deploy/garage-init ;;
+              api) context=backend/api ;;
+              database) context=backend/database ;;
+              union) context=backend/union ;;
+              whatsapp) context=backend/whatsapp ;;
+              frontend) context=frontend ;;
+            esac
+            tag="ghcr.io/${owner_lc}/eesoc-${svc}:${RELEASE_SHA}"
+            echo "::group::Building $tag"
+            docker buildx build --platform linux/amd64 --progress=plain --push \
+              --build-arg VITE_API_BASE=/api \
+              --build-arg "PREVIOUS_FRONTEND_IMAGE=ghcr.io/${owner_lc}/eesoc-frontend:${PREVIOUS_SHA}" \
+              --tag "$tag" "$context"
+            echo "::endgroup::"
+            echo "- Published ${tag}" >> "$GITHUB_STEP_SUMMARY"
+          done
+      - name: Verify all images exist remotely
+        env:
+          RELEASE_SHA: ${{ inputs.release_sha }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner_lc=${OWNER,,}
+          for svc in api database union frontend garage-init whatsapp; do
+            docker buildx imagetools inspect "ghcr.io/${owner_lc}/eesoc-${svc}:${RELEASE_SHA}" >/dev/null
+            echo "Verified $svc"
+          done

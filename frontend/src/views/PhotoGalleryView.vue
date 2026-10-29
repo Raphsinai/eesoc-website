@@ -2,6 +2,7 @@
 // Anonymous, unlisted photo page opened from the QR printed at an EESoc event.
 import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
+import { usePageTitle } from '@/utils/pageTitle'
 import api from '@/api'
 import Card from '@/components/ds/Card.vue'
 import Button from '@/components/ds/Button.vue'
@@ -15,13 +16,13 @@ const error = ref('')
 onMounted(async () => {
   try {
     set.value = await api.get(`/photos/${route.params.token}`)
-    document.title = `${set.value.title} | EESoc Photos`
   } catch {
     error.value = 'This photo link is unavailable or has been withdrawn.'
   } finally {
     loading.value = false
   }
 })
+usePageTitle(computed(() => set.value?.title ? `${set.value.title} · Photos` : 'Your photos'))
 </script>
 
 <template>

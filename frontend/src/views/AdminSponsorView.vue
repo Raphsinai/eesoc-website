@@ -4,6 +4,7 @@
 // have asked for, and the marketing waiting to go out.
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
+import { usePageTitle } from '@/utils/pageTitle'
 
 import api from '@/api'
 import { can } from '@/stores/session'
@@ -285,6 +286,7 @@ async function sendReply(t) {
 async function startThread() {
   if (await reply('general', newThread.body)) newThread.body = ''
 }
+usePageTitle(computed(() => data.value?.sponsor?.name ? `${data.value.sponsor.name} · Agreement` : 'Sponsor agreement'))
 </script>
 
 <template>

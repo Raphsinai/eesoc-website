@@ -8,6 +8,7 @@
 // reported as already in, with who let it in.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { usePageTitle } from '@/utils/pageTitle'
 
 import api from '@/api'
 import { can } from '@/stores/session'
@@ -369,6 +370,7 @@ onBeforeUnmount(() => {
   clearTimeout(resultTimer)
   document.removeEventListener('visibilitychange', poll)
 })
+usePageTitle(computed(() => event.value?.title ? `${event.value.title} · Check-in` : 'Door check-in'))
 </script>
 
 <template>

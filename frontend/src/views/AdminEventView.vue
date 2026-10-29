@@ -3,6 +3,7 @@
 // waiting — with the actions that go with each, and a way to email any group.
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { usePageTitle } from '@/utils/pageTitle'
 
 import api from '@/api'
 import Badge from '@/components/ds/Badge.vue'
@@ -304,6 +305,7 @@ function csv() {
   a.click()
   URL.revokeObjectURL(a.href)
 }
+usePageTitle(computed(() => data.value?.event?.title ? `${data.value.event.title} · Bookings` : 'Event bookings'))
 </script>
 
 <template>

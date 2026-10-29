@@ -1,6 +1,7 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { usePageTitle } from '@/utils/pageTitle'
 import Card from '@/components/ds/Card.vue'
 import Button from '@/components/ds/Button.vue'
 import Badge from '@/components/ds/Badge.vue'
@@ -485,6 +486,7 @@ watch(actingSponsorId, async () => {
   if (!isDash.value) await loadPanel(portal.value)
 })
 loadSponsorOptions()
+usePageTitle(computed(() => `${sponsorName.value ? `${sponsorName.value} · ` : ''}${portalNav.find(p => p.id === portal.value)?.label || 'Dashboard'} · Sponsor portal`))
 </script>
 
 <template>

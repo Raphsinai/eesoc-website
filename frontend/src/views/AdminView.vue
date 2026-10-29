@@ -5,6 +5,7 @@
 // for events, resources, Union product links, files, people and sponsors.
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { usePageTitle } from '@/utils/pageTitle'
 
 import api from '@/api'
 import Card from '@/components/ds/Card.vue'
@@ -70,7 +71,8 @@ function allowed(need) {
 const visibleTabs = computed(() => TABS.filter(([, , need]) => allowed(need)))
 
 const tab = ref(route.query.tab || '')
-watch(tab, (t) => router.replace({ query: { ...route.query, tab: t } }))
+watch(tab, (t) => { if (t !== route.query.tab) router.replace({ query: { ...route.query, tab: t } }) })
+watch(() => route.query.tab, (t) => { if (t && t !== tab.value) tab.value = t })
 
 // Land on the first tab this person can actually use. Somebody with only
 // their own card has no Overview to open, and an events officer sent a link
@@ -2085,6 +2087,7 @@ function linkFor(ticketTypeId) {
 
 
 const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
+usePageTitle(computed(() => `Committee · ${TABS.find(([id]) => id === tab.value)?.[1] || 'Admin'}`))
 </script>
 
 <template>

@@ -3,6 +3,7 @@
 // history. The API is authoritative: no pending content is ever public.
 import { computed, inject, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { usePageTitle } from '@/utils/pageTitle'
 import api from '@/api'
 import Badge from '@/components/ds/Badge.vue'
 import Button from '@/components/ds/Button.vue'
@@ -70,6 +71,7 @@ function date(value) {
 }
 
 async function loadPublished() {
+  opportunity.value = null
   error.value = ''
   loading.value = true
   try {
@@ -317,6 +319,7 @@ watch(() => session.authenticated, (yes) => {
   else { mine.value = []; if (view.value !== 'list') view.value = 'list' }
 })
 watch(detailId, loadPublished)
+usePageTitle(computed(() => detailId.value ? (opportunity.value?.title || 'Opportunity') : view.value === 'submit' ? 'Submit an opportunity' : view.value === 'mine' ? 'My opportunities' : view.value === 'draft' ? 'Edit opportunity' : 'Opportunities'))
 </script>
 
 <template>

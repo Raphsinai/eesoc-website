@@ -8,6 +8,7 @@
 // number).
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { usePageTitle } from '@/utils/pageTitle'
 
 import api from '@/api'
 import Card from '@/components/ds/Card.vue'
@@ -126,6 +127,7 @@ onBeforeUnmount(() => {
 async function load() {
   loading.value = true
   error.value = ''
+  event.value = null
   try {
     event.value = await api.get(`/events/${route.params.slug}`)
     const first = (event.value.ticketTypes || []).find((t) => t.selectable)
@@ -422,6 +424,7 @@ const bookingClosesText = computed(() => {
     hour: '2-digit', minute: '2-digit',
   })
 })
+usePageTitle(computed(() => event.value?.title || 'Event'))
 </script>
 
 <template>

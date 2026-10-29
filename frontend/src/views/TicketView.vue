@@ -7,6 +7,7 @@
 // camera, say) gets a Check in button.
 import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
+import { usePageTitle } from '@/utils/pageTitle'
 
 import api from '@/api'
 import Badge from '@/components/ds/Badge.vue'
@@ -68,6 +69,7 @@ const HEADLINE = {
 }
 
 onMounted(load)
+usePageTitle(computed(() => ticket.value?.event?.title ? `${ticket.value.event.title} · Your ticket` : 'Your ticket'))
 </script>
 
 <template>

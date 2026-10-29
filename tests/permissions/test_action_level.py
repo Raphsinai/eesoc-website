@@ -340,7 +340,10 @@ def test_capacity_override_denied_before_member_creation(monkeypatch):
     limited = make_session('events', ['events.bookings.add', 'events.scope.all'])
     with pytest.raises(HTTPException) as exc:
         asyncio.run(admin.add_ticket(
-            8, 2, 'member@example.org', None, None, 1, None, False, True, limited,
+            event_id=8, ticket_type_id=2, email='member@example.org',
+            first_name=None, last_name=None, quantity=1, note=None,
+            order_number='ORD-EXAMPLE', override_confirmation=False,
+            send_confirmation=False, override_capacity=True, session=limited,
         ))
     assert exc.value.status_code == 403
 

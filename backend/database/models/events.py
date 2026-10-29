@@ -217,7 +217,7 @@ class Reservation(BaseModel):
 
 
 class CommitteeTicket(BaseModel):
-    """A ticket a committee member adds for somebody, already confirmed."""
+    """A committee booking: paid tickets require Union sale proof or explicit override."""
     event_id: int
     ticket_type_id: int
     user_id: int
@@ -226,6 +226,12 @@ class CommitteeTicket(BaseModel):
     added_by: int | None = None
     send_confirmation: bool = True
     override_capacity: bool = False
+    # This is independent of capacity override. Only the API grants it to
+    # actors with events.bookings.confirm_override.
+    override_confirmation: bool = False
+    order_number: str | None = None
+    # Imported Union sales are already evidence of payment; do not require
+    # checking against a second upstream feed for those rows.
     import_row_id: int | None = None
     booked_as_guest: bool = False
 
@@ -252,6 +258,9 @@ class ReservationDetail(Reservation):
     user_first_name: str | None = None
     user_last_name: str | None = None
     user_shortcode: str | None = None
+    order_verification_status: str | None = None
+    verification_order_number: str | None = None
+    review_due_at: datetime | None = None
 
 
 class ReservationRequest(BaseModel):

@@ -914,9 +914,11 @@ async def list_reservations(
 
 @router.get("/reservations/overdue")
 async def overdue_reservations() -> list[ReservationDetail]:
-    """Holds past their purchase window with no matching sale.
+    """Bookings requiring a committee cancellation decision.
 
-    The committee's worklist: chase, cancel, or confirm by hand.
+    Includes expired purchase holds and rejected Union order claims, even on
+    manually confirmed bookings. A pending claim never enters the queue
+    before a complete successful daily sales refresh has checked it.
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -930,15 +932,23 @@ async def overdue_reservations() -> list[ReservationDetail]:
                    tt.name AS ticket_type_name, tt.price_pence, tt.requires_purchase,
                    tt.members_only,
                    u.email AS user_email,
-                   u.member_id IS NOT NULL AS has_member_record
+                   u.member_id IS NOT NULL AS has_member_record,
+                   v.status AS order_verification_status,
+                   v.order_number AS verification_order_number,
+                   v.checked_at AS review_due_at
               FROM public.reservations r
               JOIN public.events e        ON e.id  = r.event_id
               JOIN public.ticket_types tt ON tt.id = r.ticket_type_id
               JOIN public.users u         ON u.id  = r.user_id
-             WHERE r.status = 'held'
-               AND r.expires_at < NOW()
-               AND tt.requires_purchase
-             ORDER BY r.expires_at;
+              LEFT JOIN public.reservation_order_verification v ON v.reservation_id=r.id
+             WHERE tt.requires_purchase
+               AND (
+                    (r.status='held' AND r.expires_at<NOW()
+                     AND (v.status IS NULL OR v.status!='pending'))
+                    OR (r.status IN ('held','confirmed') AND v.status='rejected')
+                   )
+             ORDER BY CASE WHEN v.status='rejected' THEN 0 ELSE 1 END,
+                      COALESCE(v.checked_at,r.expires_at);
             """
         )
     return [ReservationDetail(**dict(r)) for r in rows]
@@ -1076,37 +1086,49 @@ async def set_order_number(reservation_id: int, order_number: str) -> Reservatio
 
 @router.patch("/reservations/{reservation_id}/committee-order-number")
 async def committee_set_order_number(reservation_id: int, order_number: str | None = Body(default=None, embed=True), actor_user_id: int | None = Body(default=None, embed=True)) -> Reservation:
-    """Committee can change the order number on a booked reservation."""
-    value = (order_number or "").strip() or None
+    """Edit a reservation order and schedule verification for new paid claims.
+
+    Before this, editing the number only updated an existing *pending* claim.
+    A first-time number on an ordinary hold was never checked for rejection.
+    The reservation, verification and audit are now one transaction.
+    """
+    value = (order_number or '').strip() or None
     if value is not None and len(value) > 128:
-        raise HTTPException(400, "Order number too long")
+        raise HTTPException(400, 'Order number too long')
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction():
-        old = await conn.fetchrow("SELECT order_number FROM public.reservations WHERE id = $1 FOR UPDATE", reservation_id)
+        old = await conn.fetchrow("""SELECT r.order_number,r.status,tt.requires_purchase
+            FROM public.reservations r JOIN public.ticket_types tt ON tt.id=r.ticket_type_id
+            WHERE r.id=$1 FOR UPDATE OF r""", reservation_id)
+        if old is None or old['status'] == 'draft':
+            raise HTTPException(404, 'No such editable reservation')
         row = await conn.fetchrow(
-            f"""UPDATE public.reservations SET order_number = $2
-                  WHERE id = $1 AND status != 'draft'
-                  RETURNING {RESERVATION_COLUMNS};""", reservation_id, value,
+            f"UPDATE public.reservations SET order_number=$2 WHERE id=$1 RETURNING {RESERVATION_COLUMNS};",
+            reservation_id, value,
         )
-        if row is not None:
-            # If an order is already being verified, editing it must replace
-            # the pending claim so the matcher never uses stale order evidence.
-            # Clearing the number withdraws the pending verification.
-            if value is None:
-                await conn.execute("""DELETE FROM public.reservation_order_verification
-                    WHERE reservation_id=$1 AND status='pending'""", reservation_id)
-            elif row['status'] == 'held':
-                await conn.execute("""UPDATE public.reservation_order_verification
-                    SET order_number=$2,submitted_by=$3,submitted_at=NOW(),
-                        check_after=(date_trunc('day',NOW() AT TIME ZONE 'UTC')
-                                     + interval '1 day 6 hours 5 minutes') AT TIME ZONE 'UTC',
-                        checked_at=NULL WHERE reservation_id=$1 AND status='pending'""",
+        if value is None:
+            await conn.execute("""DELETE FROM public.reservation_order_verification
+                WHERE reservation_id=$1 AND status='pending'""", reservation_id)
+        elif old['requires_purchase'] and row['status'] in ('held','confirmed'):
+            current = await conn.fetchrow("""SELECT order_number,status
+                FROM public.reservation_order_verification WHERE reservation_id=$1 FOR UPDATE""", reservation_id)
+            if (current is None or current['order_number'] != value
+                    or current['status'] not in ('pending', 'matched')):
+                await conn.execute("""INSERT INTO public.reservation_order_verification
+                    (reservation_id,order_number,submitted_by,check_after)
+                    VALUES($1,$2,$3,(date_trunc('day',NOW() AT TIME ZONE 'UTC')
+                        + interval '1 day 6 hours 5 minutes') AT TIME ZONE 'UTC')
+                    ON CONFLICT(reservation_id) DO UPDATE SET
+                        order_number=EXCLUDED.order_number,
+                        submitted_by=EXCLUDED.submitted_by,
+                        submitted_at=NOW(),check_after=EXCLUDED.check_after,
+                        status='pending',checked_at=NULL""",
                     reservation_id,value,actor_user_id)
-            await conn.execute("""INSERT INTO public.action_audit(actor_user_id, action, entity_type, entity_id, before_data, after_data)
-                VALUES ($1, 'reservations.order_number.edit', 'reservation', $2, jsonb_build_object('order_number', $3::text), jsonb_build_object('order_number', $4::text))""",
-                actor_user_id, reservation_id, old['order_number'] if old else None, value)
-    if row is None:
-        raise HTTPException(404, "No such reservation")
+        await conn.execute("""INSERT INTO public.action_audit(actor_user_id, action, entity_type, entity_id, before_data, after_data)
+            VALUES ($1, 'reservations.order_number.edit', 'reservation', $2,
+                jsonb_build_object('order_number', $3::text),
+                jsonb_build_object('order_number', $4::text))""",
+            actor_user_id, reservation_id, old['order_number'], value)
     return Reservation(**dict(row))
 
 
@@ -1220,25 +1242,20 @@ async def change_ticket_type(reservation_id: int, ticket_type_id: int) -> Reserv
 
 @router.post("/reservations/committee")
 async def committee_ticket(req: CommitteeTicket) -> Reservation:
-    """A ticket the committee adds for somebody: confirmed from the start.
+    """Create a capacity-counted committee booking with atomic payment proof.
 
-    Serialised on the event row and counted exactly as `reserve` counts, so it
-    takes a real place. Exceeding event or ticket type capacity is refused unless
-    the committee explicitly requests an authorised capacity override. The per-person limit is not
-    applied: a committee member adding a second ticket for somebody has decided
-    to.
-
-    `expires_at` is set to now only because the column is NOT NULL; a confirmed
-    booking is never expired (expiry only touches holds), and the matcher only
-    considers holds, so the daily sync can neither lapse this nor pair it with
-    a Union sale.
+    Paid manually added bookings start held with a pending Union order claim;
+    only a sale match or explicitly authorised override confirms them. A
+    separate imported sales row is already verified evidence and can confirm
+    directly. Free tickets also confirm without a purchase order.
     """
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction():
         import_row = None
         if req.import_row_id is not None:
             import_row = await conn.fetchrow("""SELECT r.status, r.quantity,
-                    r.ticket_type_id, i.event_id FROM public.product_sales_import_rows r
+                    r.ticket_type_id, r.order_number, i.event_id
+                    FROM public.product_sales_import_rows r
                     JOIN public.product_sales_imports i ON i.id=r.import_id
                     WHERE r.id=$1 FOR UPDATE OF r""", req.import_row_id)
             if (import_row is None or import_row['status'] != 'unreserved' or
@@ -1254,11 +1271,20 @@ async def committee_ticket(req: CommitteeTicket) -> Reservation:
             raise HTTPException(404, "No such event")
         tt = await conn.fetchrow(
             f"SELECT {TT_COLUMNS} FROM public.ticket_types WHERE id = $1 AND event_id = $2;",
-            req.ticket_type_id,
-            req.event_id,
+            req.ticket_type_id, req.event_id,
         )
         if tt is None:
             raise HTTPException(404, "No such ticket type for this event")
+
+        order_number = (req.order_number or '').strip() or None
+        if import_row and not order_number:
+            order_number = (import_row['order_number'] or '').strip() or None
+        if order_number and len(order_number) > 128:
+            raise HTTPException(400, 'Order number must be at most 128 characters')
+        pending_payment = bool(tt['requires_purchase'] and not req.import_row_id
+                               and not req.override_confirmation)
+        if pending_payment and not order_number:
+            raise HTTPException(400, 'A Union order number is required unless payment verification is overridden')
 
         counts = await conn.fetchrow(
             f"""
@@ -1266,51 +1292,56 @@ async def committee_ticket(req: CommitteeTicket) -> Reservation:
                    COALESCE(SUM(quantity) FILTER (WHERE ticket_type_id = $2), 0) AS type_taken
               FROM public.reservations
              WHERE event_id = $1 AND {LIVE};
-            """,
-            req.event_id,
-            req.ticket_type_id,
+            """, req.event_id, req.ticket_type_id,
         )
-        if not req.override_capacity and tt["capacity"] is not None and counts["type_taken"] + req.quantity > tt["capacity"]:
-            raise HTTPException(
-                409, f"{tt['name']} is full ({counts['type_taken']} of {tt['capacity']} taken)."
-            )
-        if not req.override_capacity and event["capacity"] is not None and counts["event_taken"] + req.quantity > event["capacity"]:
-            raise HTTPException(
-                409, f"The event is full ({counts['event_taken']} of {event['capacity']} taken)."
-            )
+        if not req.override_capacity and tt['capacity'] is not None and counts['type_taken'] + req.quantity > tt['capacity']:
+            raise HTTPException(409, f"{tt['name']} is full ({counts['type_taken']} of {tt['capacity']} taken).")
+        if not req.override_capacity and event['capacity'] is not None and counts['event_taken'] + req.quantity > event['capacity']:
+            raise HTTPException(409, f"The event is full ({counts['event_taken']} of {event['capacity']} taken).")
 
         row = await conn.fetchrow(
             f"""
             INSERT INTO public.reservations
-                (event_id, ticket_type_id, user_id, quantity, status, confirmed_at,
-                 expires_at, note, booked_as_guest, source, added_by,
-                 confirmation_email)
-            VALUES ($1, $2, $3, $4, 'confirmed', NOW(), NOW(), $5, $6,
-                    'committee', $7, CASE WHEN $8 THEN NULL ELSE 'skipped' END)
+                (event_id,ticket_type_id,user_id,quantity,status,confirmed_at,
+                 expires_at,note,booked_as_guest,source,added_by,
+                 confirmation_email,order_number)
+            VALUES ($1,$2,$3,$4,
+                    CASE WHEN $9::boolean THEN 'held' ELSE 'confirmed' END,
+                    CASE WHEN $9::boolean THEN NULL ELSE NOW() END,
+                    CASE WHEN $9::boolean THEN
+                        (date_trunc('day',NOW() AT TIME ZONE 'UTC')
+                         + interval '1 day 6 hours 5 minutes') AT TIME ZONE 'UTC'
+                    ELSE NOW() END,
+                    $5,$6,'committee',$7,
+                    CASE WHEN $8::boolean THEN NULL ELSE 'skipped' END,$10)
             RETURNING {RESERVATION_COLUMNS};
             """,
-            req.event_id,
-            req.ticket_type_id,
-            req.user_id,
-            req.quantity,
-            req.note,
-            req.booked_as_guest,
-            req.added_by,
-            req.send_confirmation,
+            req.event_id, req.ticket_type_id, req.user_id, req.quantity,
+            req.note, req.booked_as_guest, req.added_by, req.send_confirmation,
+            pending_payment, order_number,
         )
+        if pending_payment:
+            # Claim created in the very same transaction as the hold. Never
+            # expose an apparently confirmed seat while proof is pending.
+            await conn.execute("""INSERT INTO public.reservation_order_verification
+                (reservation_id,order_number,submitted_by,check_after)
+                VALUES($1,$2,$3,$4)""",
+                row['id'], order_number, req.added_by, row['expires_at'])
         if req.import_row_id is not None:
             await conn.execute("""UPDATE public.product_sales_import_rows
                 SET status='ticket_added', reservation_id=$2, reviewed_by=$3,
                     reviewed_at=NOW(), detail='Committee-created ticket from imported sale'
                 WHERE id=$1""", req.import_row_id, row['id'], req.added_by)
-        # Insert audit in the same transaction so an unlogged override can never commit.
         await conn.execute("""INSERT INTO public.action_audit
-            (actor_user_id, action, entity_type, entity_id, after_data)
-            VALUES ($1, 'reservations.committee.add', 'reservation', $2,
-                    jsonb_build_object('event_id', $3::bigint, 'ticket_type_id', $4::bigint,
-                                       'quantity', $5::integer, 'override_capacity', $6::boolean))""",
+            (actor_user_id,action,entity_type,entity_id,after_data)
+            VALUES($1,'reservations.committee.add','reservation',$2,
+                jsonb_build_object('event_id',$3::bigint,'ticket_type_id',$4::bigint,
+                                   'quantity',$5::integer,'override_capacity',$6::boolean,
+                                   'override_confirmation',$7::boolean,
+                                   'payment_status',$8::text,'order_number',$9::text))""",
             req.added_by, row['id'], req.event_id, req.ticket_type_id,
-            req.quantity, req.override_capacity,
+            req.quantity, req.override_capacity, req.override_confirmation,
+            'pending' if pending_payment else 'confirmed', order_number,
         )
     return Reservation(**dict(row))
 
@@ -1558,16 +1589,18 @@ async def confirm_manually(reservation_id: int, order_number: str | None = None,
             f"""
             UPDATE public.reservations
                SET status = 'confirmed',
-                   confirmed_at = NOW(),
+                   confirmed_at = CASE WHEN status='confirmed' THEN confirmed_at ELSE NOW() END,
                    order_number = COALESCE($2, order_number),
                    note = COALESCE(note || ' | ', '') || 'confirmed manually'
-             WHERE id = $1 AND status IN ('held', 'expired')
+             WHERE id = $1 AND status IN ('held', 'expired', 'confirmed')
             RETURNING {RESERVATION_COLUMNS};
             """,
             reservation_id,
             (order_number or "").strip() or None,
         )
         if row is not None:
+            await conn.execute("""DELETE FROM public.reservation_order_verification
+                WHERE reservation_id=$1 AND status IN ('pending', 'rejected')""", reservation_id)
             await conn.execute("""INSERT INTO public.action_audit
                 (actor_user_id,action,entity_type,entity_id,before_data,after_data)
                 VALUES($1,'reservations.confirm.override','reservation',$2,
@@ -1576,7 +1609,7 @@ async def confirm_manually(reservation_id: int, order_number: str | None = None,
                 actor_user_id, reservation_id, previous['status'],
                 previous['order_number'], row['order_number'])
     if row is None:
-        raise HTTPException(404, "No such reservation, or it is already confirmed")
+        raise HTTPException(404, "No such active reservation")
     return Reservation(**dict(row))
 
 

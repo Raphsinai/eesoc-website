@@ -19,7 +19,7 @@ MAX_ROWS = 5000
 
 def product_ids_in_filename(filename: str) -> list[int]:
     stem = Path(filename or '').stem
-    named = re.findall(r'(?i)product\s*(?:id|no|number|#)?\s*[-_ #(:]*\s*(\d{2,11})\b', stem)
+    named = re.findall(r'(?i)product\s*(?:id|no|number|#)?\s*[-_ #(:]*\s*(\d{2,11})(?![a-z0-9])', stem)
     if named:
         return list(dict.fromkeys(int(p) for p in named))
     return list(dict.fromkeys(int(p) for p in re.findall(r'(?<!\d)\d{4,11}(?!\d)', stem)))

@@ -35,7 +35,7 @@ const TABS = [
   ['overview', 'Overview', 'any'],
   ['card', 'My card', 'card'],
   ['events', 'Events', 'eventview'],
-  ['overdue', 'Unpaid bookings', 'bookingish'],
+  ['overdue', 'Review cancellations', 'bookingish'],
   ['resources', 'Resources', 'resources'],
   ['opportunities', 'Opportunities', 'opportunities.view'],
   ['photos', 'Photo prints', 'photoish'],
@@ -123,6 +123,7 @@ const pageDetail = ref(null)
 const uploads = ref(null)
 const overdue = ref(null)
 const orderNumbers = reactive({})
+const reviewOverrides = reactive({})
 const admins = ref([])
 const auditEntries = ref([])
 const auditBusy = ref(false)
@@ -164,8 +165,30 @@ function editAccess(a) {
   editingAccessRole.value = a.role
   editingPermissions.value = [...a.capabilities]
 }
-function resetEditPermissions() { editingPermissions.value = preset(editingAccessRole.value) }
-function resetNewPermissions() { newPermissions.value = preset(newRole.value) }
+// Role defaults are mutable on the Roles tab. The People tab must fetch the
+// persisted presets, rather than reusing the snapshot from its initial mount.
+async function refreshAccessPresets() {
+  if (!can('access.view')) return
+  const data = await api.get('/admin/admins')
+  roleOptions.value = data.roles || []
+  permissionOptions.value = data.permissions || []
+  admins.value = data.admins || []
+  canManageUsers.value = Boolean(data.canManage)
+}
+async function resetEditPermissions() {
+  const role = editingAccessRole.value
+  try {
+    await refreshAccessPresets()
+    if (editingAccessRole.value === role) editingPermissions.value = preset(role)
+  } catch (e) { error.value = e.message }
+}
+async function resetNewPermissions() {
+  const role = newRole.value
+  try {
+    await refreshAccessPresets()
+    if (newRole.value === role) newPermissions.value = preset(role)
+  } catch (e) { error.value = e.message }
+}
 watch(newRole, resetNewPermissions)
 
 const canManageUsers = ref(false)
@@ -277,7 +300,7 @@ async function load() {
     roleOptions.value = ad?.roles ?? []
     permissionOptions.value = ad?.permissions ?? []
     if (!accessFormInitialized && roleOptions.value.length) {
-      resetNewPermissions()
+      newPermissions.value = preset(newRole.value)
       accessFormInitialized = true
     }
     canManageUsers.value = Boolean(ad?.canManage)
@@ -759,18 +782,25 @@ async function remind(row) {
 }
 
 async function confirmBooking(row) {
-  busy.value = true
-  try {
-    await api.post(`/admin/reservations/${row.id}/confirm`, {
-      order_number: (orderNumbers[row.id] || '').trim() || null,
-    })
-    flash('Confirmed.')
-    await Promise.all([loadOverdue(), load()])
-  } catch (e) {
-    error.value = e.message
-  } finally {
-    busy.value = false
+  const value = (orderNumbers[row.id] || '').trim()
+  const override = can('events.bookings.confirm_override') && Boolean(reviewOverrides[row.id])
+  if (!value && !override) {
+    error.value = 'Provide a Union order number, or choose the separately permissioned payment override.'
+    return
   }
+  if (override && !confirm('Confirm without Union purchase evidence? This requires an explicit override.')) return
+  busy.value = true
+  error.value = ''
+  try {
+    const res = row.status === 'confirmed' && !override
+      ? await api.patch(`/admin/reservations/${row.id}/order-number`, { order_number: value })
+      : await api.post(`/admin/reservations/${row.id}/confirm`, { order_number: value || null, override })
+    flash(res.message || 'Order submitted for verification.')
+    reviewOverrides[row.id] = false
+    orderNumbers[row.id] = ''
+    await Promise.all([loadOverdue(), load()])
+  } catch (e) { error.value = e.message }
+  finally { busy.value = false }
 }
 
 async function cancelBooking(row) {
@@ -792,6 +822,7 @@ async function cancelBooking(row) {
 }
 
 watch(tab, (t) => {
+  if (t === 'people') refreshAccessPresets().catch(e => { error.value = e.message })
   if (t === 'files' && !uploads.value) loadUploads()
   if (t === 'overdue') loadOverdue()
   // Reloaded every visit rather than cached: a send in progress updates its
@@ -2738,12 +2769,13 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
       <template v-if="tab === 'overdue'">
         <Card variant="offset">
           <h2 style="margin:0 0 var(--space-3); font:var(--type-h4)">
-            Past their purchase window
+            Bookings requiring cancellation review
           </h2>
           <p style="margin:0 0 var(--space-5); font:var(--type-small); color:var(--text-muted)">
-            Nothing here is cancelled automatically. A Union sale can be late,
-            bought under a different account, or paid in cash — so these are
-            yours to decide. Cancelling frees the place for the waitlist.
+            No booking is cancelled automatically. Overdue holds and Union order
+            numbers rejected after a successful next-day sales sync appear here
+            for a committee decision. You can check a corrected order, use a
+            separately permitted override, or cancel and release the place.
           </p>
 
           <p v-if="overdue && !overdue.count" style="margin:0; font:var(--type-small); color:var(--text-faint)">
@@ -2763,19 +2795,24 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
                 <span style="font-family:var(--font-mono); font-size:var(--text-2xs); color:var(--text-faint)">
                   {{ r.email }}
                   <template v-if="r.guest"> · booked as guest</template>
-                  · due {{ new Date(r.dueSince).toLocaleDateString() }}
+                  · {{ r.reviewCancellation ? 'checked' : 'due' }} {{ new Date(r.dueSince).toLocaleDateString() }}
                   <template v-if="r.orderNumber"> · order {{ r.orderNumber }}</template>
                 </span>
               </div>
-              <Badge tone="accent">Unpaid</Badge>
+              <Badge :tone="r.reviewCancellation ? 'danger' : 'accent'">{{ r.reviewCancellation ? 'Order rejected — review cancellation' : 'Overdue' }}</Badge>
             </div>
 
             <div style="display:flex; gap:var(--space-2); align-items:flex-end; flex-wrap:wrap">
-              <Field label="Order number (optional)" style="flex:1 1 200px">
-                <Input v-model="orderNumbers[r.id]" placeholder="e.g. AB99ZZ4" />
+              <Field label="Union order number" style="flex:1 1 200px">
+                <Input v-model="orderNumbers[r.id]" :placeholder="r.orderNumber || 'Enter a corrected order number'" maxlength="128" />
               </Field>
-              <Button v-if="can('events.bookings.confirm')" size="sm" :disabled="busy" @click="confirmBooking(r)">Confirm</Button>
-              <Button v-if="can('events.bookings.remind')" size="sm" variant="secondary" :disabled="busy" @click="remind(r)">Send reminder</Button>
+              <label v-if="can('events.bookings.confirm_override')" style="display:flex; gap:var(--space-2);align-items:center;font:var(--type-small)">
+                <input v-model="reviewOverrides[r.id]" type="checkbox" /> Bypass Union payment verification
+              </label>
+              <Button v-if="r.status === 'confirmed' ? (can('events.bookings.order_number.edit') || can('events.bookings.confirm_override')) : (can('events.bookings.confirm') || can('events.bookings.confirm_override'))"
+                size="sm" :disabled="busy || (!orderNumbers[r.id]?.trim() && !reviewOverrides[r.id])"
+                @click="confirmBooking(r)">{{ reviewOverrides[r.id] ? (r.status === 'confirmed' ? 'Keep booking (override)' : 'Confirm override') : r.status === 'confirmed' ? 'Verify corrected order' : 'Verify order' }}</Button>
+              <Button v-if="r.status === 'held' && can('events.bookings.remind')" size="sm" variant="secondary" :disabled="busy" @click="remind(r)">Send reminder</Button>
               <Button v-if="can('events.bookings.cancel')" size="sm" variant="danger" :disabled="busy" @click="cancelBooking(r)">Cancel booking</Button>
             </div>
           </div>
@@ -3360,7 +3397,7 @@ const warnTone = { error: 'danger', warn: 'accent', info: 'neutral' }
       </template>
 
       <template v-if="tab === 'roles' && (can('access.roles.create') || can('access.roles.edit'))">
-        <RoleManagerPanel />
+        <RoleManagerPanel @updated="refreshAccessPresets" />
       </template>
 
       <template v-if="tab === 'people'">

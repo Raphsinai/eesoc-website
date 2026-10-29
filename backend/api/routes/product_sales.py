@@ -12,6 +12,7 @@ from services.product_sales_import import MAX_UPLOAD_BYTES, parse_export, produc
 from utils.auth import normalise_email
 from utils.deps import require_action, require_admin, require_any_action, verify_csrf, may_manage_booking
 from utils.year import academic_year
+from utils.shop_products import SHOP_ID_OFFSET
 
 router = APIRouter(prefix='/admin/product-sales', dependencies=[Depends(require_admin)])
 
@@ -35,6 +36,25 @@ async def import_targets(session: AuthSession = Depends(require_admin)) -> dict:
     return {'targets': result}
 
 
+def product_id_for_sales_export(filename: str, available_targets: list[dict]) -> int:
+    """Resolve a SUMS shop id OR eActivities id to exactly one linked product.
+
+    SUMS exports use their visible shop ID (e.g. 3023), while manual shop links
+    intentionally store the eActivities form (1003023). This conversion is only
+    for filename validation; persisted product links and sales IDs are unchanged.
+    """
+    found = product_ids_in_filename(filename)
+    ids = {
+        target['product_id'] for target in available_targets
+        if target['product_id'] in found
+        or (target['product_id'] > SHOP_ID_OFFSET
+            and target['product_id'] - SHOP_ID_OFFSET in found)
+    }
+    if len(ids) != 1:
+        raise HTTPException(400, 'Filename must contain exactly one product ID linked to the selected ticket type')
+    return ids.pop()
+
+
 @router.post('/imports', dependencies=[Depends(require_action('events.bookings.import')), Depends(verify_csrf)])
 async def upload_import(
     file: UploadFile = File(...),
@@ -49,11 +69,7 @@ async def upload_import(
     matches = [r for r in targets['targets'] if r['ticket_type_id'] == ticket_type_id]
     if not matches:
         raise HTTPException(403, 'This ticket type is not available in your event scope')
-    products_in_name = product_ids_in_filename(file.filename or '')
-    product_ids = {r['product_id'] for r in matches if r['product_id'] in products_in_name}
-    if len(product_ids) != 1:
-        raise HTTPException(400, 'Filename must contain exactly one product ID linked to the selected ticket type')
-    product_id = product_ids.pop()
+    product_id = product_id_for_sales_export(file.filename or '', matches)
     target = next(row for row in matches if row['product_id'] == product_id)
     await event_for_import(target['event_id'], session)
     content = await file.read(MAX_UPLOAD_BYTES + 1)

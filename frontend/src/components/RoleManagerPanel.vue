@@ -8,6 +8,7 @@ import Input from '@/components/ds/Input.vue'
 import Field from '@/components/ds/Field.vue'
 import PermissionSelector from '@/components/PermissionSelector.vue'
 
+const emit = defineEmits(['updated'])
 const roles = ref([])
 const permissions = ref([])
 const selected = ref('')
@@ -56,6 +57,7 @@ async function save() {
     await load()
     choose(savedId)
     notice.value = 'Role defaults saved. Members using this preset will pick up the new grants on their next request.'
+    emit('updated')
   } catch (e) { error.value = e.message }
   finally { busy.value = false }
 }

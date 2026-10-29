@@ -588,6 +588,7 @@ async def event_detail(
             "name": t["name"],
             "price": format_price(t.get("price_pence", 0)),
             "capacity": t.get("capacity"),
+            "requiresPurchase": t.get("requires_purchase", True),
             "unpaid": qty("held"),
             "bought": qty("confirmed"),
             "closed": qty("cancelled", "expired"),
@@ -669,11 +670,10 @@ async def event_email_audiences(
 async def overdue_reservations(
     session: AuthSession = Depends(require_booking_editor),
 ) -> dict:
-    """Holds whose purchase window has passed with no matching sale.
+    """Overdue holds and orders rejected after a successful sales refresh.
 
-    Nothing is cancelled automatically. A sale can be late, bought under a
-    different account, or paid in cash, and silently voiding somebody's ticket
-    is not recoverable — so the committee decides, per booking.
+    Nothing is cancelled automatically. A failed Union order claim is queued
+    for a human cancellation decision, including manually confirmed bookings.
     """
     rows = await database.get("/reservations/overdue") or []
     # An industry-only role sees the unpaid bookings for its own events and
@@ -695,10 +695,13 @@ async def overdue_reservations(
                 "ticketType": r.get("ticket_type_name"),
                 "quantity": r["quantity"],
                 "price": format_price(r.get("price_pence", 0)),
-                "orderNumber": r.get("order_number"),
+                "orderNumber": r.get("order_number") or r.get("verification_order_number"),
+                "status": r.get("status"),
+                "orderVerificationStatus": r.get("order_verification_status"),
+                "reviewCancellation": r.get("order_verification_status") == 'rejected',
                 "guest": r.get("booked_as_guest", False),
                 "heldSince": r.get("created_at"),
-                "dueSince": r.get("expires_at"),
+                "dueSince": r.get("review_due_at") or r.get("expires_at"),
                 "membersOnly": r.get("members_only", False),
                 # A members-only ticket held by somebody with no membership
                 # record will never confirm on its own, which is a different
@@ -793,12 +796,25 @@ async def committee_order_number(
     order_number: str | None = Body(default=None, embed=True),
     session: AuthSession = Depends(require_booking_editor),
 ) -> dict:
-    await _reservation_in_scope(reservation_id, session)
+    previous = await _reservation_in_scope(reservation_id, session)
     value = (order_number or "").strip() or None
     if value is not None and len(value) > 128:
         raise HTTPException(400, "Order number too long")
     row = await database.patch(f"/reservations/{reservation_id}/committee-order-number", {"order_number": value, "actor_user_id": session.user.id})
-    return {"ok": True, "reservation": row}
+    if row and value and row.get('status') == 'held':
+        await sync_service.reconcile_only()
+        row = await database.get(f'/reservations/{reservation_id}') or row
+    elif row and value and row.get('status') == 'confirmed':
+        # Existing matched sales can validate an edited claim immediately;
+        # an unmatched number waits for a successful next-day sales refresh.
+        await database.post('/reservations/order-verification/settle', {'allow_reject': False})
+    matched_now = bool(previous and previous.get('status') == 'held'
+                       and row and row.get('status') == 'confirmed')
+    message = ('Order number removed.' if not value else
+               'Union sale matched; booking confirmed.' if matched_now else
+               'Order saved for verification. If unmatched after the next successful '
+               '06:05 UTC sales sync, it will appear in Review cancellations.')
+    return {'ok': True, 'reservation': row, 'message': message}
 
 
 @router.post("/reservations/{reservation_id}/ticket-type", dependencies=[Depends(require_action("events.bookings.change_ticket")), Depends(verify_csrf)])
@@ -849,68 +865,81 @@ async def add_ticket(
     last_name: str | None = Body(default=None, embed=True),
     quantity: int = Body(default=1, embed=True),
     note: str | None = Body(default=None, embed=True),
+    order_number: str | None = Body(default=None, embed=True),
+    override_confirmation: bool = Body(default=False, embed=True),
     send_confirmation: bool = Body(default=True, embed=True),
     override_capacity: bool = Body(default=False, embed=True),
     session: AuthSession = Depends(require_booking_editor),
 ) -> dict:
-    """Add a ticket for somebody — paid in cash or by transfer, or a comp.
+    """Create a committee booking with the same sale validation as a normal hold.
 
-    It lands confirmed, takes a real place (refused when the type or the event
-    is full, as a booking would be), and is never expired or paired with a
-    Union sale by the sync. The holder is found or created exactly as a guest
-    booking would be, so a member is recognised by their address or shortcode
-    and an outsider gets an unverified account that owns the ticket.
-
-    `events` or `industry` on this event, like every other change to its
-    bookings. No Union calls.
+    Paid tickets are *held*, not confirmed, while their Union order is checked
+    against local sales and the next successful daily refresh. Only an actor
+    with confirm_override can bypass proof of payment. Free tickets confirm
+    immediately; capacity bypass is a separate permission.
     """
-    await _bookable_event(event_id, session)
+    event = await _bookable_event(event_id, session)
+    # Deny privileged overrides before any user creation or ticket lookup.
     if override_capacity and not session.can('events.bookings.capacity_override'):
         raise HTTPException(403, 'Permission required: events.bookings.capacity_override')
+    if override_confirmation and not session.can('events.bookings.confirm_override'):
+        raise HTTPException(403, 'Permission required: events.bookings.confirm_override')
+    selected = next((t for t in event.get('ticket_types', []) if t['id'] == ticket_type_id), None)
+    if selected is None:
+        raise HTTPException(404, 'No such ticket type for this event')
+    order = (order_number or '').strip() or None
+    if order is not None and len(order) > 128:
+        raise HTTPException(400, 'Order number must be at most 128 characters')
+    needs_proof = selected.get('requires_purchase', True)
+    if needs_proof and not order and not override_confirmation:
+        raise HTTPException(400, 'A Union order number is required unless you have payment-verification override permission')
     address = normalise_email(email)
-    if "@" not in address:
-        raise HTTPException(400, "That does not look like an email address.")
+    if '@' not in address:
+        raise HTTPException(400, 'That does not look like an email address.')
     if not 1 <= quantity <= 20:
-        raise HTTPException(400, "Between 1 and 20 tickets at a time.")
+        raise HTTPException(400, 'Between 1 and 20 tickets at a time.')
 
     holder = await resolve_or_create_user(
         address,
-        first_name=(first_name or "").strip() or None,
-        last_name=(last_name or "").strip() or None,
+        first_name=(first_name or '').strip() or None,
+        last_name=(last_name or '').strip() or None,
         verified=False,
     )
     who = session.user.email
-    text = (note or "").strip()
-    row = await database.post(
-        "/reservations/committee",
-        {
-            "event_id": event_id,
-            "ticket_type_id": ticket_type_id,
-            "user_id": holder["id"],
-            "quantity": quantity,
-            # The note says who added it as well as why, so the bookings page
-            # answers "where did this come from" without a second lookup.
-            "note": f"added by {who}" + (f": {text}" if text else ""),
-            "added_by": session.user.id,
-            "send_confirmation": send_confirmation,
-            "override_capacity": override_capacity,
-            "booked_as_guest": holder.get("member_id") is None,
-        },
-    )
-    # The adapter's 404s (no such event or ticket type) arrive as None.
+    text = (note or '').strip()
+    row = await database.post('/reservations/committee', {
+        'event_id': event_id, 'ticket_type_id': ticket_type_id,
+        'user_id': holder['id'], 'quantity': quantity,
+        'note': f'added by {who}' + (f': {text}' if text else ''),
+        'added_by': session.user.id, 'send_confirmation': send_confirmation,
+        'override_capacity': override_capacity,
+        'override_confirmation': override_confirmation,
+        'order_number': order,
+        'booked_as_guest': holder.get('member_id') is None,
+    })
     if row is None:
-        raise HTTPException(404, "No such ticket type for this event")
-    log.warning(
-        "Committee ticket %s added for user %s by %s", row["id"], holder["id"], who
-    )
-    if send_confirmation:
+        raise HTTPException(404, 'No such ticket type for this event')
+    # Use the exact same local matcher that checks submitted order numbers on
+    # an ordinary reservation. It will never confirm a merely claimed order.
+    was_held = row['status'] == 'held'
+    if was_held:
+        await sync_service.reconcile_only()
+        current = await database.get(f"/reservations/{row['id']}")
+        if current:
+            row = current
+    if not was_held and row['status'] == 'confirmed' and send_confirmation:
         confirmations.trigger()
+    log.warning('Committee ticket %s added for user %s by %s (%s)',
+                row['id'], holder['id'], who, row['status'])
     return {
-        "ok": True,
-        "reservation": row,
-        "message": (
-            f"Ticket added for {holder['email']}."
-            + (" A confirmation email is on its way." if send_confirmation else "")
+        'ok': True, 'reservation': row,
+        'message': (
+            f'Ticket confirmed for {holder["email"]}.'
+            + (' A confirmation email is on its way.' if send_confirmation else '')
+            if row['status'] == 'confirmed'
+            else 'Booking added and Union order submitted for verification. '
+                 'The ticket stays held until a sale matches. If not found after '
+                 'the next successful 06:05 UTC sync, it will appear in Review cancellations.'
         ),
     }
 

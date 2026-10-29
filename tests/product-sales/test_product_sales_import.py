@@ -164,3 +164,22 @@ def test_import_marks_matching_pending_order_verification_as_matched():
     assert "status='matched'" in source
     assert source.count('await _record_verified_import_order(') == 2
     assert 'confirmed.ticket_type_id=$3' in source
+
+
+def test_sums_sales_filename_accepts_visible_shop_id_and_api_id():
+    from routes.product_sales import product_id_for_sales_export
+    targets = [{'product_id': 1003023, 'ticket_type_id': 7}]
+    assert product_ids_in_filename('Product_Sales_ID_3023.xlsx') == [3023]
+    assert product_id_for_sales_export('Product_Sales_ID_3023.xlsx', targets) == 1003023
+    assert product_id_for_sales_export('Product_Sales_ID_1003023.xlsx', targets) == 1003023
+    # Keep IDs that came directly from the Union API, not manually entered.
+    assert product_id_for_sales_export('product 502.csv', [{'product_id': 502}]) == 502
+
+
+def test_sums_sales_filename_rejects_unknown_or_ambiguous_product():
+    from routes.product_sales import product_id_for_sales_export
+    targets = [{'product_id': 1003023}, {'product_id': 1003043}]
+    with pytest.raises(HTTPException):
+        product_id_for_sales_export('Product_Sales_ID_3024.xlsx', targets)
+    with pytest.raises(HTTPException):
+        product_id_for_sales_export('Product_3023_Product_3043.xlsx', targets)

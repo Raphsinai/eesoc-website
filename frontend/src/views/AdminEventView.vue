@@ -160,9 +160,9 @@ async function saveOrder(row) {
   busy.value = true
   error.value = ''
   try {
-    await api.patch(`/admin/reservations/${row.id}/order-number`, { order_number: editedOrder.value.trim() || null })
+    const result = await api.patch(`/admin/reservations/${row.id}/order-number`, { order_number: editedOrder.value.trim() || null })
     editingOrder.value = null
-    notice.value = 'Order number saved.'
+    notice.value = result.message || 'Order number saved.'
     await load()
   } catch (e) { error.value = e.message }
   finally { busy.value = false }
@@ -190,14 +190,19 @@ async function changeTicket(row, event) {
 }
 
 // ------------------------------------------------------------ add a ticket
-// For somebody who paid in cash or by transfer, or a comp: lands confirmed and
-// takes a place like any booking.
+// Paid tickets begin as holds until a real Union sale is found, unless the
+// person adding them has the separate payment-verification override grant.
 const adding = ref(false)
 const blankTicket = () => ({
   ticket_type_id: '', email: '', first_name: '', last_name: '', quantity: 1, note: '',
+  order_number: '', override_confirmation: false,
   send_confirmation: true, override_capacity: false,
 })
 const ticket = reactive(blankTicket())
+const selectedAddType = computed(() => data.value?.summary?.find(
+  t => Number(t.ticketTypeId) === Number(ticket.ticket_type_id),
+))
+const paidAddType = computed(() => selectedAddType.value?.requiresPurchase !== false)
 
 function openAdd() {
   Object.assign(ticket, blankTicket(), { ticket_type_id: data.value?.summary?.[0]?.ticketTypeId ?? '' })
@@ -209,6 +214,12 @@ async function addTicket() {
     error.value = 'Choose a ticket type and give their email address.'
     return
   }
+  if (paidAddType.value && !ticket.order_number.trim() && !ticket.override_confirmation) {
+    error.value = 'A Union order number is required unless you have payment-verification override permission.'
+    return
+  }
+  if (ticket.override_confirmation && !confirm(
+    'Confirm this paid ticket without evidence from a Union sale? This is a separate permissioned override.')) return
   if (ticket.override_capacity && !confirm(
     'Bypass the event and ticket-type capacity limits? This can overbook the event.')) return
   busy.value = true
@@ -217,12 +228,13 @@ async function addTicket() {
   try {
     const res = await api.post(`/admin/events/${route.params.id}/tickets`, {
       ...ticket,
+      order_number: ticket.order_number.trim() || null,
       ticket_type_id: Number(ticket.ticket_type_id),
       quantity: Math.max(1, Number(ticket.quantity) || 1),
     })
     notice.value = res.message
     adding.value = false
-    filter.value = 'bought'
+    filter.value = res.reservation?.status === 'held' ? 'unpaid' : 'bought'
     await load()
   } catch (e) {
     error.value = e.message
@@ -345,9 +357,9 @@ function csv() {
           <form style="display:grid; gap:var(--space-4)" @submit.prevent="addTicket">
             <strong style="font:var(--type-h5)">Add a ticket</strong>
             <p style="margin:0; font:var(--type-small); color:var(--text-muted)">
-              For someone who paid in cash or by transfer, or a free place. It is confirmed
-              straight away and takes a place like any booking. A member is recognised by
-              their email or shortcode; anyone else gets an account that owns the ticket.
+              Paid tickets require a Union order number and remain held until a matching sale is found.
+              If not verified after the next successful daily sync, the booking enters Review cancellations.
+              Free tickets and explicitly authorised payment overrides confirm immediately.
             </p>
             <div class="add-grid">
               <Field label="Ticket type">
@@ -364,12 +376,22 @@ function csv() {
               <Field label="First name" help="Optional for members."><Input v-model="ticket.first_name" /></Field>
               <Field label="Last name"><Input v-model="ticket.last_name" /></Field>
             </div>
-            <Field label="Note" help="e.g. paid £5 cash at the stall. Committee only.">
+            <Field v-if="paidAddType" label="Union order number" help="Required for paid tickets unless you have payment-verification override permission. The Union sale must match before this ticket is confirmed.">
+              <Input v-model="ticket.order_number" maxlength="128" placeholder="From the Union purchase receipt" :required="!ticket.override_confirmation" />
+            </Field>
+            <label v-if="paidAddType && can('events.bookings.confirm_override')" style="display:flex; gap:var(--space-2); align-items:center; font:var(--type-small)">
+              <input v-model="ticket.override_confirmation" type="checkbox" />
+              Override payment verification — confirm immediately without a Union sale
+            </label>
+            <p v-if="ticket.override_confirmation && paidAddType" style="margin:0;color:var(--danger);font:var(--type-small)">
+              This grants a ticket without verifying payment. It is audited separately from a capacity override.
+            </p>
+            <Field label="Note" help="Optional explanation for the committee.">
               <Input v-model="ticket.note" />
             </Field>
             <label style="display:flex; gap:var(--space-2); align-items:center; font:var(--type-small)">
               <input v-model="ticket.send_confirmation" type="checkbox" />
-              Email them a confirmation
+              {{ paidAddType && !ticket.override_confirmation ? 'Email confirmation once payment matches' : 'Email them a confirmation' }}
             </label>
             <label v-if="can('events.bookings.capacity_override')" style="display:flex; gap:var(--space-2); align-items:center; font:var(--type-small)">
               <input v-model="ticket.override_capacity" type="checkbox" />
@@ -379,7 +401,7 @@ function csv() {
               This bypasses capacity restrictions. You will be asked to confirm before adding the ticket.
             </p>
             <div style="display:flex; gap:var(--space-3)">
-              <Button v-if="can('events.bookings.add')" type="submit" :disabled="busy">{{ busy ? 'Adding…' : 'Add ticket' }}</Button>
+              <Button v-if="can('events.bookings.add')" type="submit" :disabled="busy || (paidAddType && !ticket.order_number.trim() && !ticket.override_confirmation)">{{ busy ? 'Adding…' : paidAddType && !ticket.override_confirmation ? 'Add booking for verification' : 'Add ticket' }}</Button>
               <Button variant="ghost" type="button" @click="adding = false">Cancel</Button>
             </div>
           </form>
@@ -434,7 +456,7 @@ function csv() {
                 </div>
                 <div v-if="r.orderVerification?.status === 'rejected'" class="email-state"
                      style="color:var(--danger)">
-                  Order not found after the sales refresh
+                  Union order rejected — review cancellation
                 </div>
                 <div
                   v-if="emailState(r)"

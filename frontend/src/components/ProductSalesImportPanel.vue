@@ -30,7 +30,10 @@ const targetOptions = computed(() => targets.value.filter(t => t.event_id === pr
 function onFile(event) {
   file.value = event.target.files?.[0] || null
   const digits = file.value?.name?.match(/\d{3,11}/g) || []
-  const options = targetOptions.value.filter(t => digits.includes(String(t.product_id)))
+  const options = targetOptions.value.filter(t => digits.some(d =>
+    Number(d) === Number(t.product_id) ||
+    (Number(t.product_id) > 1000000 && Number(d) === Number(t.product_id) - 1000000),
+  ))
   if (options.length && new Set(options.map(t => t.ticket_type_id)).size === 1) {
     targetId.value = String(options[0].ticket_type_id)
   }
@@ -143,7 +146,7 @@ async function addTicket(row) {
           <select v-model="targetId" class="ees-select" :disabled="busy">
             <option value="">Select ticket type</option>
             <option v-for="t in targetOptions" :key="`${t.product_id}-${t.ticket_type_id}-${t.product_line_id}`" :value="String(t.ticket_type_id)">
-              {{ t.ticket_type_name }} · product #{{ t.product_id }}{{ t.product_line_id ? ` · line #${t.product_line_id}` : '' }}
+              {{ t.ticket_type_name }} · {{ t.product_id > 1000000 ? `SUMS #${t.product_id - 1000000} (API #${t.product_id})` : `product #${t.product_id}` }}{{ t.product_line_id ? ` · line #${t.product_line_id}` : '' }}
             </option>
           </select>
         </label>

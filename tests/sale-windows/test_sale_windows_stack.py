@@ -208,9 +208,13 @@ def test_a_committee_added_ticket_still_works(make_event, admin_client):
         json={"ticket_type_id": event["ticket_types"][0]["id"],
               "email": f"door-{uuid.uuid4().hex[:6]}@example.com",
               "first_name": "Door", "last_name": "Guest", "quantity": 1,
+              "order_number": f"CI-{uuid.uuid4().hex[:12]}",
               "send_confirmation": False},
     )
     assert added.status_code in (200, 201), added.text
+    # A paid ticket with a claimed (but unmatched) Union order is held;
+    # closing public reservations must not block authorised committee additions.
+    assert added.json()['reservation']['status'] == 'held'
 
 
 def test_the_page_says_when_booking_closes(make_event, api):
@@ -240,16 +244,18 @@ def test_bringing_the_union_close_forward_clamps_live_holds(
     assert _at(_my_hold(member_client, event)["expiresAt"]) == close
 
 
-def test_clamping_leaves_confirmed_bookings_alone(make_event, admin_client):
+def test_clamping_leaves_confirmed_bookings_alone(make_event, admin_client, superuser_client):
     event, payload = make_event(hold_hours=72)
-    added = admin_client.post(
+    added = superuser_client.post(
         f"/admin/events/{event['id']}/tickets",
         json={"ticket_type_id": event["ticket_types"][0]["id"],
               "email": f"kept-{uuid.uuid4().hex[:6]}@example.com",
               "first_name": "Kept", "last_name": "Booking", "quantity": 1,
+              "override_confirmation": True, "confirm_immediately": True,
               "send_confirmation": False},
     )
     assert added.status_code in (200, 201), added.text
+    assert added.json()['reservation']['status'] == 'confirmed'
 
     def bookings() -> dict:
         lists = admin_client.get(f"/admin/events/{event['id']}/reservations").json()

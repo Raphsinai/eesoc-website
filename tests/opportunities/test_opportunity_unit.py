@@ -229,23 +229,37 @@ def test_opportunity_admin_guard_uses_explicit_permission_not_role_label():
         assert asyncio.run(require_opportunities_admin(session)) is session
 
 
-def test_only_admins_superusers_are_notified(monkeypatch):
+def test_only_users_with_opportunities_permission_are_notified(monkeypatch):
     from services import opportunity_notifications as alerts
 
     async def fake_get(path):
-        assert path == "/auth/admins"
+        if path == '/committee-roles':
+            return [
+                {'id': 'events', 'capabilities': []},
+                {'id': 'industry', 'capabilities': []},
+                {'id': 'admin', 'capabilities': ['opportunities.view']},
+                {'id': 'superuser', 'capabilities': ['opportunities.view']},
+            ]
+        assert path == '/auth/admins'
         return [
-            {"role": "events", "email": "events@example.org"},
-            {"role": "industry", "email": "industry@example.org"},
-            {"role": "admin", "email": "admin@example.org"},
-            {"role": "superuser", "email": "senior@example.org"},
-            {"role": "admin", "email": "ADMIN@example.org"},
+            {'role': 'events', 'email': 'events@example.org'},
+            {'role': 'industry', 'email': 'industry@example.org'},
+            {'role': 'admin', 'email': 'admin@example.org'},
+            {'role': 'superuser', 'email': 'senior@example.org'},
+            {'role': 'admin', 'email': 'ADMIN@example.org'},
+            # Explicit per-person permissions take precedence over role defaults.
+            {'role': 'admin', 'email': 'revoked@example.org', 'permissions': []},
+            {'role': 'events', 'email': 'delegated@example.org',
+             'permissions': ['opportunities.view']},
         ]
 
-    monkeypatch.setattr(alerts.database, "get", fake_get)
-    monkeypatch.setattr(alerts.settings, "superuser_email", "standing@example.org")
+    monkeypatch.setattr(alerts.database, 'get', fake_get)
+    monkeypatch.setattr(alerts.settings, 'superuser_email', 'standing@example.org')
     recipients = asyncio.run(alerts.admin_recipients())
-    assert recipients == ["admin@example.org", "senior@example.org", "standing@example.org"]
+    assert recipients == [
+        'admin@example.org', 'delegated@example.org', 'senior@example.org',
+        'standing@example.org',
+    ]
 
 
 def test_notifications_reach_current_admins_and_submitter_not_public_contact(monkeypatch):
@@ -254,10 +268,15 @@ def test_notifications_reach_current_admins_and_submitter_not_public_contact(mon
     sent = []
 
     async def fake_get(path):
-        assert path == "/auth/admins"
+        if path == '/committee-roles':
+            return [
+                {'id': 'events', 'capabilities': []},
+                {'id': 'admin', 'capabilities': ['opportunities.view']},
+            ]
+        assert path == '/auth/admins'
         return [
-            {"role": "events", "email": "events@example.org"},
-            {"role": "admin", "email": "admin@example.org"},
+            {'role': 'events', 'email': 'events@example.org'},
+            {'role': 'admin', 'email': 'admin@example.org'},
         ]
 
     async def fake_send_many(to, subject, text):

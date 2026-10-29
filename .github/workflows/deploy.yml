@@ -91,17 +91,8 @@ jobs:
           curl -fsS localhost:8080/sitemap.xml | grep -q '<urlset'
           curl -fsS localhost:8080/robots.txt | grep -q 'Sitemap:'
           ! grep -qE '^\s*dev_login_enabled:\s*bool\s*=\s*True' backend/api/config.py
-      # Legacy expectations made obsolete by deliberate product changes:
-      # photo prints use a dark premium background; manually added paid tickets
-      # now require an order number unless the user has override permission.
-      # Keep all other tests required. Do not silently disable entire suites.
-      - name: Run Python regression tests (including migration safety)
-        run: |
-          echo '::warning::12 stale photo-print/sale-windows assertions are excluded pending test updates'
-          python3 -m pytest tests -q \
-            --deselect=tests/photo-print/test_photo_print_unit.py::test_print_dimensions_qr_and_safe_margins \
-            --deselect=tests/sale-windows/test_sale_windows_stack.py::test_a_committee_added_ticket_still_works \
-            --deselect=tests/sale-windows/test_sale_windows_stack.py::test_clamping_leaves_confirmed_bookings_alone
+      - name: Run all Python regression tests (including migration safety)
+        run: python3 -m pytest tests -q
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

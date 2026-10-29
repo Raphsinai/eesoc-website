@@ -57,6 +57,7 @@ jobs:
     environment: production
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,13 +74,22 @@ jobs:
         id: pick
         run: |
           set -euo pipefail
+          # Staging currently follows staging-deploy, not main's old staging pin.
+          git fetch -q origin staging-deploy
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import os, sys, yaml
+          import os, sys, yaml, subprocess
 
           SERVICES = ["api", "database", "union", "frontend", "garage-init", "whatsapp"]
 
-          def tags(path, new_ok=False):
-              doc = yaml.safe_load(open(path)) or {}
+          def tags(path, new_ok=False, staging_branch=False):
+              if staging_branch:
+                  raw = subprocess.check_output(
+                      ["git", "show", f"origin/staging-deploy:{path}"], text=True
+                  )
+              else:
+                  with open(path) as source:
+                      raw = source.read()
+              doc = yaml.safe_load(raw) or {}
               pinned = {i["name"]: i.get("newTag") for i in doc.get("images", [])}
               out = {}
               for svc in SERVICES:
@@ -89,7 +99,7 @@ jobs:
                   out[svc] = tag
               return out
 
-          staging = tags("deploy/k8s/overlays/staging/kustomization.yaml")
+          staging = tags("deploy/k8s/overlays/staging/kustomization.yaml", staging_branch=True)
           # A service added since the last promote has no pin in production
           # yet; this promote is what gives it one. (Pinned is not running:
           # whatsapp runs only where an overlay includes its component.)
@@ -102,6 +112,8 @@ jobs:
               sys.exit(f"::error::staging is on mixed tags, refusing: {staging}")
 
           wanted = os.environ.get("INPUT_SHA", "").strip() or staging["api"]
+          if wanted != staging["api"]:
+              sys.exit(f"::error::requested SHA is not the current staging release: {wanted} != {staging['api']}")
 
           if len(set(production.values())) == 1 and production["api"] == wanted:
               sys.exit(f"::error::production is already on {wanted}; nothing to promote")
@@ -151,39 +163,75 @@ jobs:
           kustomize build deploy/k8s/overlays/production > /dev/null
           kustomize build deploy/k8s/overlays/staging    > /dev/null
 
-      - name: Commit for ArgoCD to pick up
+      # GitHub protects main against direct workflow pushes. Publish a release
+      # PR instead; an authorised maintainer merges it to trigger production ArgoCD.
+      - name: Prepare production promotion PR (protected main)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROMOTE_SHA: ${{ steps.pick.outputs.sha }}
+          FROM_SHA: ${{ steps.pick.outputs.from }}
         run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          branch="release/production-${PROMOTE_SHA:0:12}-${GITHUB_RUN_ID}"
+          git switch -c "$branch"
           git add deploy/k8s/overlays/production/kustomization.yaml
-          # [skip ci] stops this commit from triggering the build workflow.
-          git diff --staged --quiet || \
-            git commit -m "promote: ${{ steps.pick.outputs.sha }} to production [skip ci]"
-          # The other workflow (staging pin / promote) can push to main in the
-          # same minute, which rejected this push and left staging unpinned
-          # twice on 2026-10-06. Each edits a different overlay file, so a
-          # rebase onto the winner never conflicts.
-          for attempt in 1 2 3 4 5; do
-            git push && exit 0
-            echo "push rejected (attempt $attempt); rebasing onto origin/main"
-            sleep $((attempt * 3))
-            git pull --rebase origin main
-          done
-          exit 1
+          if git diff --cached --quiet; then
+            echo '::error::Production image pins did not change'
+            exit 1
+          fi
+          git commit -m "promote: $PROMOTE_SHA to production [skip ci]"
+          git push origin HEAD:"refs/heads/$branch"
 
-      - name: Say what happened
+          # A GitHub Actions token cannot bypass the protected main ruleset.
+          # Create a PR, then a maintainer explicitly merges it. The action
+          # only writes the image pin, never alters production configuration.
+          export BRANCH="$branch"
+          python3 - <<'PY' > "$RUNNER_TEMP/promotion-pr.json"
+          import json, os
+          sha = os.environ['PROMOTE_SHA']
+          print(json.dumps({
+              'title': f'Promote staging {sha[:12]} to production',
+              'head': os.environ['BRANCH'],
+              'base': 'main',
+              'body': (
+                  f'Production release prepared by GitHub Actions.\n\n'
+                  f'Source: staging-deploy, six matching image tags `{sha}`.\n'
+                  f'Previous production tag: `{os.environ["FROM_SHA"]}`.\n'
+                  'Only production overlay image pins change. No image rebuild.\n'
+                  'Merge this PR to make production ArgoCD deploy. '
+                  'Check the production API and all deployments afterwards.'
+              ),
+          }))
+          PY
+          status=$(curl -sS -o "$RUNNER_TEMP/promotion-pr-response.json" -w '%{http_code}' \
+            -X POST -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            --data-binary @"$RUNNER_TEMP/promotion-pr.json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls")
+          if [ "$status" = 201 ]; then
+            url=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["html_url"])' "$RUNNER_TEMP/promotion-pr-response.json")
+            echo "Production promotion PR prepared: $url"
+            echo "PR_URL=$url" >> "$GITHUB_ENV"
+          else
+            echo "::warning::PR creation returned HTTP $status. Release branch $branch was pushed; create its PR manually."
+            echo "PR_URL=https://github.com/$GITHUB_REPOSITORY/compare/main...$branch" >> "$GITHUB_ENV"
+          fi
+
+      - name: Report release awaiting protected-branch merge
+        env:
+          PROMOTE_SHA: ${{ steps.pick.outputs.sha }}
+          FROM_SHA: ${{ steps.pick.outputs.from }}
         run: |
           {
-            echo "### Promoted to production"
+            echo '### Production promotion PR ready (not yet deployed)'
             echo
-            echo "| | |"
-            echo "|---|---|"
-            echo "| was | \`${{ steps.pick.outputs.from }}\` |"
-            echo "| now | \`${{ steps.pick.outputs.sha }}\` |"
-            echo
-            echo "<https://eesoc.com> updates once ArgoCD syncs."
-            echo
-            echo "To roll back: \`git revert\` the commit this just pushed."
+            echo "- Current production: $FROM_SHA"
+            echo "- Staging release prepared: $PROMOTE_SHA"
+            echo "- Pull request: $PR_URL"
+            echo '- Merge the PR to update ArgoCD production image pins.'
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Ship just one approved frontend feature without inadvertently shipping every

@@ -20,5 +20,5 @@ icalendar==6.3.1
 # The passkey suite's software authenticator (tests/passkeys/) makes real P-256
 # keys and CBOR-encodes what a phone would send, so the api's WebAuthn checks
 # are tested against real cryptography. Same libraries py_webauthn uses.
-cryptography==50.0.1
+cryptography>=44,<47
 cbor2==6.1.4

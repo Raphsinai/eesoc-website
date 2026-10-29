@@ -142,6 +142,7 @@ class Settings(BaseSettings):
     # there is no mail credential there is no mail, so there are no links to
     # sign. Set it explicitly to keep links working across a password reset.
     email_token_secret: str = ""
+    external_society_secret: str = ""
 
     # Where a sponsor's question or note is announced, comma separated. The
     # sponsorship officer's address — the one the portal tells sponsors to

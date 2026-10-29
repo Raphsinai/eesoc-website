@@ -112,7 +112,7 @@ async def targets(_: AuthSession = Depends(require_whatsapp)) -> dict:
     return {
         "configured": link.configured(),
         "environment": settings.environment,
-        "groups": await whatsapp.available(),
+        "groups": await whatsapp.available(user_id=_.user.id,admin_all=_.can("societies.whatsapp.groups.edit")),
     }
 
 

@@ -374,6 +374,21 @@ export class Link {
     return list
   }
 
+  /** Join a group only after an administrator explicitly approves its invite. */
+  async joinInvite(code) {
+    if (!/^[A-Za-z0-9]{12,40}$/.test(String(code || ''))) {
+      throw new LinkError(400, 'Invalid WhatsApp group invite code.')
+    }
+    const sock = this._connected()
+    if (typeof sock.groupAcceptInvite !== 'function') {
+      throw new LinkError(503, 'Group invites are not supported by this WhatsApp connection.')
+    }
+    const jid = await sock.groupAcceptInvite(code)
+    this.listed = null
+    this.listedAt = 0
+    return { jid }
+  }
+
   // ---------------------------------------------------------------- send
 
   _recent() {

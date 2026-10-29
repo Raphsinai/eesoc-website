@@ -78,3 +78,16 @@ async def sales(year: str, force: bool = False) -> list[dict]:
 
 async def health() -> dict:
     return await _get("/health")
+
+
+async def external_members(centre: str, credential: str, year: str) -> list[dict]:
+    if not configured():
+        raise UnionUnavailable('Union bridge is not configured')
+    try:
+        res=await client().post('/external-members',json={
+            'centre_code':centre,'credential':credential,'year':year})
+    except httpx.HTTPError as exc:
+        raise UnionUnavailable('Union bridge is unavailable') from exc
+    if res.status_code >= 400:
+        raise UnionUnavailable('Union refused external society membership sync')
+    return res.json()

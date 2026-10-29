@@ -375,6 +375,18 @@ def _assert_ticket_type_changes(session: AuthSession, previous: dict, body: dict
         raise HTTPException(403, "Permission required: events.ticket_types.delete")
 
 
+async def _check_society_ticket_eligibility(session:AuthSession, before:list[dict], after:list[dict]) -> None:
+    old={t.get('id'):[int(x) for x in t.get('eligible_society_ids',[])] for t in before}
+    changed=any(sorted(t.get('eligible_society_ids') or [])!=sorted(old.get(t.get('id'),[])) for t in after)
+    if changed and not session.can('events.ticket_types.eligibility'):
+        raise HTTPException(403,'Permission required: events.ticket_types.eligibility')
+    if changed:
+        from clients import database
+        known={s['id'] for s in await database.get('/external-societies') or []}
+        if any(not isinstance(x,int) or x not in known for t in after for x in (t.get('eligible_society_ids') or [])):
+            raise HTTPException(400,'Unknown society selected for ticket eligibility')
+
+
 @router.post("/events", dependencies=[Depends(require_action("events.create")), Depends(verify_csrf)])
 async def create_event(
     body: dict = Body(...), session: AuthSession = Depends(require_event_editor)
@@ -382,6 +394,7 @@ async def create_event(
     body.setdefault("academic_year", academic_year())
     if body.get("ticket_types") and not session.can("events.ticket_types.create"):
         raise HTTPException(403, "Permission required: events.ticket_types.create")
+    await _check_society_ticket_eligibility(session,[],body.get('ticket_types',[]))
     if body.get("published") and not session.can("events.publish"):
         raise HTTPException(403, "Permission required: events.publish")
     if not (body.get("slug") or "").strip():
@@ -408,7 +421,15 @@ async def update_event(
                   existing.get("created_by") == session.user.id)
     if not session.can("events.edit") and not owns_event:
         raise HTTPException(403, "You can edit only events you created without the events.edit permission")
+    # Legacy event editors may omit this new field. Retain the stored list rather
+    # than silently wiping ticket eligibility or blocking unrelated edits.
+    older={t['id']:t.get('eligible_society_ids') or [] for t in existing.get('ticket_types',[])}
+    for t in body.get('ticket_types',[]):
+        if 'eligible_society_ids' not in t and t.get('id') in older:
+            t['eligible_society_ids']=older[t['id']]
     _assert_ticket_type_changes(session, existing, body)
+    if 'ticket_types' in body:
+        await _check_society_ticket_eligibility(session,existing.get('ticket_types',[]),body['ticket_types'])
     if "published" in body and bool(body["published"]) != bool(existing.get("published")) and not session.can("events.publish"):
         raise HTTPException(403, "Permission required: events.publish")
     if (session.can("events.scope.industry") and not session.can("events.scope.all")
@@ -530,6 +551,7 @@ async def add_ticket_type(
     session: AuthSession = Depends(require_event_editor),
 ) -> dict:
     await _editable_event(event_id, session)
+    await _check_society_ticket_eligibility(session,[],[body])
     return await database.post(f"/events/{event_id}/ticket-types", body)
 
 
@@ -539,7 +561,10 @@ async def update_ticket_type(
     body: dict = Body(...),
     session: AuthSession = Depends(require_event_editor),
 ) -> dict:
-    await _editable_ticket(ticket_type_id, session)
+    ticket=await _editable_ticket(ticket_type_id, session)
+    if 'eligible_society_ids' not in body:
+        body['eligible_society_ids']=ticket.get('eligible_society_ids') or []
+    await _check_society_ticket_eligibility(session,[ticket],[body])
     return await database.put(f"/ticket-types/{ticket_type_id}", body)
 
 
@@ -2029,7 +2054,7 @@ async def send_sponsor_marketing(
         raise HTTPException(409, "That request has already been dealt with.")
     if whatsapp_groups and not session.can("whatsapp.post"):
         raise HTTPException(403, "You cannot post to WhatsApp groups.")
-    groups = await _whatsapp_groups(whatsapp_groups)
+    groups = await _whatsapp_groups(whatsapp_groups,session)
     by_email = "email" in item["channels"] and not item.get("emailed_at")
     if by_email and not session.can("email.send"):
         raise HTTPException(403, "You cannot send email to members.")
@@ -2188,7 +2213,7 @@ async def send_roles_digest(
         raise HTTPException(400, "There are no new roles to tell members about.")
     if whatsapp_groups and not session.can("whatsapp.post"):
         raise HTTPException(403, "You cannot post to WhatsApp groups.")
-    groups = await _whatsapp_groups(whatsapp_groups)
+    groups = await _whatsapp_groups(whatsapp_groups,session)
     audiences = ["topic:roles"]
     recipients = await emailing.resolve(audiences)
     subject = (
@@ -2449,7 +2474,7 @@ async def email_audiences(_: AuthSession = Depends(require_email)) -> dict:
     authenticate produces a campaign that silently fails for every recipient.
     """
     return {
-        "audiences": await emailing.audiences(),
+        "audiences": await emailing.audiences(external_societies=_.can("societies.members.mail"), whatsapp_user_id=_.user.id, whatsapp_admin_all=_.can("societies.whatsapp.groups.edit")),
         "mail": mailer.describe(),
         "academicYear": academic_year(),
         # So staging's Send can say its WhatsApp groups are the real ones.
@@ -2469,7 +2494,7 @@ async def preview_email(
     different code is a preview of something else.
     """
     html, text = emailing.render_body(body)
-    recipients = await emailing.resolve(audiences) if audiences else []
+    recipients = await emailing.resolve(audiences,allowed_society_ids='all' if _.can('societies.members.mail') else set()) if audiences else []
     return {
         "html": html,
         "text": text,
@@ -2506,20 +2531,20 @@ def _check_sendable(subject: str, audiences: list[str], recipients: list) -> Non
         )
 
 
-async def _whatsapp_groups(jids: list[str] | None) -> list[dict]:
+async def _whatsapp_groups(jids: list[str] | None, session: AuthSession) -> list[dict]:
     """The WhatsApp groups ticked for a send, each one the linked number can
     post in now — or an error saying why not, rather than a send that quietly
     reaches fewer places than the screen showed."""
     jids = list(dict.fromkeys(jids or []))
     if not jids:
         return []
-    if not await whatsapp.available():
+    if not await whatsapp.available(user_id=session.user.id,admin_all=session.can("societies.whatsapp.groups.edit")):
         raise HTTPException(
             503,
             "WhatsApp isn't linked or connected right now, so it can't post into "
             "those groups. Untick them to send the rest, or relink on the Email tab.",
         )
-    groups = await whatsapp.pick(jids)
+    groups = await whatsapp.pick(jids,user_id=session.user.id,admin_all=session.can("societies.whatsapp.groups.edit"))
     if len(groups) != len(jids):
         raise HTTPException(
             400,
@@ -2529,9 +2554,9 @@ async def _whatsapp_groups(jids: list[str] | None) -> list[dict]:
     return groups
 
 
-async def _whatsapp_targets(audiences: list[str]) -> list[dict]:
+async def _whatsapp_targets(audiences: list[str], session: AuthSession) -> list[dict]:
     """The WhatsApp groups ticked among `audiences` (see _whatsapp_groups)."""
-    return await _whatsapp_groups(emailing.whatsapp_groups_in(audiences))
+    return await _whatsapp_groups(emailing.whatsapp_groups_in(audiences),session)
 
 
 def _sending_message(recipients: int, groups: list[dict], about: str = "") -> str:
@@ -2572,8 +2597,8 @@ async def send_newsletter(
         raise HTTPException(403, "You cannot send email to members.")
     if emailing.whatsapp_groups_in(audiences) and not session.can("whatsapp.post"):
         raise HTTPException(403, "You cannot post to WhatsApp groups.")
-    groups = await _whatsapp_targets(audiences)
-    recipients = await emailing.resolve(mail_audiences) if mail_audiences else []
+    groups = await _whatsapp_targets(audiences,session)
+    recipients = await emailing.resolve(mail_audiences,allowed_society_ids="all" if session.can("societies.members.mail") else set()) if mail_audiences else []
     if mail_audiences:
         # A subject is the email's; a WhatsApp post needs only something to say.
         _check_sendable(subject, mail_audiences, recipients)
@@ -2648,8 +2673,8 @@ async def announce_event(
         raise HTTPException(403, "You cannot announce events by email.")
     if emailing.whatsapp_groups_in(audiences) and not session.can("whatsapp.post"):
         raise HTTPException(403, "You cannot post to WhatsApp groups.")
-    groups = await _whatsapp_targets(audiences)
-    recipients = await emailing.resolve(mail_audiences) if mail_audiences else []
+    groups = await _whatsapp_targets(audiences,session)
+    recipients = await emailing.resolve(mail_audiences,allowed_society_ids="all" if session.can("societies.members.mail") else set()) if mail_audiences else []
     if mail_audiences:
         _check_sendable(subject, mail_audiences, recipients)
 

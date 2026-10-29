@@ -215,40 +215,54 @@ def label(group: dict) -> str:
     return group.get("name") or group["jid"]
 
 
-async def available() -> list[dict]:
-    """Every group the linked number can post in, read live from the number,
-    each an audience like any other: {jid, name, size, community}.
-
-    Live rather than a list kept in the database, so it is the same on every
-    screen, and on staging survives the refresh that replaces the database
-    after each deploy. Empty when WhatsApp isn't set up, linked or answering.
-    """
-    if not link.configured():
-        return []
+async def inventory(account: str = 'eesoc') -> list[dict]:
+    """Live groups for configuration. Only call from a permission-checked route."""
+    if not link.configured(): return []
     try:
-        groups = await link.groups()
+        rows=await link.groups(account)
     except link.WhatsAppUnavailable:
         return []
-    out = [
-        {
-            "jid": g["jid"],
-            "name": label(g),
-            "size": g.get("size"),
-            "community": (g.get("parent") or {}).get("name"),
-            "announcements": bool(g.get("communityAnnouncements")),
-        }
-        for g in groups
-        if g.get("canPost") and allowed(g["jid"])
-    ]
-    # A community's announcements channel first — it reaches everybody in it.
-    out.sort(key=lambda g: (not g["announcements"], g["name"].casefold()))
-    return out
+    return [{
+        'jid':g['jid'],'name':label(g),'size':g.get('size'),
+        'community':(g.get('parent') or {}).get('name'),
+        'announcements':bool(g.get('communityAnnouncements')),
+        'canPost':bool(g.get('canPost')),'account':account,
+    } for g in rows if not g.get('community')]
 
 
-async def pick(jids: list[str] | None) -> list[dict]:
-    """The groups among `jids` the number can post in now, in the order
-    asked. One it has left, or cannot post in any more, is left out."""
-    live = {g["jid"]: g for g in await available()}
+async def available(*, user_id: int | None = None, admin_all: bool = False,
+                    society_id: int | None = None) -> list[dict]:
+    """Only enabled groups in the caller's tenancy and group-specific ACL."""
+    if not link.configured() or (user_id is None and society_id is None and not admin_all):
+        return []
+    settings_rows=await database.get('/external-societies/whatsapp/groups/settings') or []
+    eligible=[]
+    for row in settings_rows:
+        if not row['enabled']: continue
+        if society_id is not None:
+            if row['society_id'] != society_id: continue
+        elif not (row['eesoc_enabled'] and user_id in row['eesoc_user_ids']):
+            continue
+        eligible.append(row)
+    accounts={r['account_key'] for r in eligible}
+    live={a:{g['jid']:g for g in await inventory(a)} for a in accounts}
+    groups=[]
+    for item in eligible:
+        account=item['account_key']
+        g=live.get(account,{}).get(item['jid'])
+        if not g or not g['canPost'] or (account=='eesoc' and not allowed(g['jid'])):
+            continue
+        target=(f'{account}:' if account!='eesoc' else '')+g['jid']
+        groups.append({**g,'target':target, 'society_id':item['society_id'], 'scope':'society' if society_id is not None else 'eesoc'})
+    groups.sort(key=lambda g:(not g['announcements'],g['name'].casefold()))
+    return groups
+
+
+async def pick(jids: list[str] | None, *, user_id: int | None = None,
+               admin_all: bool = False, society_id: int | None = None) -> list[dict]:
+    """Never trust browser-supplied JIDs. Resolve against the current group ACL."""
+    live={g['target']:g for g in await available(
+        user_id=user_id,admin_all=admin_all,society_id=society_id)}
     return [live[j] for j in dict.fromkeys(jids or []) if j in live]
 
 
@@ -275,6 +289,29 @@ async def _finish(post_id: int, outcome: dict) -> None:
         log.exception("Could not record WhatsApp post %s as %s", post_id, outcome.get("status"))
 
 
+async def _eesoc_post_granted(user_id:int|None) -> bool:
+    """Resolve active EESoc action grants when a queued post is dispatched.
+
+    Group-specific access alone must not survive the loss of a committee role
+    or a role-default change. This also covers a queued email sent much later.
+    """
+    if user_id is None:
+        return False
+    from utils import roles
+    rows=await database.get('/auth/admins') or []
+    actor=next((r for r in rows if r.get('user_id')==user_id),None)
+    if not actor:
+        return False
+    if settings.superuser_email and (actor.get('email') or '').lower()==settings.superuser_email.lower():
+        return True
+    presets=await database.get('/committee-roles') or []
+    preset=next((p for p in presets if p.get('id')==actor.get('role')),None)
+    effective=roles.effective_capabilities(
+        actor.get('role'), actor.get('permissions') if actor.get('permissions') is not None
+        else (preset or {}).get('capabilities',[]))
+    return 'whatsapp.post' in effective
+
+
 async def post(
     text: str,
     groups: list[dict],
@@ -294,10 +331,21 @@ async def post(
     results = []
     for group in groups:
         jid, name = group["jid"], group.get("name") or ""
+        account=group.get('account','eesoc')
         result = {"jid": jid, "name": name}
-        if not allowed(jid):
+        settings_rows=await database.get('/external-societies/whatsapp/groups/settings') or []
+        current=next((r for r in settings_rows if r['account_key']==account and r['jid']==jid),None)
+        approved=bool(current and current['enabled'])
+        if group.get('scope')=='society':
+            approved=approved and current['society_id'] is not None and current['society_id']==group.get('society_id')
+        elif group.get('scope')=='eesoc':
+            approved=approved and current['eesoc_enabled'] and by in current['eesoc_user_ids'] and await _eesoc_post_granted(by)
+        else:
+            approved=False
+        if not approved or (account=='eesoc' and not allowed(jid)):
+
             results.append({**result, "status": "skipped",
-                            "error": "Not on WHATSAPP_GROUP_ALLOWLIST for this environment."})
+                            "error": "Group is disabled or outside this environment allowlist."})
             continue
         if campaign_id is None:
             recent = await database.get(
@@ -319,7 +367,7 @@ async def post(
             results.append({**result, "status": "skipped", "error": "Already posted with this email."})
             continue
         try:
-            sent = await link.send(jid, text, key=f"post:{claim['id']}")
+            sent = await link.send(jid, text, key=f"post:{claim['id']}", account=account)
         except link.WhatsAppUnavailable as exc:
             await _finish(claim["id"], {"status": "failed", "error": str(exc)})
             log.warning("WhatsApp post %s to %s failed: %s", claim["id"], jid, exc)
@@ -350,7 +398,7 @@ async def post_campaign(row: dict) -> list[dict]:
     if not jids:
         return []
     try:
-        groups = await pick(jids)
+        groups = await pick(jids,user_id=row.get("reviewed_by") or row.get("created_by"))
         if not groups:
             log.warning("Email %s was to go on WhatsApp, but none of its groups can be posted in now", row["id"])
             return []

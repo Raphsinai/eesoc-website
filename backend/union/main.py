@@ -8,6 +8,7 @@ api service is the only caller.
 import logging
 
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 import client
 from utils import academic_year, parse_dt
@@ -215,3 +216,21 @@ async def whats_on(force: bool = False) -> list[dict]:
         }
         for e in raw
     ]
+
+
+class ExternalMembersRequest(BaseModel):
+    centre_code: str
+    credential: str
+    year: str
+
+@app.post('/external-members')
+async def external_members(req: ExternalMembersRequest):
+    """Private bridge. The same global upstream rate limiter governs all societies."""
+    try:
+        raw = await client.external_members(req.centre_code,req.credential,req.year)
+    except client.UnionAPIError as exc:
+        raise HTTPException(502, 'Union refused membership request') from exc
+    return [{'cid':str(m.get('CID') or '').strip(),
+             'login':(m.get('Login') or '').strip().lower() or None,
+             'first_name':m.get('FirstName'),'last_name':m.get('Surname')}
+            for m in raw if m.get('CID')]

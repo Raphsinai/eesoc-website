@@ -11,6 +11,7 @@ log = logging.getLogger("database")
 import migrate
 from postgres import connect, disconnect, get_pool
 from routes.auth import router as auth_router
+from routes.external_societies import router as external_societies_router
 from routes.audit import router as audit_router
 from routes.checkin import router as checkin_router
 from routes.email import router as email_router
@@ -58,6 +59,7 @@ app = FastAPI(
 )
 
 app.include_router(auth_router)
+app.include_router(external_societies_router)
 app.include_router(audit_router)
 app.include_router(union_router)
 app.include_router(events_router)

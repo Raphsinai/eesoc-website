@@ -25,6 +25,8 @@ import PhotoStudioPanel from '@/components/PhotoStudioPanel.vue'
 import WhatsAppGroupPicker from '@/components/WhatsAppGroupPicker.vue'
 import WhatsAppLink from '@/components/WhatsAppLink.vue'
 import WhatsAppPost from '@/components/WhatsAppPost.vue'
+import SocietiesAdminPanel from '@/components/SocietiesAdminPanel.vue'
+import WhatsAppGroupAdmin from '@/components/WhatsAppGroupAdmin.vue'
 import session, { can, anyPermission, hasAdminArea } from '@/stores/session'
 
 const route = useRoute()
@@ -47,6 +49,7 @@ const TABS = [
   ['lockers', 'Lockers', 'lockerish'],
   ['email', 'Email', 'emailish'],
   ['whatsapp', 'WhatsApp', 'whatsappish'],
+  ['societies', 'Societies', 'societyish'],
   ['people', 'People', 'access.view'],
   ['roles', 'Roles', 'rolesish'],
   ['audit', 'Activity log', 'access.audit.view'],
@@ -63,7 +66,8 @@ function allowed(need) {
   if (need === 'rolesish') return can('access.roles.create') || can('access.roles.edit')
   if (need === 'lockerish') return can('lockers.inventory.view') || can('lockers.allowances.view') || can('lockers.holders.view')
   if (need === 'emailish') return anyPermission('email.')
-  if (need === 'whatsappish') return anyPermission('whatsapp.')
+  if (need === 'whatsappish') return anyPermission('whatsapp.') || anyPermission('societies.whatsapp.')
+  if (need === 'societyish') return anyPermission('societies.')
   if (need === 'photoish') return anyPermission('photos.')
   return can(need)
 }
@@ -120,6 +124,12 @@ function changeEventPage(delta) {
   eventPage.value = Math.max(0, Math.min(eventPageCount.value - 1, activeEventPage.value + delta))
 }
 const products = ref([])
+const eligibleSocieties = ref([])
+onMounted(async () => {
+  if (can('events.ticket_types.eligibility')) {
+    try { eligibleSocieties.value = await api.get('/admin/societies/eligible-lookup') } catch {}
+  }
+})
 const links = ref([])
 const pages = ref([])
 const pageDetail = ref(null)
@@ -2526,9 +2536,17 @@ usePageTitle(computed(() => `Committee · ${TABS.find(([id]) => id === tab.value
                   <Field label="Max/user"><Input v-model.number="t.max_per_user" :disabled="!can(t.id ? 'events.ticket_types.edit' : 'events.ticket_types.create')" type="number" min="1" /></Field>
                 </div>
                 <label style="font:var(--type-2xs); color:var(--text-muted)">
-                  <input v-model="t.members_only" type="checkbox" /> Members only
+                  <input v-model="t.members_only" type="checkbox" /> EESoc members only
                   <input v-model="t.requires_purchase" type="checkbox" style="margin-left:var(--space-4)" /> Needs a Union purchase
                 </label>
+
+                <Field v-if="eligibleSocieties.length && can('events.ticket_types.eligibility')" label="Also allow members of these societies" help="If EESoc members only is selected, qualifying EESoc members OR members of any selected society can book.">
+                  <div style="display:flex;flex-wrap:wrap;gap:var(--space-3)">
+                    <label v-for="society in eligibleSocieties" :key="society.id" style="font:var(--type-small)">
+                      <input v-model="t.eligible_society_ids" type="checkbox" :value="society.id" /> {{ society.name }}
+                    </label>
+                  </div>
+                </Field>
 
                 <Field
                   v-if="t.requires_purchase"
@@ -2593,7 +2611,7 @@ usePageTitle(computed(() => `Committee · ${TABS.find(([id]) => id === tab.value
                 No ticket types — this is a drop-in event. The page will say
                 “No booking needed” and nobody has to reserve a place.
               </p>
-              <Button v-if="can('events.ticket_types.create')" size="sm" variant="ghost" @click="draft.ticket_types.push({ name: '', price_pounds: '', capacity: null, max_per_user: 1, members_only: false, requires_purchase: true, purchase_url: '', sales_open_enabled: false, sales_open_at: '', sales_close_enabled: false, sales_close_at: '' })">
+              <Button v-if="can('events.ticket_types.create')" size="sm" variant="ghost" @click="draft.ticket_types.push({ name: '', price_pounds: '', capacity: null, max_per_user: 1, members_only: false, eligible_society_ids: [], requires_purchase: true, purchase_url: '', sales_open_enabled: false, sales_open_at: '', sales_close_enabled: false, sales_close_at: '' })">
                 Add ticket type
               </Button>
 
@@ -3153,13 +3171,13 @@ usePageTitle(computed(() => `Committee · ${TABS.find(([id]) => id === tab.value
 
       <!-- ============================= PEOPLE ============================= -->
       <!-- ============================ WHATSAPP ============================ -->
-      <template v-if="tab === 'whatsapp' && anyPermission('whatsapp.')">
+      <template v-if="tab === 'whatsapp' && (anyPermission('whatsapp.') || anyPermission('societies.whatsapp.'))">
         <div class="admin-cols">
           <Card variant="outline">
             <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">Society WhatsApp account</h2>
-            <WhatsAppLink />
+            <WhatsAppLink v-if="anyPermission('whatsapp.')" />
           </Card>
-          <Card variant="offset">
+          <Card v-if="can('whatsapp.post')" variant="offset">
             <h2 style="margin:0 0 var(--space-4); font:var(--type-h4)">Post to WhatsApp</h2>
             <Field label="Heading"><Input v-model="whatsappHeading" placeholder="Optional heading" /></Field>
             <Field label="Message"><textarea v-model="whatsappBody" rows="7" class="ees-textarea" placeholder="Write the message…" /></Field>
@@ -3168,6 +3186,9 @@ usePageTitle(computed(() => `Committee · ${TABS.find(([id]) => id === tab.value
           </Card>
         </div>
       </template>
+
+      <WhatsAppGroupAdmin v-if="tab === 'whatsapp' && can('societies.whatsapp.groups.view')" />
+      <SocietiesAdminPanel v-if="tab === 'societies'" :events="events" />
 
       <!-- ============================== EMAIL ============================= -->
       <template v-if="tab === 'email'">

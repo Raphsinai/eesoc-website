@@ -14,6 +14,11 @@ defineEmits(['open-login'])
 // The sponsor portal and committee admin are only navigable by the people who
 // can actually use them; both are enforced server-side as well. "Admin" shows
 // for a committee member with no role too — their own card lives in there.
+const societyAccess = ref(false)
+watch(() => session.authenticated, async ok => {
+  societyAccess.value = false
+  if (ok) { try { societyAccess.value = (await api.get('/society-portal')).length > 0 } catch {} }
+}, { immediate: true })
 const visibleNav = computed(() =>
   nav
     .filter(
@@ -22,7 +27,8 @@ const visibleNav = computed(() =>
         || session.isSponsor
         || can('sponsors.portal.view'),
     )
-    .concat(hasAdminArea.value ? [{ id: 'admin', label: 'Admin', to: '/admin' }] : []),
+    .concat(hasAdminArea.value ? [{ id: 'admin', label: 'Admin', to: '/admin' }] : [])
+    .concat(societyAccess.value ? [{ id: 'society-portal', label: 'Society committee', to: '/societies' }] : []),
 )
 
 const route = useRoute()

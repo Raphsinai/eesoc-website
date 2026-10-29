@@ -81,6 +81,7 @@ def _ensure_visitor(request: Request, response: Response) -> str:
 
 REASONS = {
     "reservations_closed": "Booking for this event has closed.",
+    "society_membership_required": "Sign in with your Imperial account and ensure you are a current member of an eligible society.",
     "sold_out": "This event is full.",
     "type_sold_out": "That ticket type has sold out.",
     "type_not_on_sale": "That ticket type is not on sale right now.",
@@ -103,6 +104,7 @@ def _ticket_view(tt: dict, is_member: bool) -> dict:
         "remaining": tt.get("remaining"),
         "soldOut": bool(tt.get("sold_out")),
         "membersOnly": bool(tt.get("members_only")),
+        "eligibleSocietyIds": tt.get("eligible_society_ids") or [],
         "maxPerUser": tt.get("max_per_user", 1),
         "requiresPurchase": bool(tt.get("requires_purchase", True)),
         # Precomputed so the dropdown can disable an option without duplicating
@@ -435,6 +437,17 @@ async def reserve(
             "expected. If you haven't, join on the Union shop or this booking "
             "won't be confirmed."
         )
+
+    # External society eligibility is verified from the current academic year's
+    # imported roster, not inferred merely from an Imperial address.
+    if ticket.get('eligible_society_ids'):
+        from services.societies import eligible_societies
+        ids=set(ticket['eligible_society_ids'])
+        valid=(await eligible_societies(str(session.user.email),list(ids))) if session and session.user.email_verified else set()
+        if not valid and not (ticket['members_only'] and is_member):
+            raise HTTPException(403,REASONS['society_membership_required'])
+        if valid:
+            membership_warning=None
 
     # A guest already holds the seat from the moment they opened the form, so
     # this converts that draft rather than competing for capacity a second time.
@@ -788,11 +801,17 @@ async def hold_seat(
         raise HTTPException(404, "No such ticket type for this event")
     _require_ticket_on_sale(ticket)
 
+    if ticket.get('eligible_society_ids'):
+        from services.societies import eligible_societies
+        valid=(await eligible_societies(str(session.user.email),ticket['eligible_society_ids'])) if session and session.user.email_verified else set()
+        if not valid and not (ticket['members_only'] and session and session.is_member_now):
+            raise HTTPException(403,REASONS['society_membership_required'])
+
     # Deliberately not refused: membership is verified at confirmation, so a
     # brand-new member is not turned away by a feed that is a few hours stale.
     members_only_warning = ticket["members_only"] and not (
         session and session.is_member_now
-    )
+    ) and not (ticket.get('eligible_society_ids') and valid)
 
     token = generate_token()
     result = await database.post(

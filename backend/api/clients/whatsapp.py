@@ -64,21 +64,33 @@ async def _call(method: str, path: str, body: dict | None = None) -> Any:
     return res.json()
 
 
-async def status() -> dict:
-    return await _call("GET", "/status")
+def _prefix(account: str) -> str:
+    import re
+    if account == 'eesoc': return ''
+    if not re.fullmatch(r'society-[1-9][0-9]*',account):
+        raise WhatsAppUnavailable('Invalid society WhatsApp account',400)
+    return f'/accounts/{account}'
 
 
-async def link(phone: str | None = None) -> dict:
-    return await _call("POST", "/link", {"phone": phone} if phone else {})
+async def status(account: str = "eesoc") -> dict:
+    return await _call("GET", f"{_prefix(account)}/status")
 
 
-async def unlink() -> dict:
-    return await _call("POST", "/unlink")
+async def link(phone: str | None = None, account: str = "eesoc") -> dict:
+    return await _call("POST", f"{_prefix(account)}/link", {"phone": phone} if phone else {})
 
 
-async def groups() -> list[dict]:
-    return (await _call("GET", "/groups"))["groups"]
+async def unlink(account: str = "eesoc") -> dict:
+    return await _call("POST", f"{_prefix(account)}/unlink")
 
 
-async def send(jid: str, text: str, key: str) -> dict:
-    return await _call("POST", "/send", {"jid": jid, "text": text, "key": key})
+async def groups(account: str = "eesoc") -> list[dict]:
+    return (await _call("GET", f"{_prefix(account)}/groups"))["groups"]
+
+
+async def send(jid: str, text: str, key: str, account: str = "eesoc") -> dict:
+    return await _call("POST", f"{_prefix(account)}/send", {"jid": jid, "text": text, "key": key})
+
+
+async def join_invite(code: str) -> dict:
+    return await _call('POST','/join-invite',{'code':code})

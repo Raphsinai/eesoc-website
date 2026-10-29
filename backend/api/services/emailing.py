@@ -32,6 +32,7 @@ import uuid
 from time import monotonic
 from urllib.parse import quote, urlencode
 
+from fastapi import HTTPException
 from clients import database
 from config import settings
 from utils import email as mailer
@@ -185,7 +186,7 @@ def email_keys(keys: list[str] | None) -> list[str]:
     return [k for k in keys or [] if not k.startswith(WHATSAPP_PREFIX)]
 
 
-async def audiences() -> list[dict]:
+async def audiences(*, external_societies: bool = False, whatsapp_user_id: int | None = None, whatsapp_admin_all: bool = False) -> list[dict]:
     """Everything an admin can tick, with a live count against each.
 
     Counted by resolving them for real rather than with a cheaper COUNT(*): the
@@ -239,15 +240,22 @@ async def audiences() -> list[dict]:
             item["count"] = None
         groups.append(item)
 
+    if external_societies:
+        for society in await database.get('/external-societies') or []:
+            key=f"society:{society['id']}"
+            groups.append({'key':key,'label':f"{society['name']} members",
+                'group':'Connected societies','description':f"Union membership list for {academic_year()}",
+                'count':len(await resolve([key],allowed_society_ids='all'))})
+
     # Last, as their own group: a different kind of place, like the
     # department lists — every group the linked number can post in.
     # Here rather than at the top: services/whatsapp builds on this module.
     from services import whatsapp
 
-    for group in await whatsapp.available():
+    for group in await whatsapp.available(user_id=whatsapp_user_id,admin_all=whatsapp_admin_all):
         where = f" · in the {group['community']} community" if group["community"] and not group["announcements"] else ""
         groups.append({
-            "key": f"{WHATSAPP_PREFIX}{group['jid']}",
+            "key": f"{WHATSAPP_PREFIX}{group['target']}",
             "label": group["name"],
             "group": "WhatsApp",
             "description": f"{group['size'] or 0} people{where} · posted from the society's number.",
@@ -258,7 +266,7 @@ async def audiences() -> list[dict]:
     return groups
 
 
-async def resolve(keys: list[str]) -> list[dict]:
+async def resolve(keys: list[str], *, allowed_society_ids=None) -> list[dict]:
     """Audience keys to a de-duplicated recipient list.
 
     De-duplication is on the lowercased address and happens across all keys
@@ -269,6 +277,11 @@ async def resolve(keys: list[str]) -> list[dict]:
     seen: dict[str, dict] = {}
 
     for key in keys:
+        if key.startswith('society:'):
+            try: society_id=int(key.split(':',1)[1])
+            except ValueError: raise HTTPException(400,'Invalid society audience')
+            if allowed_society_ids != 'all' and society_id not in (allowed_society_ids or set()):
+                raise HTTPException(403,'Not permitted to use this society mailing list')
         for recipient in await _resolve_one(key):
             address = (recipient.get("email") or "").strip().lower()
             if not address or "@" not in address:
@@ -279,6 +292,12 @@ async def resolve(keys: list[str]) -> list[dict]:
 
 
 async def _resolve_one(key: str) -> list[dict]:
+    if key.startswith('society:'):
+        from services import societies
+        try: society_id=int(key.split(':',1)[1])
+        except ValueError: return []
+        return [{**r, 'source':key} for r in await societies.mailing_list(society_id)]
+
     if key.startswith(WHATSAPP_PREFIX):
         return []  # a WhatsApp group, posted into rather than mailed
 

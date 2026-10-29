@@ -268,7 +268,24 @@ async def recipients_for(row: dict) -> tuple[list[dict], list[str]]:
     excluded = set(clean_addresses(row.get("excluded_recipients")))
     department = {d["email"] for d in emailing.DEPARTMENT_LISTS}
 
-    recipients = await emailing.resolve(list(row.get("audiences") or []))
+    audiences = list(row.get("audiences") or [])
+    # External committee sends retain their tenant ID as an immutable provenance
+    # marker. Resume is allowed to rebuild only that tenant's addresses, never
+    # arbitrary lists that may have been inserted into a queued campaign.
+    markers = [a for a in audiences if a.startswith('society-sent:')]
+    scope = None
+    if markers:
+        if len(markers) != 1:
+            raise NotSendable('Invalid society campaign scope', 403)
+        try:
+            scope = int(markers[0].split(':', 1)[1])
+        except ValueError as exc:
+            raise NotSendable('Invalid society campaign scope', 403) from exc
+        if scope < 1 or any(a.startswith('society:') and a != f'society:{scope}' for a in audiences):
+            raise NotSendable('A campaign cannot use another society mailing list', 403)
+        if any(not (a in ('test', markers[0], f'society:{scope}') or a.startswith('whatsapp:')) for a in audiences):
+            raise NotSendable('Outside society audience in campaign', 403)
+    recipients = await emailing.resolve(audiences, allowed_society_ids={scope} if scope is not None else set())
     seen = {r["email"] for r in recipients}
 
     skipped: list[str] = []

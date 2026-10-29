@@ -15,6 +15,7 @@ class TicketType(BaseModel):
     capacity: int | None = None
     requires_purchase: bool = True
     members_only: bool = False
+    eligible_society_ids: list[int] = []
     max_per_user: int = 1
     sort_order: int = 100
     # Overrides the event-level link for this type, for the common case where

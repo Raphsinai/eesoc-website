@@ -146,6 +146,19 @@ async def sync_all(force: bool = False, year: str | None = None) -> dict:
                 ),
             ]
 
+            # Each connected society keeps a separate membership snapshot. Import
+            # them before reservation matching so new eligible society bookings
+            # can be reconciled on the same morning. A failure cannot stop EESoc.
+            external_results = []
+            from routes.societies import sync_one
+            for society in await database.get('/external-societies') or []:
+                try:
+                    result=await sync_one(society['id'])
+                    external_results.append({'society_id':society['id'], **result})
+                except Exception:
+                    log.exception('External society sync failed for %s',society['id'])
+                    external_results.append({'society_id':society['id'],'ok':False})
+
             # Order matters: expire first so a stale hold cannot claim a sale that
             # should go to somebody still waiting, then match against fresh sales.
             expired = await database.post("/reservations/expire")
@@ -182,6 +195,7 @@ async def sync_all(force: bool = False, year: str | None = None) -> dict:
         "ok": all(r["ok"] for r in results),
         "academic_year": year,
         "steps": results,
+        "external_societies": external_results,
         "expired_reservations": expired,
         "matched": matched,
         "verified_orders": verified_orders,

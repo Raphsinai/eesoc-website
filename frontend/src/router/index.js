@@ -27,6 +27,7 @@ const ResourcesView = () => import('@/views/ResourcesView.vue')
 const SponsorsView = () => import('@/views/SponsorsView.vue')
 const LockersView = () => import('@/views/LockersView.vue')
 const PortalView = () => import('@/views/PortalView.vue')
+const SocietyPortalView = () => import('@/views/SocietyPortalView.vue')
 const EventsView = () => import('@/views/EventsView.vue')
 const EventView = () => import('@/views/EventView.vue')
 const AdminView = () => import('@/views/AdminView.vue')
@@ -75,6 +76,7 @@ const routes = [
   // mail scanner pre-fetching the URL signs nobody up.
   { path: '/subscribe', name: 'subscribe', component: SubscribeView, meta: { title: 'Newsletter', noindex: true } },
   { path: '/portal', name: 'portal', component: PortalView, meta: { title: 'Sponsor portal', requires: 'sponsor', noindex: true } },
+  { path: '/societies', name: 'society-portal', component: SocietyPortalView, meta: { title: 'Society committee', noindex: true } },
   { path: '/admin/events/:id', name: 'admin-event', component: AdminEventView, meta: { title: 'Event bookings', requires: 'committee', noindex: true } },
   { path: '/admin/sponsors/:id', name: 'admin-sponsor', component: AdminSponsorView, meta: { title: 'Sponsor agreement', requires: 'committee', noindex: true } },
   { path: '/admin', name: 'admin', component: AdminView, meta: { title: 'Committee admin', requires: 'committee', noindex: true } },

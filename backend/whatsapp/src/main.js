@@ -10,6 +10,7 @@
 
 import makeWASocket, { Browsers, fetchLatestBaileysVersion, useMultiFileAuthState } from 'baileys'
 import pino from 'pino'
+import path from 'node:path'
 
 import { Link } from './link.js'
 import { createServer } from './server.js'
@@ -54,7 +55,25 @@ const link = new Link({
   gapMs: [gapMin * 1000, (gapMax || gapMin) * 1000],
 })
 
-const server = createServer(link, log)
+const societyLinks = new Map()
+const sessionDir = process.env.WHATSAPP_SESSION_DIR || '/data/session'
+async function getSocietyLink(id) {
+  if (!/^society-[1-9][0-9]*$/.test(id)) throw new Error('Invalid account')
+  if (!societyLinks.has(id)) {
+    const account = new Link({
+      dir: path.join(sessionDir, 'societies', id),
+      auth: useMultiFileAuthState, makeSocket, log,
+      maxPerHour: Number(process.env.WHATSAPP_MAX_POSTS_PER_HOUR || 20),
+      gapMs: [gapMin * 1000, (gapMax || gapMin) * 1000],
+    })
+    societyLinks.set(id, {account,pending:account.start()})
+  }
+  const {account,pending}=societyLinks.get(id)
+  await pending
+  return account
+}
+
+const server = createServer(link, log, getSocietyLink)
 server.listen(Number(process.env.PORT || 8080), () => log.info('listening'))
 
 link.start().catch((e) => log.error({ err: String(e) }, 'could not restore the session'))
@@ -62,6 +81,7 @@ link.start().catch((e) => log.error({ err: String(e) }, 'could not restore the s
 async function shutdown(signal) {
   log.info({ signal }, 'stopping')
   server.close()
+  await Promise.all([...societyLinks.values()].map(({account}) => account.stop()))
   await link.stop()
   process.exit(0)
 }

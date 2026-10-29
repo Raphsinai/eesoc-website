@@ -50,7 +50,7 @@ function reply(res, status, body) {
   res.end(data)
 }
 
-export function createServer(link, log = console) {
+export function createServer(link, log = console, getAccount = null) {
   const routes = {
     'GET /health': async () => ({ ok: true }),
     'GET /status': async () => link.status(),
@@ -58,11 +58,27 @@ export function createServer(link, log = console) {
     'POST /unlink': async () => link.unlink(),
     'GET /groups': async () => ({ groups: await link.groups() }),
     'POST /send': async (body) => link.send({ jid: body.jid, text: body.text, key: body.key }),
+    'POST /join-invite': async (body) => link.joinInvite(body.code),
   }
 
   return http.createServer(async (req, res) => {
     const { pathname } = new URL(req.url, 'http://localhost')
-    const handler = routes[`${req.method} ${pathname}`]
+    let handler = routes[`${req.method} ${pathname}`]
+    // External society links are separate WhatsApp accounts with separate
+    // persistent sessions. The original routes always mean EESoc.
+    const accountMatch = pathname.match(/^\/accounts\/(society-[1-9][0-9]*)\/(status|link|unlink|groups|send)$/)
+    if (!handler && accountMatch && getAccount) {
+      handler = async (body) => {
+        const account = await getAccount(accountMatch[1])
+        const action = accountMatch[2]
+        if (action === 'status' && req.method === 'GET') return account.status()
+        if (action === 'link' && req.method === 'POST') return account.link({phone:body.phone})
+        if (action === 'unlink' && req.method === 'POST') return account.unlink()
+        if (action === 'groups' && req.method === 'GET') return {groups:await account.groups()}
+        if (action === 'send' && req.method === 'POST') return account.send({jid:body.jid,text:body.text,key:body.key})
+        throw new LinkError(404,'Not found.')
+      }
+    }
     if (!handler) return reply(res, 404, { detail: 'Not found.' })
     try {
       const body = req.method === 'POST' ? await readJson(req) : {}

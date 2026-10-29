@@ -19,6 +19,7 @@ from clients import database, union
 from clients import whatsapp as whatsapp_client
 from config import settings
 from routes.admin import router as admin_router
+from routes.societies import admin as societies_admin_router, portal as societies_portal_router
 from routes.approvals import router as approvals_router
 from routes.auth import router as auth_router
 from routes.checkin import router as checkin_router
@@ -169,6 +170,8 @@ app.include_router(sponsors_router)
 app.include_router(search_router)
 app.include_router(seo_router)
 app.include_router(admin_router)
+app.include_router(societies_admin_router)
+app.include_router(societies_portal_router)
 app.include_router(approvals_router)
 app.include_router(whatsapp_router)
 app.include_router(checkin_router)

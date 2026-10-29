@@ -51,7 +51,7 @@ EVENT_COLUMNS = """
 TT_COLUMNS = """
     id, event_id, name, description, price_pence, capacity, requires_purchase,
     members_only, max_per_user, sort_order, purchase_url,
-    sales_open_at, sales_close_at
+    sales_open_at, sales_close_at, eligible_society_ids
 """
 
 # A reservation consumes stock while it is confirmed, or held/draft and not yet
@@ -136,6 +136,30 @@ MEMBER_THIS_YEAR = """
 """
 
 
+async def _external_member(conn, tt, user_id: int | None, year: str | None) -> bool:
+    """A verified college login in one of this ticket's selected society feeds."""
+    ids=tt.get('eligible_society_ids',[]) if isinstance(tt,dict) else tt['eligible_society_ids']
+    if not ids or not user_id or not year:
+        return False
+    return bool(await conn.fetchval("""
+        SELECT EXISTS(
+            SELECT 1 FROM public.users u JOIN public.external_society_members m
+              ON m.login=lower(split_part(u.email,'@',1))
+             WHERE u.id=$1 AND u.email_verified
+               AND lower(split_part(u.email,'@',2)) IN ('ic.ac.uk','imperial.ac.uk')
+               AND m.academic_year=$2 AND m.society_id=ANY($3::bigint[])
+        )
+    """,user_id,year,ids))
+
+
+async def _external_ticket_allowed(conn, tt, user_id:int|None,year:str|None) -> bool:
+    if not tt['eligible_society_ids']:
+        return True
+    if tt['members_only'] and user_id and year and await conn.fetchval(MEMBER_THIS_YEAR,user_id,year):
+        return True
+    return await _external_member(conn,tt,user_id,year)
+
+
 async def _confirms_outright(conn, tt, user_id: int | None, academic_year: str | None) -> bool:
     """Is a booking of this ticket type a place the moment it is made?
 
@@ -154,6 +178,8 @@ async def _confirms_outright(conn, tt, user_id: int | None, academic_year: str |
     """
     if tt["requires_purchase"]:
         return False
+    if tt["eligible_society_ids"] and await _external_member(conn,tt,user_id,academic_year):
+        return True
     if not tt["members_only"]:
         return True
     if not academic_year or user_id is None:
@@ -535,12 +561,12 @@ async def create_event(event: EventWrite, created_by: int | None = None) -> Even
                 INSERT INTO public.ticket_types
                     (event_id, name, description, price_pence, capacity,
                      requires_purchase, members_only, max_per_user, sort_order,
-                     purchase_url, sales_open_at, sales_close_at)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12);
+                     purchase_url, sales_open_at, sales_close_at, eligible_society_ids)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13);
                 """,
                 row["id"], tt.name, tt.description, tt.price_pence, tt.capacity,
                 tt.requires_purchase, tt.members_only, tt.max_per_user, tt.sort_order,
-                tt.purchase_url, tt.sales_open_at, tt.sales_close_at,
+                tt.purchase_url, tt.sales_open_at, tt.sales_close_at, tt.eligible_society_ids,
             )
         return await _detail(conn, row)
 
@@ -638,12 +664,12 @@ async def update_event(event_id: int, event: EventWrite) -> EventDetail:
                         name=$2, description=$3, price_pence=$4, capacity=$5,
                         requires_purchase=$6, members_only=$7, max_per_user=$8,
                         sort_order=$9, purchase_url=$10,
-                        sales_open_at=$11, sales_close_at=$12
+                        sales_open_at=$11, sales_close_at=$12, eligible_society_ids=$13
                      WHERE id=$1;
                     """,
                     tt.id, tt.name, tt.description, tt.price_pence, tt.capacity,
                     tt.requires_purchase, tt.members_only, tt.max_per_user,
-                    tt.sort_order, tt.purchase_url, tt.sales_open_at, tt.sales_close_at,
+                    tt.sort_order, tt.purchase_url, tt.sales_open_at, tt.sales_close_at, tt.eligible_society_ids,
                 )
             else:
                 await conn.execute(
@@ -651,12 +677,12 @@ async def update_event(event_id: int, event: EventWrite) -> EventDetail:
                     INSERT INTO public.ticket_types
                         (event_id, name, description, price_pence, capacity,
                          requires_purchase, members_only, max_per_user, sort_order,
-                         purchase_url, sales_open_at, sales_close_at)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12);
+                         purchase_url, sales_open_at, sales_close_at, eligible_society_ids)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13);
                     """,
                     event_id, tt.name, tt.description, tt.price_pence, tt.capacity,
                     tt.requires_purchase, tt.members_only, tt.max_per_user,
-                    tt.sort_order, tt.purchase_url, tt.sales_open_at, tt.sales_close_at,
+                    tt.sort_order, tt.purchase_url, tt.sales_open_at, tt.sales_close_at, tt.eligible_society_ids,
                 )
 
         # Anything the form no longer lists has been removed deliberately —
@@ -687,6 +713,40 @@ async def update_event(event_id: int, event: EventWrite) -> EventDetail:
         return await _detail(conn, row)
 
 
+# Society event management deliberately patches fields in place. Reusing the
+# full event PUT would replace ticket types and can delete bookings by omission.
+# The public API performs the society assignment + permission checks first.
+SOCIETY_EVENT_COLUMNS = frozenset({
+    'title','description','category','venue','starts_at','ends_at',
+    'doors_close_at','map_url','meeting_url','meeting_url_private',
+    'sales_open_at','reservations_close_at','union_sales_close_at',
+    'capacity','hold_hours','purchase_url','signup_url','image_url','published',
+})
+
+@router.patch('/events/{event_id}/society-fields')
+async def patch_society_event(event_id:int, changes:dict) -> EventDetail:
+    if not changes or set(changes) - SOCIETY_EVENT_COLUMNS:
+        raise HTTPException(400,'Unsupported society event change')
+    pool=await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        current=await conn.fetchrow(f'SELECT {EVENT_COLUMNS} FROM public.events WHERE id=$1 FOR UPDATE',event_id)
+        if current is None:
+            raise HTTPException(404,'No such event')
+        from models.events import EventWrite
+        # Pydantic applies the same date and sale-window validation as full
+        # event edits, but no other stored fields or ticket types are written.
+        merged={**dict(current),**changes}
+        validated=EventWrite(**merged)
+        _check_doors_close(validated)
+        _check_sale_windows(validated)
+        values=validated.model_dump()
+        columns=list(changes)
+        args=[values[k] for k in columns]
+        updates=', '.join(f'{name}=${idx+2}' for idx,name in enumerate(columns))
+        row=await conn.fetchrow(f'UPDATE public.events SET {updates}, updated_at=NOW() WHERE id=$1 RETURNING {EVENT_COLUMNS}',event_id,*args)
+        return await _detail(conn,row)
+
+
 @router.delete("/events/{event_id}", status_code=204)
 async def delete_event(event_id: int) -> None:
     pool = await get_pool()
@@ -707,13 +767,13 @@ async def add_ticket_type(event_id: int, tt: TicketType) -> TicketType:
                 INSERT INTO public.ticket_types
                     (event_id, name, description, price_pence, capacity,
                      requires_purchase, members_only, max_per_user, sort_order,
-                     purchase_url, sales_open_at, sales_close_at)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                     purchase_url, sales_open_at, sales_close_at, eligible_society_ids)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
                 RETURNING {TT_COLUMNS};
                 """,
                 event_id, tt.name, tt.description, tt.price_pence, tt.capacity,
                 tt.requires_purchase, tt.members_only, tt.max_per_user, tt.sort_order,
-                tt.purchase_url, tt.sales_open_at, tt.sales_close_at,
+                tt.purchase_url, tt.sales_open_at, tt.sales_close_at, tt.eligible_society_ids,
             )
         except UniqueViolationError:
             raise HTTPException(409, f"'{tt.name}' already exists on this event")
@@ -741,13 +801,13 @@ async def update_ticket_type(ticket_type_id: int, tt: TicketType) -> TicketType:
             UPDATE public.ticket_types SET
                 name=$2, description=$3, price_pence=$4, capacity=$5,
                 requires_purchase=$6, members_only=$7, max_per_user=$8, sort_order=$9,
-                purchase_url=$10, sales_open_at=$11, sales_close_at=$12
+                purchase_url=$10, sales_open_at=$11, sales_close_at=$12, eligible_society_ids=$13
              WHERE id=$1
             RETURNING {TT_COLUMNS};
             """,
             ticket_type_id, tt.name, tt.description, tt.price_pence, tt.capacity,
             tt.requires_purchase, tt.members_only, tt.max_per_user, tt.sort_order,
-            tt.purchase_url, tt.sales_open_at, tt.sales_close_at,
+            tt.purchase_url, tt.sales_open_at, tt.sales_close_at, tt.eligible_society_ids,
         )
     if row is None:
         raise HTTPException(404, "No such ticket type")
@@ -803,6 +863,9 @@ async def reserve(req: ReservationRequest) -> ReservationResult:
         # Early bird after it ends, general before it starts.
         if _type_off_sale(tt):
             return ReservationResult(ok=False, reason="type_not_on_sale")
+
+        if not await _external_ticket_allowed(conn,tt,req.user_id,req.academic_year):
+            return ReservationResult(ok=False,reason='society_membership_required')
 
         # 2. Fresh snapshot — includes anything committed while we waited above.
         counts = await conn.fetchrow(
@@ -1673,7 +1736,15 @@ async def match_reservations(academic_year: str | None = None) -> dict:
             held AS (
                 SELECT r.id, r.event_id, r.ticket_type_id, r.order_number,
                        u.member_id, m.login, m.cid,
-                       tt.members_only,
+                       tt.members_only, tt.eligible_society_ids,
+                       u.email AS account_email,
+                       EXISTS(SELECT 1 FROM public.external_society_members em
+                           WHERE em.society_id=ANY(tt.eligible_society_ids)
+                             AND em.academic_year=$1
+                             AND em.login=lower(split_part(u.email,'@',1))
+                             AND u.email_verified
+                             AND lower(split_part(u.email,'@',2)) IN ('ic.ac.uk','imperial.ac.uk'))
+                           AS is_external_member,
                        -- Membership is annual, so holding a member record is not
                        -- the same as being a member this year.
                        (u.member_id IS NOT NULL
@@ -1724,13 +1795,16 @@ async def match_reservations(academic_year: str | None = None) -> dict:
                    -- shows the person is a member this year. Somebody who joined
                    -- today only appears after the morning sync, so this resolves
                    -- itself rather than needing them to book again.
-               AND (NOT h.members_only OR h.is_member)
+               AND (NOT h.members_only OR h.is_member OR h.is_external_member)
+               AND (cardinality(h.eligible_society_ids)=0 OR h.is_external_member
+                    OR (h.members_only AND h.is_member))
                AND (
                     (ov.reservation_id IS NOT NULL
                          AND upper(s.order_number)=upper(ov.order_number))
                  OR (ov.reservation_id IS NULL AND (
                        (h.member_id IS NOT NULL AND h.login IS NOT NULL
                         AND lower(s.customer_login)=lower(h.login))
+                    OR (h.is_external_member AND lower(s.customer_login)=lower(split_part(h.account_email,'@',1)))
                     OR (h.member_id IS NOT NULL AND h.cid IS NOT NULL
                         AND s.customer_cid=h.cid)
                     OR (h.order_number IS NOT NULL
@@ -1781,7 +1855,22 @@ async def match_reservations(academic_year: str | None = None) -> dict:
                AND (NOT tt.members_only OR EXISTS (
                       SELECT 1 FROM public.users u
                         JOIN public.members m ON m.id = u.member_id
-                       WHERE u.id = r.user_id AND m.academic_year = $1))
+                       WHERE u.id = r.user_id AND m.academic_year = $1)
+                    OR EXISTS (SELECT 1 FROM public.users u
+                        JOIN public.external_society_members em
+                          ON em.login=lower(split_part(u.email,'@',1))
+                       WHERE u.id=r.user_id AND u.email_verified
+                         AND lower(split_part(u.email,'@',2)) IN ('ic.ac.uk','imperial.ac.uk')
+                         AND em.society_id=ANY(tt.eligible_society_ids) AND em.academic_year=$1))
+               AND (cardinality(tt.eligible_society_ids)=0 OR EXISTS (
+                      SELECT 1 FROM public.users u JOIN public.external_society_members em
+                        ON em.login=lower(split_part(u.email,'@',1))
+                       WHERE u.id=r.user_id AND u.email_verified
+                         AND lower(split_part(u.email,'@',2)) IN ('ic.ac.uk','imperial.ac.uk')
+                         AND em.society_id=ANY(tt.eligible_society_ids) AND em.academic_year=$1)
+                    OR (tt.members_only AND EXISTS (
+                      SELECT 1 FROM public.users u JOIN public.members m ON m.id=u.member_id
+                       WHERE u.id=r.user_id AND m.academic_year=$1)))
             RETURNING r.id;
             """,
             academic_year,
@@ -1938,7 +2027,7 @@ async def claim_draft(
             """
             SELECT r.id, r.event_id, r.ticket_type_id, r.quantity, r.expires_at,
                    r.status, r.visitor_hash, e.hold_hours, e.starts_at, tt.max_per_user,
-                   tt.requires_purchase, tt.members_only, e.reservations_close_at,
+                   tt.requires_purchase, tt.members_only, tt.eligible_society_ids, e.reservations_close_at,
                    tt.sales_open_at, tt.sales_close_at
               FROM public.reservations r
               JOIN public.events e        ON e.id  = r.event_id
@@ -1984,6 +2073,10 @@ async def claim_draft(
                 "DELETE FROM public.reservations WHERE id = $1;", draft["id"]
             )
             return ReservationResult(ok=False, reason="over_user_limit")
+
+        if not await _external_ticket_allowed(conn,draft,user_id,academic_year):
+            await conn.execute("DELETE FROM public.reservations WHERE id=$1",draft['id'])
+            return ReservationResult(ok=False,reason='society_membership_required')
 
         # Same rule as `reserve`: a free ticket is a place outright ($8).
         confirm = await _confirms_outright(conn, draft, user_id, academic_year)
@@ -2153,7 +2246,7 @@ async def promote_waitlist(academic_year: str | None = None) -> dict:
                     # place freed after early bird ended is not offered.
                     ticket = await conn.fetchrow(
                         f"""
-                        SELECT tt.id, tt.requires_purchase, tt.members_only
+                        SELECT tt.id, tt.requires_purchase, tt.members_only, tt.eligible_society_ids
                           FROM public.ticket_types tt
                           LEFT JOIN (
                                 SELECT ticket_type_id, SUM(quantity) AS taken
@@ -2166,10 +2259,19 @@ async def promote_waitlist(academic_year: str | None = None) -> dict:
                            AND (tt.sales_close_at IS NULL OR tt.sales_close_at > NOW())
                            AND (tt.capacity IS NULL
                                 OR tt.capacity - COALESCE(live.taken,0) >= $2)
+                           AND (cardinality(tt.eligible_society_ids)=0 OR
+                                (tt.members_only AND EXISTS(
+                                    SELECT 1 FROM public.users u JOIN public.members m ON m.id=u.member_id
+                                     WHERE u.id=$4 AND m.academic_year=$5)) OR
+                                EXISTS(SELECT 1 FROM public.users u
+                                    JOIN public.external_society_members em ON em.login=lower(split_part(u.email,'@',1))
+                                    WHERE u.id=$4 AND u.email_verified
+                                      AND lower(split_part(u.email,'@',2)) IN ('ic.ac.uk','imperial.ac.uk')
+                                      AND em.society_id=ANY(tt.eligible_society_ids) AND em.academic_year=$5))
                          ORDER BY (tt.id = $3) DESC, tt.sort_order
                          LIMIT 1;
                         """,
-                        event_id, waiter["quantity"], waiter["preferred_ticket_type_id"],
+                        event_id, waiter["quantity"], waiter["preferred_ticket_type_id"], waiter["user_id"], academic_year,
                     )
                     if ticket is None:
                         break

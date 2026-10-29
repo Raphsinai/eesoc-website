@@ -49,7 +49,7 @@ def configured() -> bool:
     return bool(API_KEY and CENTRE)
 
 
-async def _throttled_get(path: str, params: dict | None = None) -> Any:
+async def _throttled_get(path: str, params: dict | None = None, *, api_key: str | None = None, not_found_empty: bool = True) -> Any:
     global _last_call
     async with _lock:
         gap = time.monotonic() - _last_call
@@ -61,11 +61,11 @@ async def _throttled_get(path: str, params: dict | None = None) -> Any:
             res = await client.get(
                 url,
                 params=params or {},
-                headers={"X-API-Key": API_KEY, "Accept": "application/json"},
+                headers={"X-API-Key": api_key or API_KEY, "Accept": "application/json"},
             )
         _last_call = time.monotonic()
 
-    if res.status_code == 404:
+    if res.status_code == 404 and not_found_empty:
         # "No products found" is a legitimate empty state, not a failure — EESoc
         # had no 26-27 products at all when this was written.
         return []
@@ -106,3 +106,8 @@ def cache_state() -> dict:
 
 def clear_cache() -> None:
     _cache.clear()
+
+
+async def external_members(centre: str, key: str, year: str) -> list[dict]:
+    """No external credentials or responses enter the shared EESoc cache."""
+    return await _throttled_get(f"/CSP/{centre}/reports/members", {"year":year}, api_key=key, not_found_empty=False)

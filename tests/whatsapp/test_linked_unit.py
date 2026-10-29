@@ -63,6 +63,17 @@ class FakeDatabase:
 
     async def get(self, path, params=None):
         params = params or {}
+        if path == '/auth/admins':
+            return [{'user_id':3,'email':'committee@ic.ac.uk','role':'events',
+                     'permissions':['whatsapp.post']}]
+        if path == '/committee-roles':
+            return []
+        if path == '/external-societies/whatsapp/groups/settings':
+            return [
+                {'account_key':'eesoc','jid':jid,'society_id':None,'enabled':True,
+                 'eesoc_enabled':True,'eesoc_user_ids':[3]}
+                for jid in ('111-1@g.us','222-2@g.us')
+            ]
         if path == "/whatsapp/posts":
             rows = [p for p in reversed(self.posts)
                     if params.get("jid") in (None, p["jid"])
@@ -105,13 +116,13 @@ class FakeLink:
             {"jid": "333-3@g.us", "name": "Committee chat", "size": 12, "canPost": False, "parent": None},
         ]
 
-    async def send(self, jid, text, key):
+    async def send(self, jid, text, key, account="eesoc"):
         if jid in self.refuse:
             raise link.WhatsAppUnavailable(self.refuse[jid], 429)
         self.sent.append((jid, text, key))
         return {"id": f"m{len(self.sent)}"}
 
-    async def groups(self):
+    async def groups(self, account="eesoc"):
         if self.down:
             raise link.WhatsAppUnavailable("WhatsApp is not connected right now (reconnecting).", 409)
         return [dict(g) for g in self.groups_list]
@@ -157,6 +168,10 @@ def session_of(user_id=3, permissions=None):
     })()
 
 
+def permitted(*items):
+    return [{**g,'scope':'eesoc','account':'eesoc'} for g in items]
+
+
 # ------------------------------------------------------------ 1. staging
 
 
@@ -165,23 +180,23 @@ def test_the_allowlist_fences_any_environment_when_set(monkeypatch, db, wa):
     # says first that its WhatsApp is the real one.
     monkeypatch.setattr(settings, "environment", "staging")
     assert whatsapp.allowed(ANNOUNCE["jid"])
-    assert run(whatsapp.post("hello", [ANNOUNCE]))[0]["status"] == "sent"
+    assert run(whatsapp.post("hello", permitted(ANNOUNCE), by=3))[0]["status"] == "sent"
 
     # Set: nothing outside it — not posted, and not offered either.
     monkeypatch.setattr(settings, "whatsapp_group_allowlist", "222-2@g.us")
-    results = run(whatsapp.post("hello again", [ANNOUNCE, YEAR2]))
+    results = run(whatsapp.post("hello again", permitted(ANNOUNCE, YEAR2), by=3))
     assert [r["status"] for r in results] == ["skipped", "sent"]
     assert [s[0] for s in wa.sent] == [ANNOUNCE["jid"], "222-2@g.us"]
-    assert [g["jid"] for g in run(whatsapp.available())] == ["222-2@g.us"]
+    assert [g["jid"] for g in run(whatsapp.available(user_id=3))] == ["222-2@g.us"]
 
 
 # ----------------------------------------------------- 2. one post per email
 
 
 def test_an_email_is_posted_once_per_group_however_often_it_is_fired(db, wa):
-    first = run(whatsapp.post("on sale", [ANNOUNCE, YEAR2], campaign_id=41, by=3))
+    first = run(whatsapp.post("on sale", permitted(ANNOUNCE, YEAR2), campaign_id=41, by=3))
     assert [r["status"] for r in first] == ["sent", "sent"]
-    again = run(whatsapp.post("on sale", [ANNOUNCE, YEAR2], campaign_id=41, by=3))
+    again = run(whatsapp.post("on sale", permitted(ANNOUNCE, YEAR2), campaign_id=41, by=3))
     assert [r["status"] for r in again] == ["skipped", "skipped"]
     assert len(wa.sent) == 2
     # Recorded before posting, finished after; the service key is the claim's id.
@@ -193,12 +208,12 @@ def test_an_email_is_posted_once_per_group_however_often_it_is_fired(db, wa):
 
 
 def test_pressing_post_twice_posts_once(db, wa):
-    run(whatsapp.post("AGM tonight", [ANNOUNCE]))
-    second = run(whatsapp.post("AGM tonight", [ANNOUNCE]))
+    run(whatsapp.post("AGM tonight", permitted(ANNOUNCE), by=3))
+    second = run(whatsapp.post("AGM tonight", permitted(ANNOUNCE), by=3))
     assert second[0]["status"] == "skipped"
     assert len(wa.sent) == 1
     # Different words are a different post.
-    run(whatsapp.post("AGM moved to 403", [ANNOUNCE]))
+    run(whatsapp.post("AGM moved to 403", permitted(ANNOUNCE), by=3))
     assert len(wa.sent) == 2
 
 
@@ -207,13 +222,13 @@ def test_pressing_post_twice_posts_once(db, wa):
 
 def test_a_refused_post_is_recorded_and_the_next_group_still_goes(db, wa):
     wa.refuse[ANNOUNCE["jid"]] = "20 posts in the last hour is the limit."
-    results = run(whatsapp.post("hello", [ANNOUNCE, YEAR2], campaign_id=5))
+    results = run(whatsapp.post("hello", permitted(ANNOUNCE, YEAR2), campaign_id=5, by=3))
     assert [r["status"] for r in results] == ["failed", "sent"]
     assert db.posts[0]["status"] == "failed"
     assert "limit" in db.posts[0]["error"]
     # A failed post is not a reason to refuse the same words next time.
     wa.refuse.clear()
-    assert run(whatsapp.post("hello", [ANNOUNCE]))[0]["status"] == "sent"
+    assert run(whatsapp.post("hello", permitted(ANNOUNCE), by=3))[0]["status"] == "sent"
 
 
 # ------------------------------------------- 5. a recipient like any other
@@ -221,7 +236,7 @@ def test_a_refused_post_is_recorded_and_the_next_group_still_goes(db, wa):
 
 ROW = {
     "id": 9, "kind": "on_sale", "event_id": 7, "subject": "Tickets for Robot Wars are on sale",
-    "heading": "", "body": "", "reviewed_by": 3,
+    "heading": "", "body": "", "reviewed_by": 3, "created_by": 3,
     # A WhatsApp group is ticked in the same list as the email audiences.
     "audiences": ["topic:tickets_on_sale", f"whatsapp:{YEAR2['jid']}"],
 }
@@ -240,7 +255,7 @@ def test_whatsapp_groups_are_audience_keys_that_email_skips(monkeypatch):
     assert run(emailing.resolve(["whatsapp:111-1@g.us"])) == []
 
 
-def test_every_group_the_number_can_post_in_is_offered_live(monkeypatch, wa):
+def test_every_group_the_number_can_post_in_is_offered_live(monkeypatch, db, wa):
     emailing = importlib.import_module("services.emailing")
 
     async def nothing(*a, **k):
@@ -249,8 +264,8 @@ def test_every_group_the_number_can_post_in_is_offered_live(monkeypatch, wa):
     monkeypatch.setattr(emailing, "resolve", nothing)
     monkeypatch.setattr(emailing, "topics", nothing)
     monkeypatch.setattr(emailing, "test_recipients", nothing)
-    offered = [a for a in run(emailing.audiences()) if a["group"] == "WhatsApp"]
-    # The community's channel first, named as what it is; no enabling step;
+    offered = [a for a in run(emailing.audiences(whatsapp_user_id=3)) if a["group"] == "WhatsApp"]
+    # The community's channel first, named as what it is; enabled by group ACL;
     # nothing the number can't post in.
     assert [(a["key"], a["label"]) for a in offered] == [
         ("whatsapp:111-1@g.us", "Announcements — EESoc"),
@@ -260,7 +275,7 @@ def test_every_group_the_number_can_post_in_is_offered_live(monkeypatch, wa):
 
     # Not linked or not answering: no WhatsApp groups offered, and no error.
     wa.down = True
-    assert [a for a in run(emailing.audiences()) if a["group"] == "WhatsApp"] == []
+    assert [a for a in run(emailing.audiences(whatsapp_user_id=3)) if a["group"] == "WhatsApp"] == []
 
 
 def test_an_email_posts_only_into_the_groups_ticked_among_its_audiences(db, wa):
@@ -340,10 +355,10 @@ def test_a_queued_email_for_whatsapp_only_posts_and_is_finished(monkeypatch):
 # --------------------------------------------------------- 6. the routes
 
 
-def test_the_pickers_get_the_live_groups_and_the_environment(monkeypatch, wa):
+def test_the_pickers_get_the_live_groups_and_the_environment(monkeypatch, db, wa):
     routes = importlib.import_module("routes.whatsapp")
     monkeypatch.setattr(settings, "environment", "staging")
-    got = run(routes.targets(_=None))
+    got = run(routes.targets(_=session_of()))
     assert got["configured"] and got["environment"] == "staging"
     assert [g["name"] for g in got["groups"]] == ["Announcements — EESoc", "EEE Year 2"]
 
@@ -426,7 +441,7 @@ def test_a_subject_is_the_emails_not_whatsapps(monkeypatch, db, wa):
 
     monkeypatch.setattr(admin.mailer, "configured", lambda *a, **k: True)
 
-    async def someone(keys):
+    async def someone(keys, **kwargs):
         return [{"email": "a@example.com"}]
 
     monkeypatch.setattr(admin.emailing, "resolve", someone)
@@ -445,6 +460,10 @@ def _email_side(monkeypatch, admin, db):
     real_get, real_post, real_patch = db.get, db.post, db.patch
 
     async def get(path, params=None):
+        if path == '/external-societies/whatsapp/groups/settings':
+            return [{'account_key':'eesoc','jid':jid,'society_id':None,'enabled':True,
+                     'eesoc_enabled':True,'eesoc_user_ids':[3]}
+                    for jid in ('111-1@g.us','222-2@g.us')]
         if path == "/sponsors/listings/unannounced":
             return [{"id": 1, "title": "Intern", "sponsor_name": "Arm", "location": "Cambridge",
                      "url": "https://arm.example/jobs/1", "deadline": None, "kind": "internship"}]
@@ -462,7 +481,7 @@ def _email_side(monkeypatch, admin, db):
         calls.append(path)
         return {}
 
-    async def someone(keys):
+    async def someone(keys, **kwargs):
         return [{"email": "a@example.com"}]
 
     monkeypatch.setattr(database, "get", get)

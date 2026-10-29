@@ -27,6 +27,33 @@ GROUPS = {
             'passkeys.revoke': 'Revoke recovery links',
         },
     },
+    'Connected societies': {
+        'Connections': {
+            'societies.view': 'View connected society records',
+            'societies.create': 'Connect a society and save its SUMS credential',
+            'societies.credential.rotate': 'Rotate a connected society SUMS credential',
+            'societies.delete': 'Remove a society and its data',
+            'societies.sync': 'Sync connected society member records',
+        },
+        'Committee & events': {
+            'societies.committee.view': 'View external society committee assignments',
+            'societies.committee.edit': 'Name or edit external committee members',
+            'societies.committee.delete': 'Remove external committee members',
+            'societies.events.assign': 'Assign an event for external society management',
+            'societies.events.unassign': 'Revoke external society event management',
+        },
+        'Member data': {
+            'societies.members.export': 'Export external society email addresses',
+            'societies.members.mail': 'Send announcements to connected society membership lists',
+        },
+        'WhatsApp group control': {
+            'societies.whatsapp.groups.view': 'View WhatsApp group assignments',
+            'societies.whatsapp.groups.edit': 'Enable, disable, and assign WhatsApp groups and EESoc user access',
+            'societies.whatsapp.invites.view': 'Review outside society WhatsApp group invitations',
+            'societies.whatsapp.invites.approve': 'Join an approved outside society WhatsApp group',
+            'societies.whatsapp.invites.decline': 'Decline outside society WhatsApp group invitations',
+        },
+    },
     'Events': {
         'Event visibility & scope': {
             'events.view': 'View the event administration calendar',
@@ -47,6 +74,7 @@ GROUPS = {
             'events.ticket_types.edit': 'Edit ticket types and prices',
             'events.ticket_types.delete': 'Delete ticket types',
             'events.ticket_types.product': 'Link Union products to event tickets',
+            'events.ticket_types.eligibility': 'Select societies whose members may book each ticket type',
         },
         'Bookings': {
             'events.bookings.view': 'View attendee bookings',

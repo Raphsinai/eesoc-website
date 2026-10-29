@@ -95,6 +95,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pip install -r backend/api/requirements-dev.txt
+          python3 -m pip install -r backend/database/requirements.txt
           suites=(tests/permissions tests/zero-downtime/test_check_migrations.py)
           [ ! -d tests/product-sales ] || suites+=(tests/product-sales)
           python3 -m pytest "${suites[@]}" -q

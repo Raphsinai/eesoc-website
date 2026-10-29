@@ -171,6 +171,27 @@ def test_one_permission_does_not_grant_all_other_operations_in_its_category():
         assert session.can(allowed) and not session.can(denied)
 
 
+def test_sponsor_portal_access_uses_exact_action_not_legacy_category():
+    # A portal operator must not automatically gain sponsor administration.
+    portal_operator = make_session('admin', ['sponsors.portal.view'])
+    sponsor_admin = make_session('admin', ['sponsors.view'])
+    assert asyncio.run(deps.require_action('sponsors.portal.view')(portal_operator)) is portal_operator
+    with pytest.raises(HTTPException) as denied:
+        asyncio.run(deps.require_action('sponsors.portal.view')(sponsor_admin))
+    assert denied.value.status_code == 403
+
+    header = (VIEWS / 'components' / 'SiteHeader.vue').read_text()
+    router = (VIEWS / 'router' / 'index.js').read_text()
+    portal = (VIEWS / 'views' / 'PortalView.vue').read_text()
+    for source in (header, router, portal):
+        assert "can('sponsors.portal.view')" in source
+        assert "capabilities.includes('sponsors')" not in source
+    assert "api.get('/portal/sponsors')" in portal
+
+    sponsors_route = (ROUTES / 'sponsors.py').read_text()
+    assert '@router.get("/portal/sponsors", dependencies=[Depends(require_action("sponsors.portal.view"))])' in sponsors_route
+
+
 def test_private_action_buttons_in_core_views_are_gated():
     """New buttons need an exact permission (or a documented UI exception)."""
     for filename in ('AdminView.vue', 'AdminEventView.vue', 'AdminSponsorView.vue',

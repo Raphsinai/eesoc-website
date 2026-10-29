@@ -111,6 +111,18 @@ def test_portal_is_sponsors_only(member_client):
     assert member_client.get("/portal/dashboard").status_code == 403
 
 
+def test_committee_portal_picker_returns_only_names_and_ids(make_sponsor, admin_client, member_client):
+    sponsor, sponsor_client = make_sponsor()
+    response = admin_client.get('/portal/sponsors')
+    assert response.status_code == 200
+    matches = [row for row in response.json()['sponsors'] if row['id'] == sponsor['id']]
+    assert matches == [{'id': sponsor['id'], 'name': sponsor['name']}]
+    assert all(set(row) == {'id', 'name'} for row in response.json()['sponsors'])
+    # Members and sponsor users cannot enumerate the society's draft sponsors.
+    assert member_client.get('/portal/sponsors').status_code == 403
+    assert sponsor_client.get('/portal/sponsors').status_code == 403
+
+
 def test_a_sponsor_reaches_only_its_own_portal(make_sponsor):
     mine, me = make_sponsor()
     theirs, them = make_sponsor()

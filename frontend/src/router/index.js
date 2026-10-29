@@ -4,7 +4,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 // every visit, so splitting it into its own chunk would buy nothing and
 // would add a round trip before anything appears on screen.
 import HomeView from '@/views/HomeView.vue'
-import session, { hasAdminArea, refresh } from '@/stores/session'
+import session, { can, hasAdminArea, refresh } from '@/stores/session'
 import { applySeo } from '@/seo'
 
 // Route-level code splitting: every other route below loads its view with a
@@ -118,7 +118,7 @@ router.beforeEach(async (to) => {
   // still has one thing to do in there — their own card. The page itself shows
   // only what their role covers.
   if (to.meta.requires === 'committee' && !hasAdminArea.value) return { path: '/' }
-  if (to.meta.requires === 'sponsor' && !session.isSponsor && !session.capabilities.includes('sponsors')) {
+  if (to.meta.requires === 'sponsor' && !session.isSponsor && !can('sponsors.portal.view')) {
     return { path: '/' }
   }
   return true

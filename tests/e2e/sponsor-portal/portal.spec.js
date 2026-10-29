@@ -78,6 +78,26 @@ test.afterAll(async ({ request }) => {
   if (SPONSOR_ID != null) await request.delete(`/api/admin/sponsors/${SPONSOR_ID}`, { headers })
 })
 
+test('committee portal link and acting-sponsor picker work', async ({ page }) => {
+  test.skip(test.info().project.name !== 'public', 'exercise a fresh committee session')
+
+  const login = await page.request.post('/api/auth/dev-login', {
+    data: { email: SETUP_EMAIL, make_admin: true },
+  })
+  expect(login.ok()).toBeTruthy()
+  await page.goto('/')
+  const portalLink = page.locator('.site-nav').getByRole('link', { name: 'Sponsor portal' })
+  await expect(portalLink).toBeVisible()
+  await portalLink.click()
+  await expect(page).toHaveURL(/\/portal$/)
+
+  const picker = page.locator('.portal-acting__select')
+  await expect(picker).toBeVisible()
+  await expect(picker.locator(`option[value="${SPONSOR_ID}"]`)).toHaveText(NAME)
+  await picker.selectOption(String(SPONSOR_ID))
+  await expect(page.locator('.portal-aside')).toContainText(NAME)
+})
+
 test.describe('as the sponsor', () => {
   // Starts signed out in either project, then signs in as the sponsor.
   test.use({ storageState: { cookies: [], origins: [] } })

@@ -23,6 +23,7 @@ from models.auth import AuthSession
 from utils.deps import (
     current_session,
     require_feature,
+    require_action,
     require_sponsor,
     sponsor_scope,
     verify_csrf,
@@ -185,6 +186,21 @@ async def _require_clause(sid: int, key: str) -> dict:
             "Talk to eesoc.vp@imperial.ac.uk if you think it should be.",
         )
     return term
+
+
+# --------------------------------------------------------------------- committee sponsor picker
+
+
+@router.get("/portal/sponsors", dependencies=[Depends(require_action("sponsors.portal.view"))])
+async def portal_sponsor_options() -> dict:
+    """Only sponsor names and numeric IDs for permitted committee operators.
+
+    Viewing a sponsor's portal does not imply access to confidential sponsor
+    administration data such as agreement amounts or linked account emails.
+    Sponsor users are not allowed to enumerate other sponsors through this.
+    """
+    sponsors = await database.get("/sponsors", {"active_only": False}) or []
+    return {"sponsors": [{"id": s["id"], "name": s["name"]} for s in sponsors]}
 
 
 # --------------------------------------------------------------------- dashboard

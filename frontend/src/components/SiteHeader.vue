@@ -7,7 +7,7 @@ import Input from '@/components/ds/Input.vue'
 import Button from '@/components/ds/Button.vue'
 import api from '@/api'
 import { nav } from '@/data/site'
-import session, { displayName, hasAdminArea, logout } from '@/stores/session'
+import session, { can, displayName, hasAdminArea, logout } from '@/stores/session'
 
 defineEmits(['open-login'])
 
@@ -20,7 +20,7 @@ const visibleNav = computed(() =>
       (n) =>
         n.id !== 'portal'
         || session.isSponsor
-        || session.capabilities.includes('sponsors'),
+        || can('sponsors.portal.view'),
     )
     .concat(hasAdminArea.value ? [{ id: 'admin', label: 'Admin', to: '/admin' }] : []),
 )

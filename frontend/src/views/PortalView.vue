@@ -10,7 +10,7 @@ import Dialog from '@/components/ds/Dialog.vue'
 import Field from '@/components/ds/Field.vue'
 import Input from '@/components/ds/Input.vue'
 import api from '@/api'
-import session from '@/stores/session'
+import session, { can } from '@/stores/session'
 import { portalNav } from '@/data/site'
 
 const route = useRoute()
@@ -46,7 +46,7 @@ function flash(message) {
 const chosenSponsorId = ref(Number(route.query.sponsor) || null)
 const sponsorOptions = ref([])
 const canChooseSponsor = computed(
-  () => !session.sponsorIds.length && (session.capabilities ?? []).includes('sponsors'),
+  () => !session.sponsorIds.length && can('sponsors.portal.view'),
 )
 const actingSponsorId = computed(() =>
   session.sponsorIds.length ? session.sponsorIds[0] : chosenSponsorId.value,
@@ -56,9 +56,9 @@ const needsSponsor = computed(() => !actingSponsorId.value && canChooseSponsor.v
 async function loadSponsorOptions() {
   if (!canChooseSponsor.value) return
   try {
-    // The admin list, not the public one: the portal scopes by numeric id and
-    // /sponsors publishes the slug as its id.
-    const data = await api.get('/admin/sponsors')
+    // IDs and names only; viewing the portal must not reveal private sponsor
+    // administration details such as agreement values or account contacts.
+    const data = await api.get('/portal/sponsors')
     sponsorOptions.value = (data.sponsors ?? []).map((x) => ({ id: x.id, name: x.name }))
   } catch (e) {
     error.value = e.message

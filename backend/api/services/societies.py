@@ -124,11 +124,18 @@ async def verified_identity_login(session: AuthSession) -> str | None:
     shortcode; a verified personal contact address can also appear on a synced
     Union society roster. Never use a user-typed shortcode to grant access.
     """
-    if not session.user.email_verified:
+    # An authorised impersonation session is created server-side after the
+    # original administrator passes access.impersonate. The target may never
+    # have completed their first email sign-in: permit a *society portal*
+    # identity lookup for that session, without changing email_verified or
+    # weakening normal sign-in and booking eligibility checks.
+    impersonating = bool(getattr(session, 'is_impersonating', False))
+    if not session.user.email_verified and not impersonating:
         raise HTTPException(403, 'Verify your email to manage a society')
     email = str(session.user.email).strip().lower()
     local, _, domain = email.partition('@')
-    # Shortcode@Imperial is already proof of ownership of that Login.
+    # Normally, verified Shortcode@Imperial identifies that Login. During
+    # administrator impersonation this is the explicitly chosen target identity.
     from services.identity import is_shortcode
     if domain in ('ic.ac.uk', 'imperial.ac.uk') and is_shortcode(local):
         return local
@@ -139,13 +146,26 @@ async def verified_identity_login(session: AuthSession) -> str | None:
             and member.id == session.user.member_id and member.login
             and LOGIN_RE.fullmatch(member.login.lower())):
         return member.login.lower()
+    if impersonating and not session.user.email_verified:
+        # The roster-to-account join below rightly requires real email
+        # verification. During impersonation only, resolve an official Union
+        # Login from the exact target email instead. That address is chosen by
+        # an administrator who already passed the impersonation permission;
+        # a normal unverified account cannot reach this path. Never use the
+        # unverified user.shortcode field as proof of committee identity.
+        identity = await database.get('/external-societies/lookup-member', {
+            'email': email, 'year': academic_year(),
+        })
+        union_login = str((identity or {}).get('login') or '').lower()
+        if union_login and LOGIN_RE.fullmatch(union_login):
+            return union_login
     # The external adapter matches the verified account by its official CID,
     # exact verified email, or a genuine Imperial address; it never trusts the
     # account's typed shortcode when matching a personal email.
     rows = (await database.get(
         f'/external-societies/for-user/{session.user.id}/memberships',
         {'year': academic_year()},
-    ) or []) if session.user.id else []
+    ) or []) if session.user.id and session.user.email_verified else []
     official = {str(row['login']).lower() for row in rows
                 if row.get('login') and LOGIN_RE.fullmatch(str(row['login']).lower())}
     if len(official) > 1:

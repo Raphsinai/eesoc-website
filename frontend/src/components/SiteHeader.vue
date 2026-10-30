@@ -37,13 +37,13 @@ const visibleNav = computed(() => {
     n.id !== 'portal' || session.isSponsor || can('sponsors.portal.view'),
   )
   const privateLinks = [
-    ...(hasAdminArea.value ? [{ id: 'admin', label: 'Admin', to: '/admin' }] : []),
     ...(session.authenticated && (societyAccess.value || societyLookupFailed.value)
       ? [{ id: 'society-portal', label: 'Society committee', to: '/societies' }] : []),
+    ...(hasAdminArea.value ? [{ id: 'admin', label: 'Admin', to: '/admin' }] : []),
   ]
-  // Keep the committee links close to the start of the navigation, rather
-  // than pushing them off the right of a narrow desktop header.
-  return [...publicLinks.slice(0, 2), ...privateLinks, ...publicLinks.slice(2)]
+  // Keep the public navigation in its original order and Admin at the end.
+  // On narrower screens the expanded menu already prevents links overflowing.
+  return [...publicLinks, ...privateLinks]
 })
 
 const route = useRoute()

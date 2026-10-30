@@ -18,8 +18,12 @@ async function signIn(page, email, makeAdmin = false) {
 
 async function submit(page, title) {
   await page.goto('/opportunities')
+  // dev-login sets cookies on the API request context, but the SPA loads its
+  // authenticated session asynchronously. Wait for that state before clicking:
+  // otherwise startSubmit opens the login dialog rather than the form.
+  await expect(page.getByRole('button', { name: 'Log out' })).toBeVisible()
   await page.getByRole('button', { name: 'Submit an opportunity' }).click()
-  await expect(page.locator('.site-identity')).toBeVisible()
+  await expect(page.getByPlaceholder('e.g. Summer research programme')).toBeVisible()
   await page.getByPlaceholder('e.g. Summer research programme').fill(title)
   await page.getByPlaceholder('Describe the opportunity, eligibility, dates and next steps…').fill('An undergraduate research and engineering programme offering hands-on experience at Imperial, with an application form and project workshops.')
   await page.getByPlaceholder('organiser@example.com').fill('organiser@example.org')

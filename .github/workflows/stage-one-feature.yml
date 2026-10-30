@@ -86,6 +86,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: read
     steps:
       - name: Reclaim checkout
         run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"

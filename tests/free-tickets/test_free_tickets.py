@@ -142,6 +142,7 @@ def test_a_free_booking_is_confirmed_and_emailed(make_event, member_client, mail
     body = res.json()
     assert body["reservation"]["status"] == "confirmed"
     assert "Nothing to pay" in body["next"]["message"]
+    assert "purchaseUrl" not in body["next"]  # Free tickets never redirect to payment.
 
     mine = member_client.get(f"/events/{event['slug']}").json()["myReservations"]
     assert [r["status"] for r in mine] == ["confirmed"]
@@ -153,10 +154,14 @@ def test_a_free_booking_is_confirmed_and_emailed(make_event, member_client, mail
 
 
 def test_a_paid_booking_is_still_a_hold(make_event, member_client):
-    event = make_event(PAID)
+    union_url = "https://www-s.imperialcollegeunion.org/shop/product/3023-/"
+    event = make_event({**PAID, "purchase_url": union_url})
     res = _reserve(member_client, event, "Paid seat")
     assert res.status_code == 200, res.text
-    assert res.json()["reservation"]["status"] == "held"
+    body = res.json()
+    assert body["reservation"]["status"] == "held"
+    assert body["next"]["action"] == "buy"
+    assert body["next"]["purchaseUrl"] == union_url
 
 
 def test_a_guest_free_booking_is_confirmed(make_event, api):

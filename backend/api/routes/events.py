@@ -551,6 +551,19 @@ async def reserve(
         address, event, ticket, reservation, is_member, as_guest
     )
 
+    next_step = _next_step(
+        ticket, is_member, as_guest, reservation["status"],
+        imperial_account=is_imperial(address),
+    )
+    if reservation["status"] == "held" and next_step["action"] in ("buy", "buy_and_supply_order"):
+        # The browser should go straight to the *selected ticket type's* Union
+        # product, not the generic shop. Never fail an already-created booking
+        # if the product feed or configured purchase link is unavailable.
+        try:
+            next_step["purchaseUrl"] = await purchase.link_for(event, ticket_type_id)
+        except Exception:  # noqa: BLE001
+            log.exception("Could not resolve purchase URL for reservation %s", reservation["id"])
+
     return {
         "ok": True,
         "guest": as_guest,
@@ -560,10 +573,7 @@ async def reserve(
             "quantity": reservation["quantity"],
             "expiresAt": reservation["expires_at"],
         },
-        "next": _next_step(
-            ticket, is_member, as_guest, reservation["status"],
-            imperial_account=is_imperial(address),
-        ),
+        "next": next_step,
         "membershipWarning": membership_warning,
     }
 

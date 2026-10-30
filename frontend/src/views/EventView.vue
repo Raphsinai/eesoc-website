@@ -21,6 +21,7 @@ import TraceRule from '@/components/ds/TraceRule.vue'
 import session from '@/stores/session'
 import MaintenanceNotice from '@/components/MaintenanceNotice.vue'
 import { available, reason } from '@/stores/status'
+import { unionShopRedirect } from '@/utils/purchaseRedirect'
 
 const route = useRoute()
 const emit = defineEmits(['need-login'])
@@ -252,6 +253,17 @@ async function book() {
     draftToken.value = null
     clearInterval(ticker)
     showGuestForm.value = false
+    const shopUrl = unionShopRedirect(res.next, res.reservation)
+    if (shopUrl) {
+      // Same-tab navigation, after the reservation has been committed. The
+      // purchase link remains on the booking and in the email for returning users.
+      try {
+        window.location.assign(shopUrl)
+        return
+      } catch {
+        // The reservation succeeded; show its payment link if navigation fails.
+      }
+    }
     await load()
   } catch (e) {
     if (e.message?.includes('CID_REQUIRED')) {

@@ -15,21 +15,36 @@ defineEmits(['open-login'])
 // can actually use them; both are enforced server-side as well. "Admin" shows
 // for a committee member with no role too — their own card lives in there.
 const societyAccess = ref(false)
-watch(() => session.authenticated, async ok => {
+const societyLookupFailed = ref(false)
+let societyLookupVersion = 0
+watch(() => [session.loaded, session.authenticated, session.user?.id], async ([loaded, ok]) => {
+  const request = ++societyLookupVersion
   societyAccess.value = false
-  if (ok) { try { societyAccess.value = (await api.get('/society-portal')).length > 0 } catch {} }
+  societyLookupFailed.value = false
+  if (!loaded || !ok) return
+  try {
+    const affiliations = await api.get('/society-portal')
+    if (request === societyLookupVersion) societyAccess.value = Array.isArray(affiliations) && affiliations.length > 0
+  } catch {
+    // A backend or identity lookup failure must not silently erase the only
+    // navigation route to the committee portal. The page explains the error;
+    // all actual permissions are still checked by its API handlers.
+    if (request === societyLookupVersion) societyLookupFailed.value = true
+  }
 }, { immediate: true })
-const visibleNav = computed(() =>
-  nav
-    .filter(
-      (n) =>
-        n.id !== 'portal'
-        || session.isSponsor
-        || can('sponsors.portal.view'),
-    )
-    .concat(hasAdminArea.value ? [{ id: 'admin', label: 'Admin', to: '/admin' }] : [])
-    .concat(societyAccess.value ? [{ id: 'society-portal', label: 'Society committee', to: '/societies' }] : []),
-)
+const visibleNav = computed(() => {
+  const publicLinks = nav.filter(n =>
+    n.id !== 'portal' || session.isSponsor || can('sponsors.portal.view'),
+  )
+  const privateLinks = [
+    ...(hasAdminArea.value ? [{ id: 'admin', label: 'Admin', to: '/admin' }] : []),
+    ...(session.authenticated && (societyAccess.value || societyLookupFailed.value)
+      ? [{ id: 'society-portal', label: 'Society committee', to: '/societies' }] : []),
+  ]
+  // Keep the committee links close to the start of the navigation, rather
+  // than pushing them off the right of a narrow desktop header.
+  return [...publicLinks.slice(0, 2), ...privateLinks, ...publicLinks.slice(2)]
+})
 
 const route = useRoute()
 const router = useRouter()
@@ -288,11 +303,11 @@ router.afterEach(() => { menuOpen.value = false })
   display: contents;
 }
 
-/* 1100px, not 768: the breakpoint is set by when the nav links, the search box
-   and the identity stop fitting on one row, which happens on compact desktop and tablet
+/* 1450px: include society and admin actions in the available menu width;
+   the full set of links does not fit a medium desktop alongside the search and identity
    width. Below it everything that was in the row moves into a dropped panel,
    so the header cannot overflow sideways and drag the page with it. */
-@media (max-width: 1100px) {
+@media (max-width: 1450px) {
   .site-header__inner {
     height: auto;
     min-height: 60px;

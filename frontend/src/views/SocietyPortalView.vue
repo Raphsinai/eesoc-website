@@ -6,13 +6,19 @@ import Button from '@/components/ds/Button.vue'
 import Card from '@/components/ds/Card.vue'
 import Field from '@/components/ds/Field.vue'
 import Input from '@/components/ds/Input.vue'
+import SocietyAccessPanel from '@/components/SocietyAccessPanel.vue'
+import { useRoute } from 'vue-router'
 
+const route = useRoute()
 const entries = ref([])
+const newEvent = ref({title:'',slug:'',venue:'',starts_at:'',ends_at:'',description:''})
 const societyId = ref(null)
 const events = ref([])
 const selectedEvent = ref(null)
 const eventDraft = ref({})
 const ticketDrafts = ref([])
+const eligibilityOptions = ref([])
+const productLinks = ref([])
 const newTicket = ref({name:'',price_pence:0,capacity:null,max_per_user:1,requires_purchase:false})
 const audiences = ref([])
 const selectedAudiences = ref([])
@@ -29,7 +35,22 @@ const error = ref('')
 const notice = ref('')
 const page = ref('events')
 const society = computed(() => entries.value.find(s => s.id === societyId.value))
-const may = action => (society.value?.permissions || []).includes(action)
+const may = action => {
+  const rights=society.value?.permissions || []
+  if (rights.includes(action)) return true
+  const legacy={
+    'events.ticket_types.create':'events.tickets.create',
+    'events.ticket_types.edit':'events.tickets.edit',
+    'events.ticket_types.delete':'events.tickets.delete',
+    'email.preview':'announcements.preview',
+    'email.send':'announcements.send',
+    'email.announce_event':'announcements.send',
+  }
+  return !!legacy[action] && rights.includes(legacy[action])
+}
+const hasEvents = computed(() => (society.value?.permissions || []).some(key => key.startsWith('events.')))
+const canEmail = computed(() => ['email.preview','email.audiences','email.send','email.announce_event'].some(may))
+const mayAccess = computed(() => ['access.view','access.grant','access.revoke','access.roles.create','access.roles.edit'].some(may))
 const canManage = action => Boolean(society.value?.managing && may(action))
 const currentEvent = computed(() => events.value.find(e => e.id === selectedEvent.value))
 const inputTime = value => value ? new Date(value).toISOString().slice(0,16) : ''
@@ -42,15 +63,19 @@ async function load() {
     entries.value=await api.get('/society-portal')
     if (!entries.value.some(s => s.id === societyId.value)) societyId.value=entries.value[0]?.id || null
     await loadSociety()
+    if (route.query.tab && ['events','announcements','whatsapp','access'].includes(route.query.tab)) page.value=route.query.tab
+    if (route.query.event && events.value.some(e => e.id === Number(route.query.event))) selectedEvent.value=Number(route.query.event)
   } catch (e) { error.value=e.message }
 }
 async function loadSociety() {
   events.value=[]; audiences.value=[]; whatsapp.value=null; selectedEvent.value=null
+  productLinks.value=[];eligibilityOptions.value=[]
   if (!societyId.value) return
   const prefix=`/society-portal/${societyId.value}`
   try {
-    if (may('events.view')) events.value=await api.get(`${prefix}/events`)
-    if (may('announcements.preview')) audiences.value=(await api.get(`${prefix}/announcements/audiences`)).audiences || []
+    if (hasEvents.value) events.value=await api.get(`${prefix}/events`)
+    if (may('events.membership_eligibility')) eligibilityOptions.value=await api.get(`${prefix}/eligibility-choices`)
+    if (canEmail.value) audiences.value=(await api.get(`${prefix}/announcements/audiences`)).audiences || []
     if (may('whatsapp.view')) {
       whatsapp.value=await api.get(`${prefix}/whatsapp`)
       inviteRequests.value=await api.get(`${prefix}/whatsapp/invites`)
@@ -63,26 +88,66 @@ async function act(task,done) {
   catch(e) { error.value=e.message }
   finally { busy.value=false }
 }
-function editEvent(id) {
+function createEvent() {
+  const body={
+    ...newEvent.value,
+    title:newEvent.value.title.trim(),
+    slug:newEvent.value.slug.trim(),
+    starts_at:isoTime(newEvent.value.starts_at),
+    ends_at:isoTime(newEvent.value.ends_at),
+    published:false,
+  }
+  if (!body.title || !body.slug || !body.starts_at) { error.value='Name, slug and date are required'; return }
+  act(async () => {
+    await api.post(`/society-portal/${societyId.value}/events`,body)
+    newEvent.value={title:'',slug:'',venue:'',starts_at:'',ends_at:'',description:''}
+  },'Event created for your society. It is unpublished until authorised.')
+}
+async function editEvent(id) {
   const ev=events.value.find(x => x.id===id)
+  if (!ev) return
   selectedEvent.value=id
   ticketDrafts.value=(ev.ticket_types || []).map(t => ({...t}))
   eventDraft.value={title:ev.title,description:ev.description || '',venue:ev.venue || '',
     starts_at:inputTime(ev.starts_at),ends_at:inputTime(ev.ends_at),
-    published:ev.published}
+    published:ev.published,
+    membership_restricted:Boolean(ev.membership_restricted),
+    allow_eesoc_members:Boolean(ev.allow_eesoc_members),
+    eligible_society_ids:[...(ev.eligible_society_ids || [])]}
+  if (may('events.ticket_types.product')) {
+    try { productLinks.value=await api.get(`/society-portal/${societyId.value}/events/${id}/product-links`) }
+    catch (e) { error.value=e.message }
+  }
 }
 function saveEvent() {
   const id=selectedEvent.value, d=eventDraft.value
-  act(() => api.put(`/society-portal/${societyId.value}/events/${id}`,{
+  const changes={
     title:d.title,description:d.description,venue:d.venue,
     starts_at:isoTime(d.starts_at),ends_at:isoTime(d.ends_at),
-  }),'Event saved.')
+  }
+  if (may('events.membership_eligibility')) Object.assign(changes,{
+    membership_restricted:d.membership_restricted,
+    allow_eesoc_members:d.allow_eesoc_members,
+    eligible_society_ids:d.eligible_society_ids,
+  })
+  if (changes.membership_restricted && !changes.allow_eesoc_members && !changes.eligible_society_ids?.length) {
+    error.value='Select an eligible society before saving a restricted event';return
+  }
+  act(() => api.put(`/society-portal/${societyId.value}/events/${id}`,changes),'Event saved.')
 }
 function saveTicket(ticket) {
   const id=selectedEvent.value
   const fields=['name','description','price_pence','capacity','requires_purchase','max_per_user','sort_order','purchase_url','sales_open_at','sales_close_at']
+  if (may('events.ticket_types.eligibility')) fields.push('members_only','eligible_society_ids')
   const payload=Object.fromEntries(fields.filter(k => ticket[k] !== undefined).map(k => [k,ticket[k]]))
   act(() => api.put(`/society-portal/${societyId.value}/events/${id}/tickets/${ticket.id}`,payload),'Ticket type updated.')
+}
+function linkTicketProduct(ticket) {
+  const id=selectedEvent.value
+  const ref=String(ticket.shop_product_ref || '').trim() || null
+  act(() => api.put(`/society-portal/${societyId.value}/events/${id}/tickets/${ticket.id}/product`,{
+    shop_product_ref:ref,
+  }),ref ? 'Union product linked to ticket.' : 'Union product unlinked.')
 }
 function createTicket() {
   const id=selectedEvent.value
@@ -144,16 +209,31 @@ onMounted(load)
           <Field label="Society"><select v-model="societyId" class="ees-select" @change="loadSociety"><option v-for="s in entries" :key="s.id" :value="s.id">{{ s.name }}</option></select></Field>
           <p style="font:var(--type-small);color:var(--text-muted)">{{ society?.title }} · {{ society?.managing ? 'Managing committee' : 'Committee' }}. Access is restricted to the actions you have been granted.</p>
           <div style="display:flex;gap:var(--space-2);margin:var(--space-4) 0;flex-wrap:wrap">
-            <Button v-if="may('events.view')" :variant="page==='events' ? 'primary':'secondary'" @click="page='events'">Your events</Button>
-            <Button v-if="may('announcements.preview')" :variant="page==='announcements' ? 'primary':'secondary'" @click="page='announcements'">Announcements</Button>
+            <Button v-if="hasEvents" :variant="page==='events' ? 'primary':'secondary'" @click="page='events'">Your events</Button>
+            <Button v-if="canEmail" :variant="page==='announcements' ? 'primary':'secondary'" @click="page='announcements'">Announcements</Button>
+            <Button v-if="mayAccess" :variant="page==='access' ? 'primary':'secondary'" @click="page='access'">Society access</Button>
             <Button v-if="may('whatsapp.view')" :variant="page==='whatsapp' ? 'primary':'secondary'" @click="page='whatsapp'">WhatsApp</Button>
           </div>
-          <div v-if="page==='events' && may('events.view')" style="display:grid;gap:var(--space-4)">
+          <div v-if="page==='events' && hasEvents" style="display:grid;gap:var(--space-4)">
+            <Card v-if="canManage('events.create')" variant="outline" style="display:grid;gap:var(--space-2)">
+              <h2>Create a society event</h2>
+              <p style="font:var(--type-small);color:var(--text-muted)">Creates an unpublished event belonging to your society. EESoc is not automatically listed as an organiser.</p>
+              <Field label="Event title"><Input v-model="newEvent.title" /></Field>
+              <Field label="URL slug"><Input v-model="newEvent.slug" placeholder="society-talk" /></Field>
+              <Field label="Venue"><Input v-model="newEvent.venue" /></Field>
+              <Field label="Starts"><input v-model="newEvent.starts_at" class="ees-input" type="datetime-local" /></Field>
+              <Field label="Ends"><input v-model="newEvent.ends_at" class="ees-input" type="datetime-local" /></Field>
+              <Button :disabled="busy || !newEvent.title.trim() || !newEvent.slug.trim() || !newEvent.starts_at" @click="createEvent">Create event</Button>
+            </Card>
             <Card variant="outline"><h2>Assigned events</h2>
               <p v-if="!events.length">No events have been assigned to your society.</p>
               <div v-for="ev in events" :key="ev.id" style="display:flex;gap:var(--space-3);justify-content:space-between;border-top:1px solid var(--border-hairline);padding:var(--space-2) 0">
                 <span>{{ ev.title }} · {{ ev.published ? 'Published':'Draft' }}</span>
-                <Button size="sm" variant="secondary" @click="editEvent(ev.id)">Open</Button>
+                <div style="display:flex;gap:var(--space-2)">
+                  <Button size="sm" variant="secondary" @click="editEvent(ev.id)">Edit</Button>
+                  <RouterLink v-if="may('events.bookings.view')" :to="`/societies/${societyId}/events/${ev.id}/bookings`" class="ees-btn">Bookings</RouterLink>
+                  <RouterLink v-if="may('events.checkin.view')" :to="`/societies/${societyId}/checkin/${ev.id}`" class="ees-btn">Door check-in</RouterLink>
+                </div>
               </div>
             </Card>
             <Card v-if="currentEvent" variant="outline"><h2>{{ currentEvent.title }}</h2>
@@ -163,32 +243,51 @@ onMounted(load)
                 <Field label="Venue"><Input v-model="eventDraft.venue" /></Field>
                 <Field label="Starts"><input v-model="eventDraft.starts_at" class="ees-input" type="datetime-local" /></Field>
                 <Field label="Ends"><input v-model="eventDraft.ends_at" class="ees-input" type="datetime-local" /></Field>
+                <fieldset v-if="canManage('events.membership_eligibility')" style="display:grid;gap:var(--space-2)">
+                  <legend>Booking eligibility</legend>
+                  <label><input v-model="eventDraft.membership_restricted" type="checkbox" /> Restrict bookings to selected society members</label>
+                  <template v-if="eventDraft.membership_restricted">
+                    <label><input v-model="eventDraft.allow_eesoc_members" type="checkbox" /> EESoc members</label>
+                    <label v-for="entry in eligibilityOptions" :key="entry.id"><input v-model="eventDraft.eligible_society_ids" type="checkbox" :value="entry.id" /> {{ entry.name }}</label>
+                    <p style="font:var(--type-small);color:var(--text-muted)">EESoc need not be included. Booking eligibility is separate from the society organising the event.</p>
+                  </template>
+                </fieldset>
                 <Button :disabled="busy" @click="saveEvent">Save event</Button>
               </template>
               <Button v-if="canManage('events.publish')" variant="secondary" :disabled="busy" @click="publishEvent">{{ currentEvent.published ? 'Unpublish':'Publish' }} event</Button>
-              <div v-if="canManage('events.tickets.edit') || canManage('events.tickets.create') || canManage('events.tickets.delete')" style="display:grid;gap:var(--space-3);border-top:1px solid var(--border-hairline);padding-top:var(--space-3)">
+              <div v-if="canManage('events.ticket_types.edit') || canManage('events.ticket_types.create') || canManage('events.ticket_types.delete')" style="display:grid;gap:var(--space-3);border-top:1px solid var(--border-hairline);padding-top:var(--space-3)">
                 <h3>Ticket types</h3>
                 <div v-for="ticket in ticketDrafts" :key="ticket.id" style="display:grid;gap:var(--space-2);border-top:1px solid var(--border-hairline);padding:var(--space-3) 0">
-                  <Field label="Ticket name"><Input v-model="ticket.name" :disabled="!canManage('events.tickets.edit')" /></Field>
+                  <Field label="Ticket name"><Input v-model="ticket.name" :disabled="!canManage('events.ticket_types.edit')" /></Field>
                   <div style="display:flex;gap:var(--space-2)">
-                    <Field label="Price (pence)"><input v-model.number="ticket.price_pence" class="ees-input" type="number" min="0" :disabled="!canManage('events.tickets.edit')" /></Field>
-                    <Field label="Capacity"><input v-model.number="ticket.capacity" class="ees-input" type="number" min="1" :disabled="!canManage('events.tickets.edit')" /></Field>
+                    <Field label="Price (pence)"><input v-model.number="ticket.price_pence" class="ees-input" type="number" min="0" :disabled="!canManage('events.ticket_types.edit')" /></Field>
+                    <Field label="Capacity"><input v-model.number="ticket.capacity" class="ees-input" type="number" min="1" :disabled="!canManage('events.ticket_types.edit')" /></Field>
                   </div>
-                  <label><input v-model="ticket.requires_purchase" type="checkbox" :disabled="!canManage('events.tickets.edit')" /> Requires SUMS purchase</label>
-                  <p v-if="ticket.members_only || ticket.eligible_society_ids?.length" style="font:var(--type-small);color:var(--text-muted)">Membership restrictions are set by EESoc administrators and cannot be altered from this portal.</p>
-                  <div style="display:flex;gap:var(--space-2)"><Button v-if="canManage('events.tickets.edit')" size="sm" :disabled="busy" @click="saveTicket(ticket)">Save ticket</Button><Button v-if="canManage('events.tickets.delete')" size="sm" variant="ghost" :disabled="busy" @click="removeTicket(ticket.id)">Delete</Button></div>
+                  <label><input v-model="ticket.requires_purchase" type="checkbox" :disabled="!canManage('events.ticket_types.edit')" /> Requires SUMS purchase</label>
+                  <p v-if="(ticket.members_only || ticket.eligible_society_ids?.length) && !may('events.ticket_types.eligibility')" style="font:var(--type-small);color:var(--text-muted)">Ticket eligibility can only be changed with its separate permission.</p>
+                  <fieldset v-if="canManage('events.ticket_types.eligibility')" style="display:grid;gap:var(--space-2)">
+                    <legend>Ticket membership restrictions</legend>
+                    <label><input v-model="ticket.members_only" type="checkbox" /> EESoc members</label>
+                    <label v-for="entry in eligibilityOptions" :key="entry.id"><input v-model="ticket.eligible_society_ids" type="checkbox" :value="entry.id" /> {{ entry.name }} members</label>
+                  </fieldset>
+                  <div v-if="canManage('events.ticket_types.product')" style="display:grid;gap:var(--space-2)">
+                    <Field label="SUMS shop product ID (optional)"><Input v-model="ticket.shop_product_ref" placeholder="Product number, e.g. 3023" /></Field>
+                    <p v-if="productLinks.find(link => link.ticket_type_id === ticket.id)" style="font:var(--type-small)">Linked product: {{ productLinks.find(link => link.ticket_type_id === ticket.id)?.union_product_id }}</p>
+                    <Button size="sm" variant="secondary" :disabled="busy" @click="linkTicketProduct(ticket)">Save shop product link</Button>
+                  </div>
+                  <div style="display:flex;gap:var(--space-2)"><Button v-if="canManage('events.ticket_types.edit')" size="sm" :disabled="busy" @click="saveTicket(ticket)">Save ticket</Button><Button v-if="canManage('events.ticket_types.delete')" size="sm" variant="ghost" :disabled="busy" @click="removeTicket(ticket.id)">Delete</Button></div>
                 </div>
-                <div v-if="canManage('events.tickets.create')" style="display:grid;gap:var(--space-2)">
+                <div v-if="canManage('events.ticket_types.create')" style="display:grid;gap:var(--space-2)">
                   <h4>Add ticket type</h4><Field label="Name"><Input v-model="newTicket.name" /></Field>
                   <Field label="Price (pence)"><input v-model.number="newTicket.price_pence" class="ees-input" type="number" min="0" /></Field>
                   <label><input v-model="newTicket.requires_purchase" type="checkbox" /> Requires SUMS purchase</label>
                   <Button size="sm" :disabled="busy || !newTicket.name.trim()" @click="createTicket">Add ticket type</Button>
                 </div>
               </div>
-              <div v-if="canManage('events.bookings.view')"><h3>Bookings</h3><p>Only committee members with booking access can view the attendance list.</p><Button size="sm" variant="secondary" @click="act(async()=>{ const x=await api.get(`/society-portal/${societyId}/events/${currentEvent.id}/bookings`);notice=`${x.length} booking records` },'Bookings checked')">Count bookings</Button></div>
+              <div v-if="may('events.bookings.view')"><h3>Bookings</h3><p>Only committee members with booking access can view the attendance list.</p><Button size="sm" variant="secondary" @click="act(async()=>{ const x=await api.get(`/society-portal/${societyId}/events/${currentEvent.id}/bookings`);notice=`${x.length} booking records` },'Bookings checked')">Count bookings</Button></div>
             </Card>
           </div>
-          <Card v-if="page==='announcements' && may('announcements.preview')" variant="outline">
+          <Card v-if="page==='announcements' && canEmail" variant="outline">
             <h2>Society announcements</h2>
             <p style="font:var(--type-small);color:var(--text-muted)">Only the test audience, your society’s synced membership list and WhatsApp groups assigned to your society are available.</p>
             <Field label="Subject"><Input v-model="subject" /></Field>
@@ -196,9 +295,12 @@ onMounted(load)
             <Field label="Message"><textarea v-model="body" class="ees-textarea" rows="8" /></Field>
             <Field label="For assigned event (optional)"><select v-model="selectedEvent" class="ees-select"><option :value="null">General announcement</option><option v-for="ev in events" :key="ev.id" :value="ev.id">{{ ev.title }}</option></select></Field>
             <div style="display:grid;gap:var(--space-2)"><label v-for="a in audiences" :key="a.key"><input v-model="selectedAudiences" type="checkbox" :value="a.key" /> {{ a.label }} ({{ a.count ?? '—' }})</label></div>
-            <div style="display:flex;gap:var(--space-2)"><Button :disabled="busy" variant="secondary" @click="showPreview">Preview</Button><Button v-if="canManage('announcements.send') || canManage('whatsapp.post')" :disabled="busy || !selectedAudiences.length" @click="send">Send announcement</Button></div>
+            <div style="display:flex;gap:var(--space-2)"><Button v-if="may('email.preview')" :disabled="busy" variant="secondary" @click="showPreview">Preview</Button><Button v-if="canManage('email.send') || canManage('email.announce_event') || canManage('whatsapp.post')" :disabled="busy || !selectedAudiences.length" @click="send">Send announcement</Button></div>
             <div v-if="preview"><p>Recipients: {{ preview.recipients }} · WhatsApp groups: {{ preview.groups?.length || 0 }}</p><div v-html="preview.html" /></div>
           </Card>
+          <SocietyAccessPanel v-if="page==='access' && mayAccess" :key="societyId"
+            :society-id="societyId" :permissions="society?.permissions || []"
+            :managing="society?.managing || false" />
           <Card v-if="page==='whatsapp' && may('whatsapp.view')" variant="outline">
             <h2>Society WhatsApp</h2>
             <p>Connection: {{ whatsapp?.status?.state || 'Not configured' }}</p>

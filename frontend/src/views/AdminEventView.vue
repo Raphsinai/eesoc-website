@@ -13,10 +13,25 @@ import Field from '@/components/ds/Field.vue'
 import Input from '@/components/ds/Input.vue'
 import TraceRule from '@/components/ds/TraceRule.vue'
 import ProductSalesImportPanel from '@/components/ProductSalesImportPanel.vue'
-import { can } from '@/stores/session'
+import { can as globalCan } from '@/stores/session'
 
 const route = useRoute()
 const router = useRouter()
+const societyId = computed(() => route.params.societyId ? Number(route.params.societyId) : null)
+const societyPermissions = ref([])
+const can = key => societyId.value
+  ? (key === 'email' ? societyPermissions.value.some(p => p.startsWith('email.'))
+      : societyPermissions.value.includes(key))
+  : globalCan(key)
+const eventBase = computed(() => societyId.value
+  ? `/society-portal/${societyId.value}/events/${route.params.id}`
+  : `/admin/events/${route.params.id}`)
+const reservationBase = id => societyId.value
+  ? `${eventBase.value}/reservations/${id}` : `/admin/reservations/${id}`
+const backTo = computed(() => societyId.value ? '/societies' : '/admin?tab=events')
+const checkinTo = computed(() => societyId.value
+  ? `/societies/${societyId.value}/checkin/${route.params.id}`
+  : `/checkin/${route.params.id}`)
 
 const data = ref(null)
 const loading = ref(true)
@@ -45,7 +60,11 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    data.value = await api.get(`/admin/events/${route.params.id}/detail`)
+    if (societyId.value) {
+      const memberships = await api.get('/society-portal')
+      societyPermissions.value = memberships.find(s => s.id === societyId.value)?.permissions || []
+    }
+    data.value = await api.get(`${eventBase.value}/detail`)
   } catch (e) {
     error.value = e.message
   } finally {
@@ -125,7 +144,7 @@ async function submitConfirmation(row) {
   error.value = ''
   notice.value = ''
   try {
-    const response = await api.post(`/admin/reservations/${row.id}/confirm`, {
+    const response = await api.post(`${reservationBase(row.id)}/confirm`, {
       order_number: confirmationOrder.value.trim() || null,
       override: confirmOverride.value,
     })
@@ -141,7 +160,7 @@ async function act(row, action) {
   error.value = ''
   notice.value = ''
   try {
-    const res = await api.post(`/admin/reservations/${row.id}/${action}`)
+    const res = await api.post(`${reservationBase(row.id)}/${action}`)
     notice.value =
       res.message ||
       { remind: 'Reminder sent.', cancel: 'Cancelled.' }[action]
@@ -161,7 +180,9 @@ async function saveOrder(row) {
   busy.value = true
   error.value = ''
   try {
-    const result = await api.patch(`/admin/reservations/${row.id}/order-number`, { order_number: editedOrder.value.trim() || null })
+    const orderPath = societyId.value ? `${reservationBase(row.id)}/order-number`
+      : `/admin/reservations/${row.id}/order-number`
+    const result = await api.patch(orderPath, { order_number: editedOrder.value.trim() || null })
     editingOrder.value = null
     notice.value = result.message || 'Order number saved.'
     await load()
@@ -180,7 +201,7 @@ async function changeTicket(row, event) {
   error.value = ''
   notice.value = ''
   try {
-    const res = await api.post(`/admin/reservations/${row.id}/ticket-type`, { ticket_type_id: ticketTypeId })
+    const res = await api.post(`${reservationBase(row.id)}/ticket-type`, { ticket_type_id: ticketTypeId })
     notice.value = res.message
     await load()
   } catch (e) {
@@ -228,7 +249,7 @@ async function addTicket() {
   error.value = ''
   notice.value = ''
   try {
-    const res = await api.post(`/admin/events/${route.params.id}/tickets`, {
+    const res = await api.post(`${eventBase.value}/${societyId.value ? 'tickets/add' : 'tickets'}`, {
       ...ticket,
       order_number: ticket.order_number.trim() || null,
       ticket_type_id: Number(ticket.ticket_type_id),
@@ -270,7 +291,7 @@ async function resend(row) {
   busy.value = true
   error.value = ''
   try {
-    const res = await api.post(`/admin/reservations/${row.id}/confirmation`)
+    const res = await api.post(`${reservationBase(row.id)}/confirmation`)
     notice.value = res.message
     // The send happens in the background; give it a moment before re-reading.
     setTimeout(load, 2500)
@@ -283,9 +304,12 @@ async function resend(row) {
 
 /** Opens the event's email dialog in the dashboard with this group ticked. */
 function emailGroup(kind) {
+  if (societyId.value) {
+    router.push({ path: '/societies', query: { society: societyId.value, tab: 'announcements', event: route.params.id } })
+    return
+  }
   router.push({
-    path: '/admin',
-    query: { tab: 'events', announce: route.params.id, audience: `${kind}:${route.params.id}` },
+    path: '/admin', query: { tab: 'events', announce: route.params.id, audience: `${kind}:${route.params.id}` },
   })
 }
 
@@ -310,7 +334,7 @@ usePageTitle(computed(() => data.value?.event?.title ? `${data.value.event.title
 
 <template>
   <main style="max-width:var(--container-xl, 1200px); margin:0 auto; padding:var(--space-10) var(--space-6); min-height:70vh">
-    <RouterLink to="/admin?tab=events" style="font:var(--type-small)">← All events</RouterLink>
+    <RouterLink :to="backTo" style="font:var(--type-small)">← All events</RouterLink>
 
     <p v-if="loading" style="font:var(--type-small); color:var(--text-faint)">Loading…</p>
     <p v-if="error" style="font:var(--type-small); color:var(--danger)">{{ error }}</p>
@@ -323,7 +347,7 @@ usePageTitle(computed(() => data.value?.event?.title ? `${data.value.event.title
           · capacity {{ data.event.capacity ?? '∞' }}
           <Badge :tone="data.event.published ? 'success' : 'neutral'">{{ data.event.published ? 'Live' : 'Draft' }}</Badge>
         </span>
-        <div><Button v-if="can('events.checkin.view')" size="sm" variant="secondary" @click="router.push(`/checkin/${data.event.id}`)">Open door check-in</Button></div>
+        <div><Button v-if="can('events.checkin.view')" size="sm" variant="secondary" @click="router.push(checkinTo)">Open door check-in</Button></div>
       </header>
 
       <div class="summary">
@@ -344,15 +368,18 @@ usePageTitle(computed(() => data.value?.event?.title ? `${data.value.event.title
       </div>
 
       <div v-if="can('email')" class="mail-actions">
+        <Button v-if="societyId && can('email.announce_event')" variant="secondary" @click="emailGroup('society')">Email your society members about this event</Button>
+        <template v-if="!societyId">
         <Button v-if="can('email.announce_event')" :disabled="!counts.unpaid" @click="emailGroup('unpaid')">
           Email everyone who hasn't bought ({{ counts.unpaid }})
         </Button>
         <Button v-if="can('email.announce_event')" variant="secondary" :disabled="!counts.bought" @click="emailGroup('confirmed')">Email everyone who bought</Button>
         <Button v-if="can('email.announce_event')" variant="secondary" :disabled="!counts.booked" @click="emailGroup('booked')">Email everyone booked</Button>
         <Button v-if="can('email.announce_event')" variant="ghost" :disabled="!counts.waitlist" @click="emailGroup('waitlist')">Email the waitlist</Button>
+        </template>
       </div>
 
-      <ProductSalesImportPanel v-if="can('events.bookings.import.view')" :event-id="Number(route.params.id)" @refresh="load" />
+      <ProductSalesImportPanel v-if="can('events.bookings.import.view')" :event-id="Number(route.params.id)" :society-id="societyId" :permissions="societyPermissions" @refresh="load" />
 
       <div class="add-ticket">
         <Button v-if="(!adding) && (can('events.bookings.add'))" variant="secondary" :disabled="!data.summary.length" @click="openAdd">Add a ticket for someone</Button>

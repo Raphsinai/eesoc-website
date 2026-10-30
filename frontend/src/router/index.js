@@ -77,6 +77,8 @@ const routes = [
   { path: '/subscribe', name: 'subscribe', component: SubscribeView, meta: { title: 'Newsletter', noindex: true } },
   { path: '/portal', name: 'portal', component: PortalView, meta: { title: 'Sponsor portal', requires: 'sponsor', noindex: true } },
   { path: '/societies', name: 'society-portal', component: SocietyPortalView, meta: { title: 'Society committee', noindex: true } },
+  { path: '/societies/:societyId/events/:id/bookings', name: 'society-event-bookings', component: AdminEventView, meta: { title: 'Society event bookings', noindex: true } },
+  { path: '/societies/:societyId/checkin/:eventId?', name: 'society-checkin', component: CheckinView, meta: { title: 'Society door check-in', noindex: true } },
   { path: '/admin/events/:id', name: 'admin-event', component: AdminEventView, meta: { title: 'Event bookings', requires: 'committee', noindex: true } },
   { path: '/admin/sponsors/:id', name: 'admin-sponsor', component: AdminSponsorView, meta: { title: 'Sponsor agreement', requires: 'committee', noindex: true } },
   { path: '/admin', name: 'admin', component: AdminView, meta: { title: 'Committee admin', requires: 'committee', noindex: true } },

@@ -6,6 +6,7 @@ import Button from '@/components/ds/Button.vue'
 import Card from '@/components/ds/Card.vue'
 import Input from '@/components/ds/Input.vue'
 import Field from '@/components/ds/Field.vue'
+import SocietyAccessPanel from '@/components/SocietyAccessPanel.vue'
 
 const props = defineProps({ events: { type: Array, default: () => [] } })
 const societies = ref([])
@@ -193,28 +194,8 @@ onMounted(load)
         <Button size="sm" variant="secondary" :disabled="(memberPage + 1) * memberPageSize >= memberTotal" @click="changeMemberPage(1)">Next</Button>
       </div>
     </Card>
-    <Card v-if="selected && (can('societies.committee.view') || can('societies.committee.edit'))" variant="outline">
-      <h2>Society committee</h2>
-      <p style="font:var(--type-small);color:var(--text-muted)">Only verified Imperial logins listed here can open the society portal. A managing committee member must also have each individual action enabled.</p>
-      <div v-for="person in committee" :key="person.login" style="display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);border-top:1px solid var(--border-hairline);padding:var(--space-2) 0">
-        <span>{{ person.login }} · {{ person.title }} · {{ person.managing ? 'Manager' : 'Committee' }}</span>
-        <div style="display:flex;gap:var(--space-2)">
-          <Button v-if="can('societies.committee.edit')" size="sm" variant="ghost" @click="editMember(person)">Edit</Button>
-          <Button v-if="can('societies.committee.delete')" size="sm" variant="ghost" @click="removeMember(person)">Remove</Button>
-        </div>
-      </div>
-      <div v-if="can('societies.committee.edit')" style="display:grid;gap:var(--space-3)">
-        <Field label="Imperial Login"><Input v-model="login" placeholder="abc123" /></Field>
-        <Field label="Position"><Input v-model="title" placeholder="President" /></Field>
-        <label><input v-model="managing" type="checkbox" /> Managing committee (eligible to manage assigned events)</label>
-        <div style="display:flex;gap:var(--space-2)">
-          <Button size="sm" variant="secondary" @click="permissions = defaultPermissions()">Select all permissions</Button>
-          <Button size="sm" variant="ghost" @click="permissions = []">Clear permissions</Button>
-        </div>
-        <label v-for="[key, label] in ACTIONS" :key="key" style="font:var(--type-small)"><input v-model="permissions" type="checkbox" :value="key" /> {{ label }}</label>
-        <Button :disabled="busy || !login.trim()" @click="saveMember">Save committee member</Button>
-      </div>
-    </Card>
+    <SocietyAccessPanel v-if="selected && can('societies.committee.view')"
+      :society-id="Number(selected)" eesoc-admin />
     <Card v-if="selected && (can('societies.events.assign') || can('societies.events.unassign'))" variant="outline">
       <h2>Events this society may manage</h2>
       <div v-for="id in assigned" :key="id" style="display:flex;justify-content:space-between;border-top:1px solid var(--border-hairline);padding:var(--space-2) 0">

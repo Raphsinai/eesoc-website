@@ -28,7 +28,12 @@ class SocietyNew(BaseModel):
 class CommitteeWrite(BaseModel):
     title: str = Field(default='Committee',max_length=120)
     managing: bool = False
-    permissions: list[str] = []
+    permissions: list[str] | None = None
+    role_id: str | None = None
+
+class RoleWrite(BaseModel):
+    title: str = Field(min_length=2,max_length=120)
+    permissions: list[str]
 
 class GroupWrite(BaseModel):
     account_key: str
@@ -93,6 +98,100 @@ async def member_records(society_id:int,search:str='',limit:int=100,offset:int=0
         'offset':max(0,offset),
     })
 
+@admin.get('/permission-catalogue',dependencies=[Depends(require_action('societies.committee.view'))])
+async def external_society_permission_catalogue():
+    return societies.permission_catalogue()
+
+@portal.get('/permissions')
+async def my_permission_catalogue(session:AuthSession=Depends(require_session)):
+    await societies.affiliations(session)
+    return societies.permission_catalogue()
+
+@admin.get('/{society_id}/roles',dependencies=[Depends(require_action('societies.committee.view'))])
+async def eesoc_list_society_roles(society_id:int):
+    return await database.get(f'/external-societies/{society_id}/roles') or []
+
+@admin.put('/{society_id}/roles/{role_id}',dependencies=[Depends(require_action('societies.committee.edit')),Depends(verify_csrf)])
+async def eesoc_set_society_role(society_id:int,role_id:str,body:RoleWrite):
+    if not set(body.permissions).issubset(societies.SOC_ACTIONS) or len(set(body.permissions))!=len(body.permissions):
+        raise HTTPException(400,'Invalid society role permissions')
+    return await database.put(f'/external-societies/{society_id}/roles/{role_id}',body.model_dump())
+
+@admin.delete('/{society_id}/roles/{role_id}',dependencies=[Depends(require_action('societies.committee.edit')),Depends(verify_csrf)])
+async def eesoc_delete_society_role(society_id:int,role_id:str):
+    return await database.delete(f'/external-societies/{society_id}/roles/{role_id}')
+
+@portal.get('/{society_id}/committee')
+async def view_my_committee(society_id:int,session:AuthSession=Depends(require_session)):
+    await societies.require_society(session,society_id,'access.view')
+    return await database.get(f'/external-societies/{society_id}/committee') or []
+
+@portal.put('/{society_id}/committee/{login}',dependencies=[Depends(verify_csrf)])
+async def grant_my_committee(society_id:int,login:str,body:CommitteeWrite,session:AuthSession=Depends(require_session)):
+    me=await societies.require_society(session,society_id,'access.grant',managing=True)
+    login=login.strip().lower()
+    if not societies.LOGIN_RE.fullmatch(login): raise HTTPException(400,'Invalid Imperial login')
+    if body.managing and not me['managing']:
+        raise HTTPException(403,'Only managing committee may appoint managers')
+    effective=societies.grants(me['permissions'])
+    # A manager cannot edit an account with privileges beyond their own; such
+    # an account was appointed by a higher-authority society or EESoc officer.
+    existing=await database.get(f'/external-societies/{society_id}/committee') or []
+    previous=next((c for c in existing if c['login']==login),None)
+    if previous and not societies.grants(previous.get('effective_permissions')).issubset(effective):
+        raise HTTPException(403,'Only an officer holding all existing grants may edit this account')
+    if body.role_id:
+        available=await database.get(f'/external-societies/{society_id}/roles') or []
+        preset=next((r for r in available if r['role_id']==body.role_id),None)
+        if preset is None: raise HTTPException(400,'Unknown society role')
+        if body.permissions is None and not set(preset['permissions']).issubset(effective):
+            raise HTTPException(403,'You cannot grant a role with permissions you do not hold')
+    if body.permissions is not None and (not set(body.permissions).issubset(effective)
+                                          or len(set(body.permissions))!=len(body.permissions)):
+        raise HTTPException(403,'You cannot grant permissions you do not hold')
+    return await database.put(f'/external-societies/{society_id}/committee/{login}',
+        {'login':login, **body.model_dump()})
+
+@portal.delete('/{society_id}/committee/{login}',dependencies=[Depends(verify_csrf)])
+async def revoke_my_committee(society_id:int,login:str,session:AuthSession=Depends(require_session)):
+    me=await societies.require_society(session,society_id,'access.revoke',managing=True)
+    if not societies.LOGIN_RE.fullmatch(login): raise HTTPException(400,'Invalid Imperial login')
+    if login == await societies.verified_identity_login(session):
+        raise HTTPException(400,'You cannot revoke your own society access')
+    members=await database.get(f'/external-societies/{society_id}/committee') or []
+    victim=next((c for c in members if c['login']==login),None)
+    if victim and not societies.grants(victim.get('effective_permissions')).issubset(
+            societies.grants(me['permissions'])):
+        raise HTTPException(403,'You cannot revoke a committee member holding permissions beyond yours')
+    return await database.delete(f'/external-societies/{society_id}/committee/{login}') or {'ok':True}
+
+@portal.get('/{society_id}/roles')
+async def view_my_roles(society_id:int,session:AuthSession=Depends(require_session)):
+    await societies.require_society(session,society_id,'access.view')
+    return await database.get(f'/external-societies/{society_id}/roles') or []
+
+@portal.put('/{society_id}/roles/{role_id}',dependencies=[Depends(verify_csrf)])
+async def save_my_role(society_id:int,role_id:str,body:RoleWrite,session:AuthSession=Depends(require_session)):
+    me=await societies.require_society(session,society_id,managing=True)
+    roles=await database.get(f'/external-societies/{society_id}/roles') or []
+    action='access.roles.edit' if any(r['role_id']==role_id for r in roles) else 'access.roles.create'
+    if action not in societies.grants(me['permissions']):
+        raise HTTPException(403,f'Society permission required: {action}')
+    if len(set(body.permissions))!=len(body.permissions) or not set(body.permissions).issubset(societies.grants(me['permissions'])):
+        raise HTTPException(403,'You cannot make role defaults with permissions you do not hold')
+    return await database.put(f'/external-societies/{society_id}/roles/{role_id}',body.model_dump())
+
+@portal.delete('/{society_id}/roles/{role_id}',dependencies=[Depends(verify_csrf)])
+async def delete_my_role(society_id:int,role_id:str,session:AuthSession=Depends(require_session)):
+    await societies.require_society(session,society_id,'access.roles.edit',managing=True)
+    return await database.delete(f'/external-societies/{society_id}/roles/{role_id}') or {'ok':True}
+
+@portal.get('/{society_id}/members')
+async def view_my_members(society_id:int,search:str='',limit:int=100,offset:int=0,session:AuthSession=Depends(require_session)):
+    await societies.require_society(session,society_id,'societies.members.view')
+    return await database.get(f'/external-societies/{society_id}/members',{
+        'year':academic_year(),'search':search,'limit':max(1,min(200,limit)),'offset':max(0,offset)})
+
 @admin.get('/{society_id}/committee',dependencies=[Depends(require_action('societies.committee.view'))])
 async def list_committee(society_id:int):
     return await database.get(f'/external-societies/{society_id}/committee') or []
@@ -101,7 +200,7 @@ async def list_committee(society_id:int):
 async def set_committee(society_id:int,login:str,body:CommitteeWrite):
     login=login.strip().lower()
     if not societies.LOGIN_RE.fullmatch(login): raise HTTPException(400,'Invalid Imperial login')
-    if len(set(body.permissions))!=len(body.permissions) or not set(body.permissions).issubset(societies.SOC_ACTIONS):
+    if body.permissions is not None and (len(set(body.permissions))!=len(body.permissions) or not set(body.permissions).issubset(societies.SOC_ACTIONS)):
         raise HTTPException(400,'Unknown or duplicate committee permissions')
     return await database.put(f'/external-societies/{society_id}/committee/{login}', {'login':login,**body.model_dump()})
 
@@ -171,23 +270,36 @@ async def my_societies(session:AuthSession=Depends(require_session)):
     """A separate committee portal; a society role never grants EESoc admin."""
     return await societies.affiliations(session)
 
+@portal.get('/{society_id}/eligibility-choices')
+async def my_eligibility_options(society_id:int,session:AuthSession=Depends(require_session)):
+    await societies.require_society(session,society_id,'events.membership_eligibility')
+    return [{'id':x['id'],'name':x['name']} for x in (await database.get('/external-societies') or [])]
+
 @portal.get('/{society_id}/events')
 async def my_events(society_id:int,session:AuthSession=Depends(require_session)):
-    await societies.require_society(session,society_id,'events.view')
+    me=await societies.require_society(session,society_id)
+    if not any(k.startswith('events.') for k in societies.grants(me['permissions'])):
+        raise HTTPException(403,'No event management permissions for this society')
     ids=await database.get(f'/external-societies/{society_id}/events') or []
     return [e for event_id in ids if (e:=await database.get(f'/events/{event_id}'))]
 
 EVENT_FIELDS={'title','description','category','venue','starts_at','ends_at',
               'doors_close_at','map_url','meeting_url','meeting_url_private',
               'sales_open_at','reservations_close_at','union_sales_close_at',
-              'capacity','hold_hours','purchase_url','signup_url','image_url'}
+              'capacity','hold_hours','purchase_url','signup_url','image_url',
+              'membership_restricted','allow_eesoc_members','eligible_society_ids'}
 
 @portal.put('/{society_id}/events/{event_id}',dependencies=[Depends(verify_csrf)])
 async def edit_managed_event(society_id:int,event_id:int,body:dict=Body(...),session:AuthSession=Depends(require_session)):
     await societies.require_society(session,society_id,'events.edit',managing=True)
     event=await societies.require_event(society_id,event_id)
     if not body or set(body)-EVENT_FIELDS:
-        raise HTTPException(400,'This action can only change event details, not its ownership, permissions or ticket types')
+        raise HTTPException(400,'This action can only change event details, not its ownership or ticket types')
+    if {'membership_restricted','allow_eesoc_members','eligible_society_ids'} & body.keys():
+        await societies.require_society(session,society_id,'events.membership_eligibility',managing=True)
+        actor=societies.ScopedCommitteeSession(session,await societies.require_society(session,society_id))
+        from routes.admin import _check_event_society_eligibility
+        await _check_event_society_eligibility(actor,event,{**event,**body})
     updated=await database.patch(f'/events/{event_id}/society-fields',body)
     if {'sales_open_at','starts_at','published'} & body.keys():
         from routes.admin import _sync_on_sale_email
@@ -208,23 +320,35 @@ TICKET_FIELDS={'name','description','price_pence','capacity','requires_purchase'
 
 @portal.put('/{society_id}/events/{event_id}/tickets/{ticket_id}',dependencies=[Depends(verify_csrf)])
 async def edit_managed_ticket(society_id:int,event_id:int,ticket_id:int,body:dict=Body(...),session:AuthSession=Depends(require_session)):
-    await societies.require_society(session,society_id,'events.tickets.edit',managing=True)
+    await societies.require_society(session,society_id,'events.ticket_types.edit',managing=True)
     await societies.require_event(society_id,event_id)
     ticket=await database.get(f'/ticket-types/{ticket_id}')
     if not ticket or ticket['event_id']!=event_id: raise HTTPException(404,'Ticket not on assigned event')
-    if not body or set(body)-TICKET_FIELDS: raise HTTPException(400,'Unsupported ticket edit')
+    if not body or set(body)-(TICKET_FIELDS | {'members_only','eligible_society_ids'}):
+        raise HTTPException(400,'Unsupported ticket edit')
+    if {'members_only','eligible_society_ids'} & body.keys():
+        await societies.require_society(session,society_id,'events.ticket_types.eligibility',managing=True)
+    actor=societies.ScopedCommitteeSession(session, await societies.require_society(session,society_id))
+    from routes.admin import _check_society_ticket_eligibility
+    await _check_society_ticket_eligibility(actor,[ticket],[{**ticket,**body}])
     return await database.put(f'/ticket-types/{ticket_id}',{**ticket,**body})
 
 @portal.post('/{society_id}/events/{event_id}/tickets',dependencies=[Depends(verify_csrf)])
 async def add_managed_ticket(society_id:int,event_id:int,body:dict=Body(...),session:AuthSession=Depends(require_session)):
-    await societies.require_society(session,society_id,'events.tickets.create',managing=True)
+    await societies.require_society(session,society_id,'events.ticket_types.create',managing=True)
     await societies.require_event(society_id,event_id)
-    if not body or set(body)-TICKET_FIELDS: raise HTTPException(400,'Unsupported ticket fields')
+    if not body or set(body)-(TICKET_FIELDS | {'members_only','eligible_society_ids'}):
+        raise HTTPException(400,'Unsupported ticket fields')
+    if body.get('eligible_society_ids') or body.get('members_only'):
+        await societies.require_society(session,society_id,'events.ticket_types.eligibility',managing=True)
+    actor=societies.ScopedCommitteeSession(session,await societies.require_society(session,society_id))
+    from routes.admin import _check_society_ticket_eligibility
+    await _check_society_ticket_eligibility(actor,[],[body])
     return await database.post(f'/events/{event_id}/ticket-types',body)
 
 @portal.delete('/{society_id}/events/{event_id}/tickets/{ticket_id}',dependencies=[Depends(verify_csrf)])
 async def remove_managed_ticket(society_id:int,event_id:int,ticket_id:int,session:AuthSession=Depends(require_session)):
-    await societies.require_society(session,society_id,'events.tickets.delete',managing=True)
+    await societies.require_society(session,society_id,'events.ticket_types.delete',managing=True)
     await societies.require_event(society_id,event_id)
     ticket=await database.get(f'/ticket-types/{ticket_id}')
     if not ticket or ticket['event_id']!=event_id: raise HTTPException(404,'Ticket not on assigned event')
@@ -232,18 +356,19 @@ async def remove_managed_ticket(society_id:int,event_id:int,ticket_id:int,sessio
 
 @portal.get('/{society_id}/events/{event_id}/bookings')
 async def managed_bookings(society_id:int,event_id:int,session:AuthSession=Depends(require_session)):
-    await societies.require_society(session,society_id,'events.bookings.view',managing=True)
+    await societies.require_society(session,society_id,'events.bookings.view')
     await societies.require_event(society_id,event_id)
     return await database.get('/reservations',{'event_id':event_id,'limit':5000}) or []
 
-async def _check_audiences(society_id:int,items:list[str],session:AuthSession) -> tuple[list[str],list[dict]]:
+async def _check_audiences(society_id:int,items:list[str],session:AuthSession, event_id:int|None=None) -> tuple[list[str],list[dict]]:
     """Check every selected audience, not only the first one. Fail closed."""
     mail=emailing.email_keys(items)
     groups=emailing.whatsapp_groups_in(items)
     if not items or any(k not in {'test',f'society:{society_id}'} for k in mail):
         raise HTTPException(403,'Only the test audience and your own society members are permitted')
     if mail:
-        await societies.require_society(session,society_id,'announcements.send',managing=True)
+        await societies.require_society(session,society_id,
+            'email.announce_event' if event_id else 'email.send',managing=True)
     if groups:
         await societies.require_society(session,society_id,'whatsapp.post',managing=True)
     selected=await whatsapp.pick(groups,society_id=society_id)
@@ -253,7 +378,9 @@ async def _check_audiences(society_id:int,items:list[str],session:AuthSession) -
 
 @portal.get('/{society_id}/announcements/audiences')
 async def announcement_audiences(society_id:int,session:AuthSession=Depends(require_session)):
-    await societies.require_society(session,society_id,'announcements.preview')
+    me=await societies.require_society(session,society_id)
+    if not set(societies.grants(me['permissions'])) & {'email.audiences','email.preview','email.send','email.announce_event'}:
+        raise HTTPException(403,'Society email permission required to select audiences')
     test=await emailing.test_recipients()
     members=await societies.mailing_list(society_id)
     groups=await whatsapp.available(society_id=society_id)
@@ -272,7 +399,7 @@ class Announcement(BaseModel):
 
 @portal.post('/{society_id}/announcements/preview',dependencies=[Depends(verify_csrf)])
 async def announcement_preview(society_id:int,data:Announcement,session:AuthSession=Depends(require_session)):
-    await societies.require_society(session,society_id,'announcements.preview')
+    await societies.require_society(session,society_id,'email.preview')
     # Preview must never resolve a different society's audience either.
     mail=emailing.email_keys(data.audiences)
     if any(k not in {'test',f'society:{society_id}'} for k in mail):
@@ -290,7 +417,7 @@ async def announcement_preview(society_id:int,data:Announcement,session:AuthSess
 
 @portal.post('/{society_id}/announcements/send',dependencies=[Depends(verify_csrf)])
 async def announcement_send(society_id:int,data:Announcement,session:AuthSession=Depends(require_session)):
-    mail,groups=await _check_audiences(society_id,data.audiences,session)
+    mail,groups=await _check_audiences(society_id,data.audiences,session,data.event_id)
     event=None
     if data.event_id:
         event=await societies.require_event(society_id,data.event_id)

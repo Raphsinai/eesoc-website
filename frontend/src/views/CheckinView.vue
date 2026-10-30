@@ -11,7 +11,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { usePageTitle } from '@/utils/pageTitle'
 
 import api from '@/api'
-import { can } from '@/stores/session'
+import { can as globalCan } from '@/stores/session'
 import Badge from '@/components/ds/Badge.vue'
 import Button from '@/components/ds/Button.vue'
 import Card from '@/components/ds/Card.vue'
@@ -19,6 +19,17 @@ import Input from '@/components/ds/Input.vue'
 
 const route = useRoute()
 const router = useRouter()
+const societyId = computed(() => route.params.societyId ? Number(route.params.societyId) : null)
+const societyPermissions = ref([])
+const can = key => societyId.value
+  ? societyPermissions.value.includes(key) : globalCan(key)
+const checkinBase = computed(() => societyId.value
+  ? `/society-portal/${societyId.value}/events/${eventId.value}/checkin`
+  : `/checkin`)
+const bookingPath = id => societyId.value
+  ? `${checkinBase.value}/reservations/${id}` : `/checkin/reservations/${id}`
+const checkinPath = id => societyId.value
+  ? `/societies/${societyId.value}/checkin/${id}` : `/checkin/${id}`
 const eventId = computed(() => (route.params.eventId ? Number(route.params.eventId) : null))
 
 const events = ref([])
@@ -45,7 +56,14 @@ const syncedAgo = computed(() => {
 async function loadEvents() {
   loading.value = true
   try {
-    events.value = (await api.get('/checkin/events')).events
+    if (societyId.value) {
+      const memberships = await api.get('/society-portal')
+      societyPermissions.value = memberships.find(s => s.id === societyId.value)?.permissions || []
+      if (!can('events.checkin.view')) throw new Error('No permission to view door check-in')
+      events.value = await api.get(`/society-portal/${societyId.value}/events`)
+    } else {
+      events.value = (await api.get('/checkin/events')).events
+    }
   } catch (e) {
     error.value = e.message
   } finally {
@@ -57,7 +75,7 @@ async function loadEvent() {
   loading.value = true
   error.value = ''
   try {
-    const data = await api.get(`/checkin/events/${eventId.value}`)
+    const data = await api.get(societyId.value ? checkinBase.value : `/checkin/events/${eventId.value}`)
     event.value = data.event
     attendees.value = data.attendees
     bookingsFingerprint.value = data.bookings
@@ -85,7 +103,7 @@ async function poll() {
   clearTimeout(pollTimer)
   if (!eventId.value) return
   try {
-    const state = await api.get(`/checkin/events/${eventId.value}/state`)
+    const state = await api.get(societyId.value ? `${checkinBase.value}/state` : `/checkin/events/${eventId.value}/state`)
     if (state.bookings !== bookingsFingerprint.value) {
       // Somebody booked, cancelled or was confirmed: the list itself changed.
       await loadEvent()
@@ -156,7 +174,7 @@ async function checkIn(a, override = false) {
   busy.value = true
   error.value = ''
   try {
-    const res = await api.post(`/checkin/reservations/${a.id}`, { event_id: eventId.value, override })
+    const res = await api.post(bookingPath(a.id), { event_id: eventId.value, override })
     upsert(res.attendee)
     // Every check-in from the list flashes the panel too, camera or not.
     flashResult(res)
@@ -172,7 +190,7 @@ async function undo(a) {
   if (!confirm(`Undo ${a.name}'s check-in?`)) return
   busy.value = true
   try {
-    await api.del(`/checkin/reservations/${a.id}`)
+    await api.del(bookingPath(a.id))
     upsert({ id: a.id, checkedInAt: null, checkedInBy: null, method: null })
   } catch (e) {
     error.value = e.message
@@ -290,7 +308,7 @@ async function tick() {
 async function handleScan(text) {
   paused = true
   try {
-    const res = await api.post('/checkin/scan', { token: text, event_id: eventId.value })
+    const res = await api.post(societyId.value ? `${checkinBase.value}/scan` : '/checkin/scan', { token: text, event_id: eventId.value })
     // Somebody else's event's ticket must not join this event's list.
     if (res.attendee?.eventId === eventId.value) upsert(res.attendee)
     flashResult(res)
@@ -332,7 +350,7 @@ async function letInAnyway() {
   if (!a) return
   busy.value = true
   try {
-    const res = await api.post(`/checkin/reservations/${a.id}`, { event_id: eventId.value, override: true })
+    const res = await api.post(bookingPath(a.id), { event_id: eventId.value, override: true })
     upsert(res.attendee)
     flashResult(res.outcome === 'checked_in' ? { ...res, message: 'Let in by override.' } : res)
   } catch (e) {
@@ -393,7 +411,7 @@ usePageTitle(computed(() => event.value?.title ? `${event.value.title} · Check-
           variant="outline"
           interactive
           class="event-card"
-          @click="router.push(`/checkin/${e.id}`)"
+          @click="router.push(checkinPath(e.id))"
         >
           <div style="display:grid; gap:4px; text-align:left">
             <div style="display:flex; gap:var(--space-2); align-items:center; flex-wrap:wrap">

@@ -32,7 +32,8 @@ class CommitteeWrite(BaseModel):
     login: str = Field(pattern=r"^[a-z][a-z0-9._-]{1,63}$")
     title: str = Field(default="Committee", max_length=120)
     managing: bool = False
-    permissions: list[str] = []
+    permissions: list[str] | None = None
+    role_id: str | None = None
 
 class ExternalMember(BaseModel):
     cid: str
@@ -201,17 +202,26 @@ async def society_member_records(society_id:int,year:str,search:str='',limit:int
 @router.get("/{society_id}/committee")
 async def committee(society_id:int):
     async with (await get_pool()).acquire() as conn:
-        rows=await conn.fetch("SELECT login,title,managing,permissions FROM public.external_society_committee WHERE society_id=$1 ORDER BY login",society_id)
+        rows=await conn.fetch("""SELECT c.login,c.title,c.managing,c.role_id,c.permissions,
+            COALESCE(c.permissions,r.permissions,'{}'::text[]) AS effective_permissions
+            FROM public.external_society_committee c
+            LEFT JOIN public.external_society_roles r
+              ON r.society_id=c.society_id AND r.role_id=c.role_id
+            WHERE c.society_id=$1 ORDER BY c.login""",society_id)
         return [dict(r) for r in rows]
 
 @router.put("/{society_id}/committee/{login}")
 async def set_committee(society_id:int,login:str,item:CommitteeWrite):
     if login!=item.login: raise HTTPException(400,"Login mismatch")
     async with (await get_pool()).acquire() as conn:
-        await conn.execute("""INSERT INTO public.external_society_committee(society_id,login,title,managing,permissions)
-            VALUES($1,$2,$3,$4,$5) ON CONFLICT(society_id,login) DO UPDATE
-            SET title=EXCLUDED.title,managing=EXCLUDED.managing,permissions=EXCLUDED.permissions""",
-            society_id,login,item.title,item.managing,item.permissions)
+        if item.role_id and not await conn.fetchval("""SELECT EXISTS(SELECT 1 FROM public.external_society_roles
+                WHERE society_id=$1 AND role_id=$2)""",society_id,item.role_id):
+            raise HTTPException(400,'Unknown role for this society')
+        await conn.execute("""INSERT INTO public.external_society_committee(society_id,login,title,managing,permissions,role_id)
+            VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(society_id,login) DO UPDATE
+            SET title=EXCLUDED.title,managing=EXCLUDED.managing,
+                permissions=EXCLUDED.permissions,role_id=EXCLUDED.role_id""",
+            society_id,login,item.title,item.managing,item.permissions,item.role_id)
         return {"ok":True}
 
 @router.delete("/{society_id}/committee/{login}")
@@ -223,10 +233,44 @@ async def remove_committee(society_id:int,login:str):
 @router.get("/for-login/{login}")
 async def committee_societies(login:str):
     async with (await get_pool()).acquire() as conn:
-        rows=await conn.fetch("""SELECT s.id,s.name,c.title,c.managing,c.permissions
+        rows=await conn.fetch("""SELECT s.id,s.name,c.title,c.managing,c.role_id,
+            COALESCE(c.permissions,r.permissions,'{}'::text[]) AS permissions
             FROM public.external_society_committee c JOIN public.external_societies s ON s.id=c.society_id
+            LEFT JOIN public.external_society_roles r
+              ON r.society_id=c.society_id AND r.role_id=c.role_id
             WHERE c.login=$1 ORDER BY s.name""",login)
         return [dict(r) for r in rows]
+
+class RoleWrite(BaseModel):
+    title: str = Field(min_length=2,max_length=120)
+    permissions: list[str]
+
+@router.get('/{society_id}/roles')
+async def society_roles(society_id:int):
+    async with (await get_pool()).acquire() as conn:
+        rows=await conn.fetch('''SELECT role_id,title,permissions
+            FROM public.external_society_roles WHERE society_id=$1 ORDER BY title''',society_id)
+        return [dict(r) for r in rows]
+
+@router.put('/{society_id}/roles/{role_id}')
+async def set_society_role(society_id:int,role_id:str,item:RoleWrite):
+    if not __import__('re').fullmatch(r'[a-z0-9_-]{2,50}',role_id):
+        raise HTTPException(400,'Invalid role identifier')
+    async with (await get_pool()).acquire() as conn:
+        await conn.execute('''INSERT INTO public.external_society_roles(society_id,role_id,title,permissions)
+            VALUES($1,$2,$3,$4) ON CONFLICT(society_id,role_id)
+            DO UPDATE SET title=EXCLUDED.title,permissions=EXCLUDED.permissions''',
+            society_id,role_id,item.title,item.permissions)
+        return {'ok':True}
+
+@router.delete('/{society_id}/roles/{role_id}')
+async def remove_society_role(society_id:int,role_id:str):
+    async with (await get_pool()).acquire() as conn:
+        used=await conn.fetchval('''SELECT EXISTS(SELECT 1 FROM public.external_society_committee
+            WHERE society_id=$1 AND role_id=$2)''',society_id,role_id)
+        if used: raise HTTPException(409,'Reassign committee members before deleting this role')
+        await conn.execute('DELETE FROM public.external_society_roles WHERE society_id=$1 AND role_id=$2',society_id,role_id)
+        return {'ok':True}
 
 @router.get("/{society_id}/events")
 async def society_events(society_id:int):

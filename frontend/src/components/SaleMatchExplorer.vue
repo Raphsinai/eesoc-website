@@ -4,7 +4,12 @@ import api from '@/api'
 import { can } from '@/stores/session'
 import Button from '@/components/ds/Button.vue'
 
-const props = defineProps({ sale: { type: Object, required: true } })
+const props = defineProps({
+  sale: { type: Object, required: true },
+  societyId: { type: Number, default: null },
+  eventId: { type: Number, default: null },
+  permissions: { type: Array, default: () => [] },
+})
 const emit = defineEmits(['close', 'linked'])
 const query = ref('')
 const candidates = ref([])
@@ -16,14 +21,16 @@ const error = ref('')
 const selected = ref(null)
 let timer = null
 let requestVersion = 0
-const canLink = computed(() => can('events.bookings.confirm'))
+const canLink = computed(() => props.societyId
+  ? props.permissions.includes('events.bookings.confirm')
+  : can('events.bookings.confirm'))
 
 async function search() {
   const version = ++requestVersion
   loading.value = true
   error.value = ''
   try {
-    const data = await api.get(`/admin/product-sales/rows/${props.sale.id}/candidates`, {
+    const data = await api.get(`${props.societyId ? `/society-portal/${props.societyId}/events/${props.eventId}/product-sales` : '/admin/product-sales'}/rows/${props.sale.id}/candidates`, {
       q: query.value.trim(), limit: 60,
     })
     if (version !== requestVersion) return
@@ -55,7 +62,7 @@ async function link(row) {
   busy.value = true
   error.value = ''
   try {
-    await api.post(`/admin/product-sales/rows/${props.sale.id}/approve`, { reservation_id: row.id })
+    await api.post(`${props.societyId ? `/society-portal/${props.societyId}/events/${props.eventId}/product-sales` : '/admin/product-sales'}/rows/${props.sale.id}/approve`, { reservation_id: row.id })
     emit('linked', row)
   } catch (e) { error.value = e.message }
   finally { busy.value = false }

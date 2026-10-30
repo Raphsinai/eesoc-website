@@ -519,7 +519,10 @@ async def hold(row: dict, note: str) -> None:
 def wants_on_sale(event: dict | None) -> bool:
     """Whether an event should have an on-sale email waiting: published, with
     a sale time, and not already under way."""
-    if not event or not event.get("published") or not event.get("sales_open_at"):
+    # External-only events announce to their own society, never to EESoc-wide lists.
+    if not event or event.get('eesoc_organised') is False:
+        return False
+    if not event.get("published") or not event.get("sales_open_at"):
         return False
     starts = parse_time(event.get("starts_at"))
     return starts is None or starts > utcnow()

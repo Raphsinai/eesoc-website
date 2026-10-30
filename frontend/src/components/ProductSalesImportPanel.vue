@@ -6,7 +6,15 @@ import Card from '@/components/ds/Card.vue'
 import Button from '@/components/ds/Button.vue'
 import SaleMatchExplorer from '@/components/SaleMatchExplorer.vue'
 
-const props = defineProps({ eventId: { type: Number, required: true } })
+const props = defineProps({
+  eventId: { type: Number, required: true },
+  societyId: { type: Number, default: null },
+  permissions: { type: Array, default: () => [] },
+})
+const allowed = key => props.societyId ? props.permissions.includes(key) : can(key)
+const salesBase = computed(() => props.societyId
+  ? `/society-portal/${props.societyId}/events/${props.eventId}/product-sales`
+  : '/admin/product-sales')
 const emit = defineEmits(['refresh'])
 const targets = ref([])
 const imports = ref([])
@@ -54,12 +62,12 @@ function names(row) {
 }
 
 async function refresh() {
-  if (!can('events.bookings.import.view')) return
+  if (!allowed('events.bookings.import.view')) return
   error.value = ''
   try {
     const [items, batches] = await Promise.all([
-      api.get('/admin/product-sales/rows', { event_id: props.eventId }),
-      api.get('/admin/product-sales/imports', { event_id: props.eventId }),
+      api.get(`${salesBase.value}/rows`, { event_id: props.eventId }),
+      api.get(`${salesBase.value}/imports`, { event_id: props.eventId }),
     ])
     rows.value = items.rows || []
     imports.value = batches.imports || []
@@ -76,7 +84,7 @@ async function refresh() {
 
 async function initialize() {
   try {
-    targets.value = (await api.get('/admin/product-sales/targets')).targets || []
+    targets.value = (await api.get(`${salesBase.value}/targets`)).targets || []
     await refresh()
   } catch (e) { error.value = e.message }
 }
@@ -93,7 +101,7 @@ async function upload() {
     const form = new FormData()
     form.append('file', file.value)
     form.append('ticket_type_id', targetId.value)
-    const result = await api.post('/admin/product-sales/imports', form)
+    const result = await api.post(`${salesBase.value}/imports`, form)
     notice.value = result.existing
       ? 'This file has already been imported. No duplicate tickets were issued.'
       : `Imported ${Object.values(result.counts || {}).reduce((sum, value) => sum + value, 0)} sales: ${result.counts.confirmed || 0} confirmed, ${result.counts.review || 0} need approval, ${result.counts.unreserved || 0} have no reservation.`
@@ -111,7 +119,7 @@ async function addTicket(row) {
   busy.value = true
   error.value = ''
   try {
-    await api.post(`/admin/product-sales/rows/${row.id}/create-ticket`, details)
+    await api.post(`${salesBase.value}/rows/${row.id}/create-ticket`, details)
     notice.value = `Ticket issued to ${details.email}.`
     await refresh()
     emit('refresh')
@@ -129,7 +137,7 @@ async function addTicket(row) {
         only one-to-one exact matches are confirmed automatically. Similar names require approval,
         and purchases with no reservation remain in a separate queue.
       </p>
-      <div v-if="can('events.bookings.import') && can('events.bookings.confirm')" class="sales-upload">
+      <div v-if="allowed('events.bookings.import') && allowed('events.bookings.confirm')" class="sales-upload">
         <label class="sales-field">Sales file (.csv, .xls or .xlsx)
           <input type="file" accept=".csv,.xls,.xlsx" :disabled="busy" @change="onFile" />
         </label>
@@ -141,7 +149,7 @@ async function addTicket(row) {
             </option>
           </select>
         </label>
-        <Button v-if="can('events.bookings.import') && can('events.bookings.confirm')" :disabled="busy || !file || !targetId" @click="upload">{{ busy ? 'Importing…' : 'Import and reconcile' }}</Button>
+        <Button v-if="allowed('events.bookings.import') && allowed('events.bookings.confirm')" :disabled="busy || !file || !targetId" @click="upload">{{ busy ? 'Importing…' : 'Import and reconcile' }}</Button>
       </div>
       <p v-if="error" style="color:var(--danger);font:var(--type-small);margin:0" role="alert">{{ error }}</p>
       <p v-if="notice" style="font:var(--type-small);margin:0" role="status">{{ notice }}</p>
@@ -157,10 +165,10 @@ async function addTicket(row) {
       </div>
     </Card>
 
-    <SaleMatchExplorer v-if="activeMatch && can('events.bookings.import.view')" :sale="activeMatch"
+    <SaleMatchExplorer v-if="activeMatch && allowed('events.bookings.import.view')" :sale="activeMatch" :society-id="societyId" :event-id="eventId" :permissions="permissions"
       @close="activeMatchId = null" @linked="linkedReservation" />
 
-    <Card v-if="review.length && can('events.bookings.import.view')" variant="offset">
+    <Card v-if="review.length && allowed('events.bookings.import.view')" variant="offset">
       <h3 style="font:var(--type-h5);margin:0">Matches needing approval ({{ review.length }})</h3>
       <p style="font:var(--type-small);color:var(--text-muted);margin:0">No ticket is confirmed until an authorised committee member selects and approves a matching reservation.</p>
       <div v-for="row in review.slice(0,shownReview)" :key="row.id" class="sales-row">
@@ -178,7 +186,7 @@ async function addTicket(row) {
       <Button v-if="review.length > shownReview" size="sm" variant="secondary" @click="shownReview += 30">Show more</Button>
     </Card>
 
-    <Card v-if="unreserved.length && can('events.bookings.import.view')" variant="offset">
+    <Card v-if="unreserved.length && allowed('events.bookings.import.view')" variant="offset">
       <h3 style="font:var(--type-h5);margin:0">Bought but did not reserve ({{ unreserved.length }})</h3>
       <p style="font:var(--type-small);color:var(--text-muted);margin:0">Search for an existing reservation first, including by email or reservation ID. If none exists, complete the details to issue a ticket. No ticket is created automatically.</p>
       <div v-for="row in unreserved.slice(0,shownUnreserved)" :key="row.id" class="sales-row">
@@ -189,14 +197,14 @@ async function addTicket(row) {
             {{ activeMatchId === row.id ? 'Close search' : 'Find existing reservation to link' }}
           </Button>
         </div>
-        <div v-if="can('events.bookings.add') && can('events.bookings.confirm') && detailForm[row.id]" class="sales-form">
+        <div v-if="allowed('events.bookings.add') && allowed('events.bookings.confirm') && detailForm[row.id]" class="sales-form">
           <label>Email<input v-model="detailForm[row.id].email" type="email" required placeholder="name@example.com" /></label>
           <label>First name<input v-model="detailForm[row.id].first_name" type="text" /></label>
           <label>Last name<input v-model="detailForm[row.id].last_name" type="text" /></label>
           <label>Note<input v-model="detailForm[row.id].note" type="text" placeholder="Optional" /></label>
           <label class="sales-check"><input v-model="detailForm[row.id].send_confirmation" type="checkbox" /> Email confirmation</label>
-          <label v-if="can('events.bookings.capacity_override')" class="sales-check"><input v-model="detailForm[row.id].override_capacity" type="checkbox" /> Override capacity</label>
-          <Button v-if="can('events.bookings.add')" size="sm" :disabled="busy || !detailForm[row.id].email.trim()" @click="addTicket(row)">Issue ticket</Button>
+          <label v-if="allowed('events.bookings.capacity_override')" class="sales-check"><input v-model="detailForm[row.id].override_capacity" type="checkbox" /> Override capacity</label>
+          <Button v-if="allowed('events.bookings.add')" size="sm" :disabled="busy || !detailForm[row.id].email.trim()" @click="addTicket(row)">Issue ticket</Button>
         </div>
         <p v-else class="sales-detail">Issuing a confirmed ticket from an imported purchase requires Add tickets and Confirm tickets permissions. You can still search for an existing booking to link.</p>
       </div>

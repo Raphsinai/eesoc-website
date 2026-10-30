@@ -767,6 +767,7 @@ SOCIETY_EVENT_COLUMNS = frozenset({
     'doors_close_at','map_url','meeting_url','meeting_url_private',
     'sales_open_at','reservations_close_at','union_sales_close_at',
     'capacity','hold_hours','purchase_url','signup_url','image_url','published',
+    'membership_restricted','allow_eesoc_members','eligible_society_ids',
 })
 
 @router.patch('/events/{event_id}/society-fields')
@@ -781,7 +782,11 @@ async def patch_society_event(event_id:int, changes:dict) -> EventDetail:
         from models.events import EventWrite
         # Pydantic applies the same date and sale-window validation as full
         # event edits, but no other stored fields or ticket types are written.
-        merged={**dict(current),**changes}
+        organiser_rows=await conn.fetch('''SELECT society_id FROM public.external_society_events
+            WHERE event_id=$1 ORDER BY society_id''',event_id)
+        merged={**dict(current),
+            'organiser_society_ids':[r['society_id'] for r in organiser_rows],
+            **changes}
         validated=EventWrite(**merged)
         _check_doors_close(validated)
         _check_sale_windows(validated)

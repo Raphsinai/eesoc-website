@@ -53,6 +53,41 @@ The imported mailing list is built from the Union `Login` field (strictly valida
 
 A society committee's announcement tool exposes only the EESoc test list, that same society's current synced membership addresses, and WhatsApp groups assigned to the society. No EESoc `members`, `accounts`, third-party list, or another society's list is accepted, even in crafted requests. Viewing previews, emailing and posting to WhatsApp have separate grants; sending requires a managing committee member. EESoc users need `societies.members.mail` before the main email editor can target a connected society's mailing list.
 
+### Society committee: full event access, local permissions
+
+A connected society has its own committee and **role defaults**, entirely
+separate from EESoc committee roles. EESoc committee with society management
+permission can select every individual event action when assigning a society
+member. A society officer with `access.grant`, `access.revoke`,
+`access.roles.create` or `access.roles.edit` and the **managing committee** flag
+can manage roles and committee access within *that society only*. They cannot
+assign a grant they do not hold or edit an officer holding grants beyond their
+own. Members may optionally inherit an editable society role preset instead
+of having fixed individual grants. The access UI in **Society portal → Society
+access** uses the same grouped granular permission catalogue as EESoc.
+
+The independent event permissions include creating and editing society-only
+events, setting dates/publication and booking eligibility, managing ticket
+types and linked SUMS products, reviewing all bookings and waitlists,
+manually adding/confirming/cancelling tickets, entering order numbers,
+changing ticket types, resending confirmations, paid-ticket verification,
+capacity/payment overrides, Union sales import and reconciliation, CSV
+export, live check-in and check-in overrides/undo. The existing EESoc
+booking/check-in services implement these operations so validation and audit
+logging remain the same. The society API enforces the assigned event ID and
+checks ownership of all reservation, ticket-type, import-row and QR identities
+before dispatching any operation; a society cannot see or modify another
+society's event. A committee member with a read-only permission can view
+assigned bookings without receiving write privileges.
+
+Announcements have separate `email.audiences`, `email.preview`, `email.send`
+and `email.announce_event` permissions. The society announcement composer is
+limited by its API to **test recipients and that society's own current-year
+mailing list**, plus assigned WhatsApp groups when separately granted. An
+external committee member never gains EESoc mailing lists or another
+society's audience from a general event or email grant. An external-only event
+does not automatically create an EESoc-wide on-sale mailing campaign.
+
 ## WhatsApp
 
 The EESoc account and each society number have separate linked-device sessions and storage. An external manager may link/unlink only their society number, and toggle availability only for groups that number can actually post in. If a society has no linked number, its manager can request that the EESoc number join a group via an invite link. An EESoc committee member with `societies.whatsapp.invites.approve` must explicitly approve the join. Invites are stored encrypted and not returned on status listings.

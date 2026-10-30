@@ -956,12 +956,12 @@ async def reserve(req: ReservationRequest) -> ReservationResult:
             f"""
             INSERT INTO public.reservations
                 (event_id, ticket_type_id, user_id, quantity, status, expires_at,
-                 confirmed_at, order_number, booked_as_guest, visitor_hash)
+                 confirmed_at, order_number, booked_as_guest, visitor_hash, claimed_cid)
             VALUES ($1, $2, $3, $4,
                     CASE WHEN $10::boolean THEN 'confirmed' ELSE 'held' END,
                     {expires},
                     CASE WHEN $10::boolean THEN NOW() END,
-                    $6, $7, $9)
+                    $6, $7, $9, $12)
             RETURNING id, event_id, ticket_type_id, user_id, quantity, status,
                       created_at, expires_at, confirmed_at, cancelled_at,
                       order_number, matched_sale_id, note, booked_as_guest;
@@ -977,6 +977,7 @@ async def reserve(req: ReservationRequest) -> ReservationResult:
             req.visitor_hash,
             confirm,
             tt["requires_purchase"],
+            req.claimed_cid,
         )
     return ReservationResult(ok=True, reservation=Reservation(**dict(row)))
 
@@ -1008,7 +1009,23 @@ async def list_reservations(
                    tt.members_only,
                    u.email AS user_email, u.first_name AS user_first_name,
                    u.last_name AS user_last_name, u.shortcode AS user_shortcode,
-                   (u.member_id IS NOT NULL) AS has_member_record
+                   (u.member_id IS NOT NULL) AS has_member_record,
+                   ARRAY(SELECT DISTINCT society_name FROM (
+                     SELECT 'EESoc'::text AS society_name FROM public.members own
+                        WHERE own.id=u.member_id AND own.academic_year=e.academic_year
+                     UNION ALL
+                     SELECT s.name AS society_name
+                       FROM public.external_society_members em
+                       JOIN public.external_societies s ON s.id=em.society_id
+                       WHERE em.academic_year=e.academic_year
+                         AND EXISTS (SELECT 1 FROM public.users identity_user WHERE identity_user.id=u.id
+                          AND (identity_user.email_verified AND (
+                             (identity_user.member_id IS NOT NULL AND em.cid=(SELECT own.cid FROM public.members own WHERE own.id=identity_user.member_id))
+                             OR (em.email IS NOT NULL AND lower(em.email)=lower(identity_user.email))
+                             OR (em.login IS NOT NULL AND lower(split_part(identity_user.email,'@',2)) IN ('ic.ac.uk','imperial.ac.uk')
+                                  AND lower(em.login)=lower(split_part(identity_user.email,'@',1)))
+                          )))
+                   ) memberships) AS society_memberships
               FROM public.reservations r
               JOIN public.events e       ON e.id  = r.event_id
               JOIN public.ticket_types tt ON tt.id = r.ticket_type_id
@@ -2068,6 +2085,7 @@ async def claim_draft(
     hold_hours: int | None = None,
     visitor_hash: str | None = None,
     academic_year: str | None = None,
+    claimed_cid: str | None = None,
 ) -> ReservationResult:
     """Turn a draft into a real booking once the guest form is submitted —
     confirmed outright for a free ticket, a hold for anything to be paid for.
@@ -2153,13 +2171,14 @@ async def claim_draft(
                    status = CASE WHEN $8::boolean THEN 'confirmed' ELSE 'held' END,
                    visitor_hash = COALESCE(visitor_hash, $7),
                    expires_at = {expires},
-                   confirmed_at = CASE WHEN $8::boolean THEN NOW() END
+                   confirmed_at = CASE WHEN $8::boolean THEN NOW() END,
+                   claimed_cid = $10
              WHERE id = $1
             RETURNING {RESERVATION_COLUMNS};
             """,
             draft["id"], user_id, hold_hours or draft["hold_hours"],
             draft["ticket_type_id"], draft["event_id"], draft["starts_at"], vh,
-            confirm, draft["requires_purchase"],
+            confirm, draft["requires_purchase"], claimed_cid,
         )
     return ReservationResult(ok=True, reservation=Reservation(**dict(row)))
 

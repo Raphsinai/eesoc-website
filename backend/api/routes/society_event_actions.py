@@ -344,3 +344,10 @@ async def link_ticket_product(society_id:int,event_id:int,ticket_type_id:int,
     return await eesoc.set_ticket_product(ticket_type_id=ticket_type_id,
         union_product_id=union_product_id,union_product_line_id=union_product_line_id,
         shop_product_ref=shop_product_ref,session=actor)
+
+
+@router.post('/events/{event_id}/product-sales/rows/{row_id}/ignore', dependencies=[Depends(verify_csrf)])
+async def ignore_sale(society_id: int, event_id: int, row_id: int,
+                      session: AuthSession = Depends(require_session)):
+    actor = await import_scope(society_id, event_id, row_id, 'events.bookings.confirm', session)
+    return await product_sales.ignore_import_row(row_id=row_id, session=actor)

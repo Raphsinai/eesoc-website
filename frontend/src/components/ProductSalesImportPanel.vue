@@ -29,19 +29,21 @@ const activeMatchId = ref(null)
 const activeMatch = computed(() => rows.value.find(row => row.id === activeMatchId.value) || null)
 function openMatch(row) { activeMatchId.value = activeMatchId.value === row.id ? null : row.id }
 async function linkedReservation(row) {
-  notice.value = `Linked reservation #${row.id} and confirmed the ticket against its Union sale.`
+  notice.value = `Linked reservation #${row.id} to its Union purchase (already-confirmed tickets remain confirmed).`
   activeMatchId.value = null
   await refresh()
   emit('refresh')
 }
 const shownReview = ref(30)
 const shownUnreserved = ref(30)
+const unreservedExpanded = ref(false)
 
 const review = computed(() => rows.value.filter(row => row.status === 'review'))
 const unreserved = computed(() => rows.value.filter(row => row.status === 'unreserved'))
 const matched = computed(() => rows.value.filter(row => row.status === 'confirmed'))
 const duplicates = computed(() => rows.value.filter(row => row.status === 'duplicate'))
 const completed = computed(() => rows.value.filter(row => row.status === 'ticket_added'))
+const ignored = computed(() => rows.value.filter(row => row.status === 'ignored'))
 const targetOptions = computed(() => targets.value.filter(t => t.event_id === props.eventId))
 
 function onFile(event) {
@@ -111,6 +113,19 @@ async function upload() {
   finally { busy.value = false }
 }
 
+async function ignorePurchase(row) {
+  if (!confirm(`Ignore imported purchase ${row.order_number || `row #${row.id}`}? It will not be linked or create a ticket.`)) return
+  busy.value = true
+  error.value = ''
+  try {
+    await api.post(`${salesBase.value}/rows/${row.id}/ignore`)
+    notice.value = `Purchase ${row.order_number || `row #${row.id}`} ignored.`
+    activeMatchId.value = null
+    await refresh()
+  } catch (e) { error.value = e.message }
+  finally { busy.value = false }
+}
+
 async function addTicket(row) {
   const details = detailForm[row.id]
   if (!details?.email?.trim()) { error.value = 'An email address is required to issue a ticket.'; return }
@@ -162,6 +177,7 @@ async function addTicket(row) {
         <span>{{ unreserved.length }} no reservation</span>
         <span>{{ completed.length }} tickets added</span>
         <span>{{ duplicates.length }} duplicates</span>
+        <span>{{ ignored.length }} ignored</span>
       </div>
     </Card>
 
@@ -178,6 +194,7 @@ async function addTicket(row) {
           <Button size="sm" variant="secondary" @click="openMatch(row)">
             {{ activeMatchId === row.id ? 'Close search' : 'Search and link reservation' }}
           </Button>
+          <Button v-if="allowed('events.bookings.confirm')" size="sm" variant="ghost" :disabled="busy" @click="ignorePurchase(row)">Ignore purchase</Button>
           <span v-if="row.suggestions?.length" class="sales-detail">
             {{ row.suggestions.length }} suggested match(es) — open search to review
           </span>
@@ -187,7 +204,11 @@ async function addTicket(row) {
     </Card>
 
     <Card v-if="unreserved.length && allowed('events.bookings.import.view')" variant="offset">
-      <h3 style="font:var(--type-h5);margin:0">Bought but did not reserve ({{ unreserved.length }})</h3>
+      <button type="button" class="sales-collapse" :aria-expanded="unreservedExpanded" @click="unreservedExpanded = !unreservedExpanded">
+        <span>Bought but did not reserve ({{ unreserved.length }})</span>
+        <span>{{ unreservedExpanded ? 'Collapse −' : 'Expand +' }}</span>
+      </button>
+      <template v-if="unreservedExpanded">
       <p style="font:var(--type-small);color:var(--text-muted);margin:0">Search for an existing reservation first, including by email or reservation ID. If none exists, complete the details to issue a ticket. No ticket is created automatically.</p>
       <div v-for="row in unreserved.slice(0,shownUnreserved)" :key="row.id" class="sales-row">
         <div><b>{{ row.buyer_name || 'Unnamed buyer' }}</b> · CID {{ row.cid || 'not given' }} · {{ row.ticket_type_name }} · qty {{ row.quantity }}</div>
@@ -196,6 +217,7 @@ async function addTicket(row) {
           <Button size="sm" variant="secondary" @click="openMatch(row)">
             {{ activeMatchId === row.id ? 'Close search' : 'Find existing reservation to link' }}
           </Button>
+          <Button v-if="allowed('events.bookings.confirm')" size="sm" variant="ghost" :disabled="busy" @click="ignorePurchase(row)">Ignore purchase</Button>
         </div>
         <div v-if="allowed('events.bookings.add') && allowed('events.bookings.confirm') && detailForm[row.id]" class="sales-form">
           <label>Email<input v-model="detailForm[row.id].email" type="email" required placeholder="name@example.com" /></label>
@@ -209,11 +231,13 @@ async function addTicket(row) {
         <p v-else class="sales-detail">Issuing a confirmed ticket from an imported purchase requires Add tickets and Confirm tickets permissions. You can still search for an existing booking to link.</p>
       </div>
       <Button v-if="unreserved.length > shownUnreserved" size="sm" variant="secondary" @click="shownUnreserved += 30">Show more</Button>
+      </template>
     </Card>
   </section>
 </template>
 
 <style scoped>
+.sales-collapse { display:flex; justify-content:space-between; width:100%; gap:var(--space-3); border:0; background:none; color:var(--text); cursor:pointer; text-align:left; font:var(--type-h5); padding:0; }
 .sales-import { display:grid; gap:var(--space-4); min-width:0; }
 .sales-upload { display:flex; flex-wrap:wrap; align-items:end; gap:var(--space-3); margin-top:var(--space-4); }
 .sales-field { display:grid; gap:var(--space-2); font:var(--type-small); min-width:190px; max-width:100%; }

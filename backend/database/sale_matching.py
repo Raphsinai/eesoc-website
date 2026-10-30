@@ -44,7 +44,7 @@ def choose_reservation(sale, reservations: list[dict], already_used: set[int]) -
         hits = [r for r in candidates if exact and normalized_name(r.get('name')) == exact]
         matched_on = 'exact_name'
     held = [r for r in hits if r['status'] == 'held']
-    if len(hits) == 1 and len(held) == 1 and held[0]['quantity'] == sale.quantity:
+    if len(hits) == 1 and len(held) == 1 and held[0]['quantity'] == sale.quantity and (not sale.cid or held[0].get('cid_verified', True)):
         return 'confirmed', held[0], [], matched_on
     if hits:
         options = [{'id': r['id'], 'name': r['name'], 'quantity': r['quantity'],

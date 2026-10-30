@@ -57,7 +57,7 @@ onBeforeUnmount(() => { if (timer) clearTimeout(timer); ++requestVersion })
 
 async function link(row) {
   if (!row.quantity_matches || !canLink.value) return
-  const message = `Link reservation #${row.id} (${row.name}, ${row.email}, ${row.quantity} ticket(s)) to Union purchase ${props.sale.order_number || '(no order number)'}?\n\nThis will confirm the reservation and cannot be undone by searching again. Check the person and quantity carefully.`
+  const message = `Link reservation #${row.id} (${row.name}, ${row.email}, ${row.quantity} ticket(s)) to Union purchase ${props.sale.order_number || '(no order number)'}?\n\nA held reservation will be confirmed; an already-confirmed reservation stays confirmed. This link cannot be undone by searching again. Check the person and quantity carefully.`
   if (!confirm(message)) return
   busy.value = true
   error.value = ''
@@ -86,7 +86,7 @@ async function link(row) {
       <input v-model="query" type="search" placeholder="Name, email, CID or reservation #" maxlength="120"
         autofocus :disabled="busy" @input="queueSearch" @keyup.enter="search" />
     </label>
-    <p class="match-muted">Only unconfirmed reservations of this exact ticket type appear. Suggested names are ranked for convenience, not automatically linked. You must choose the correct reservation.</p>
+    <p class="match-muted">Held and already-confirmed reservations of this exact ticket type appear. Suggested names are ranked for convenience, not automatically linked. You must choose the correct reservation.</p>
     <p v-if="loading" class="match-muted" role="status">Searching reservations…</p>
     <p v-if="error" class="match-error" role="alert">{{ error }}</p>
     <div v-if="!loading && candidates.length" class="match-results">
@@ -95,6 +95,7 @@ async function link(row) {
           <strong>{{ r.name }}</strong>
           <span>{{ r.email }}</span>
           <span>Reservation #{{ r.id }} · {{ r.quantity }} ticket(s) · {{ r.cid ? `CID ${r.cid}` : 'no CID' }}</span>
+          <span>{{ r.status === 'confirmed' ? 'Already confirmed' : 'Awaiting confirmation' }}</span>
           <span v-if="r.order_number">Existing order {{ r.order_number }}</span>
           <span v-if="r.cid_match || r.email_match || r.score >= 0.65" class="match-score">
             {{ r.cid_match ? 'Exact CID' : r.email_match ? 'Exact email' : `${Math.round(r.score * 100)}% name similarity` }}
@@ -102,7 +103,7 @@ async function link(row) {
           <span v-if="!r.quantity_matches" class="match-error">Quantity differs: cannot link</span>
         </div>
         <Button v-if="canLink" size="sm" :disabled="busy || !r.quantity_matches"
-          @click="link(r)">Link ticket</Button>
+          @click="link(r)">{{ r.status === 'confirmed' ? 'Link confirmed ticket' : 'Link ticket' }}</Button>
         <span v-else class="match-muted">Confirmation permission required</span>
       </div>
     </div>

@@ -33,6 +33,8 @@ const quantity = ref(1)
 const busy = ref(false)
 const message = ref('')
 const membershipWarning = ref('')
+const requestedCid = ref(false)
+const bookingCid = ref('')
 const orderNumbers = ref({})
 const expandedOrderForms = ref({})
 // Imperial student email is different from EESoc membership. A student can
@@ -190,6 +192,7 @@ const canBook = computed(() => {
   // A guest's own bookings come back via their visitor cookie, so a second
   // Reserve for a ticket they already hold is refused here, not after the form.
   if (maxQuantity.value <= 0) return false
+  if (requestedCid.value && !/^[0-9]{4,12}$/.test(bookingCid.value.trim())) return false
   if (!session.authenticated) {
     // The form has to be filled in before the second press does anything.
     if (!showGuestForm.value) return true
@@ -230,6 +233,7 @@ async function book() {
   error.value = ''
   try {
     const payload = { ticket_type_id: chosen.value, quantity: quantity.value }
+    if (bookingCid.value.trim()) payload.cid = bookingCid.value.trim()
     if (!session.authenticated) {
       payload.guest = {
         email: guest.value.email.trim(),
@@ -250,7 +254,10 @@ async function book() {
     showGuestForm.value = false
     await load()
   } catch (e) {
-    error.value = e.message
+    if (e.message?.includes('CID_REQUIRED')) {
+      requestedCid.value = true
+      error.value = 'We could not find your Union CID. Enter it below to complete your reservation.'
+    } else error.value = e.message
   } finally {
     busy.value = false
   }
@@ -735,6 +742,10 @@ usePageTitle(computed(() => event.value?.title || 'Event'))
 
             <Field v-if="maxQuantity > 1" label="How many">
               <Input v-model.number="quantity" type="number" min="1" :max="maxQuantity" />
+            </Field>
+
+            <Field v-if="requestedCid" label="Union CID" help="Your CID is on your Union membership record. We will use it to help reconcile your purchase; it does not verify membership.">
+              <Input v-model="bookingCid" inputmode="numeric" pattern="[0-9]{4,12}" placeholder="Your Union CID" maxlength="12" />
             </Field>
 
             <!-- Guest details, revealed by the first press of Reserve. -->

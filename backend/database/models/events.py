@@ -285,6 +285,7 @@ class ReservationDetail(Reservation):
     requires_purchase: bool = True
     members_only: bool = False
     has_member_record: bool = False
+    society_memberships: list[str] = []
     user_email: str | None = None
     user_first_name: str | None = None
     user_last_name: str | None = None
@@ -295,6 +296,7 @@ class ReservationDetail(Reservation):
 
 
 class ReservationRequest(BaseModel):
+    claimed_cid: str | None = None
     event_id: int
     ticket_type_id: int
     # None for a draft: the seat is held before we know who is taking it.

@@ -72,7 +72,8 @@ async def _target(conn, product_id: int, ticket_type_id: int) -> dict:
 
 async def _existing(conn, ticket_type_id: int) -> list[dict]:
     rows = await conn.fetch("""SELECT r.id, r.status, r.quantity,
-                      m.cid AS cid,
+                      COALESCE(m.cid,r.claimed_cid) AS cid,
+                      (m.cid IS NOT NULL) AS cid_verified,
                       trim(concat_ws(' ', coalesce(nullif(m.first_name, ''), u.first_name),
                                           coalesce(nullif(m.last_name, ''), u.last_name))) AS name
                  FROM public.reservations r
@@ -141,7 +142,7 @@ async def create_import(request: ImportRequest) -> dict:
                                   sale, request.file_sha256)
             duplicate = await conn.fetchval("""SELECT EXISTS(
                 SELECT 1 FROM public.product_sales_import_rows
-                 WHERE source_key=$1 AND status IN ('confirmed','review','unreserved','ticket_added'))""", key)
+                 WHERE source_key=$1 AND status IN ('confirmed','review','unreserved','ticket_added','ignored'))""", key)
             # Prevent reuse of an order already tied to a confirmed reservation.
             if sale.order_number and not duplicate:
                 duplicate = await conn.fetchval("""SELECT EXISTS(
@@ -270,12 +271,12 @@ async def reservation_candidates(row_id: int, q: str = '', limit: int = 30) -> d
                   .replace('%', escape + '%').replace('_', escape + '_') + '%') if search else None
         candidates = await conn.fetch("""SELECT r.id,r.quantity,r.status,r.created_at,
                        r.order_number,u.email, u.first_name,u.last_name,
-                       m.cid,m.first_name AS member_first_name,m.last_name AS member_last_name
+                       COALESCE(m.cid,r.claimed_cid) AS cid,m.first_name AS member_first_name,m.last_name AS member_last_name
                     FROM public.reservations r
                     JOIN public.users u ON u.id=r.user_id
                     LEFT JOIN public.members m ON m.id=u.member_id
                     WHERE r.event_id=$1 AND r.ticket_type_id=$2
-                      AND r.status='held'
+                      AND r.status IN ('held','confirmed')
                       AND ($3::text IS NULL OR
                            r.id::text=$4 OR
                            u.email ILIKE $3 ESCAPE '\' OR
@@ -338,7 +339,7 @@ async def approve_row(row_id: int, reservation_id: int = Body(embed=True), actor
         reservation = await conn.fetchrow("SELECT id, ticket_type_id, event_id, status, quantity FROM public.reservations WHERE id=$1 FOR UPDATE", reservation_id)
         if (reservation is None or reservation['event_id'] != row['event_id'] or
             reservation['ticket_type_id'] != row['ticket_type_id'] or
-            reservation['status'] != 'held'):
+            reservation['status'] not in ('held','confirmed')):
             raise HTTPException(409, 'Reservation is not eligible for this sale')
         if reservation['quantity'] != row['quantity']:
             raise HTTPException(409, 'Sale and reservation quantities differ. Resolve quantities before confirming.')
@@ -352,8 +353,15 @@ async def approve_row(row_id: int, reservation_id: int = Body(embed=True), actor
                 reservation_id, row['event_id'], row['ticket_type_id'], row['order_number'])
             if used:
                 raise HTTPException(409, 'This Union order already confirms another reservation')
-        await conn.execute("""UPDATE public.reservations SET status='confirmed', confirmed_at=NOW(),
-            order_number=COALESCE($2,order_number) WHERE id=$1""", reservation_id, row['order_number'])
+        if reservation['status'] == 'confirmed':
+            existing = await conn.fetchval('SELECT order_number FROM public.reservations WHERE id=$1', reservation_id)
+            if existing and row['order_number'] and existing.strip().upper() != row['order_number'].strip().upper():
+                raise HTTPException(409, 'Confirmed ticket has a different Union order number')
+            claimed = await conn.fetchval("SELECT EXISTS(SELECT 1 FROM public.product_sales_import_rows WHERE reservation_id=$1 AND id<>$2 AND status IN ('confirmed','ticket_added'))", reservation_id, row_id)
+            if claimed:
+                raise HTTPException(409, 'Ticket is already linked to an imported purchase')
+        await conn.execute("""UPDATE public.reservations SET status='confirmed', confirmed_at=COALESCE(confirmed_at,NOW()),
+            order_number=COALESCE(order_number,$2) WHERE id=$1""", reservation_id, row['order_number'])
         await conn.execute("""UPDATE public.product_sales_import_rows SET status='confirmed',
             reservation_id=$2,reviewed_by=$3,reviewed_at=NOW(),matched_on='committee_linked'
             WHERE id=$1""", row_id, reservation_id, actor_id)
@@ -365,3 +373,18 @@ async def approve_row(row_id: int, reservation_id: int = Body(embed=True), actor
                                        'status','confirmed'))""", actor_id, reservation_id,
                 row_id, row['status'], row['order_number'], row['quantity'])
     return {'ok': True, 'reservation_id': reservation_id}
+
+
+@router.post('/rows/{row_id}/ignore')
+async def ignore_row(row_id: int, actor_id: int = Body(embed=True)) -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        row = await conn.fetchrow('SELECT status FROM public.product_sales_import_rows WHERE id=$1 FOR UPDATE', row_id)
+        if row is None:
+            raise HTTPException(404, 'Imported purchase not found')
+        if row['status'] not in ('review', 'unreserved'):
+            raise HTTPException(409, 'Purchase is no longer awaiting reconciliation')
+        await conn.execute("UPDATE public.product_sales_import_rows SET status='ignored', reviewed_by=$2, reviewed_at=NOW(), matched_on='committee_ignored' WHERE id=$1", row_id, actor_id)
+        await conn.execute("""INSERT INTO public.action_audit(actor_user_id,action,entity_type,entity_id,after_data)
+            VALUES ($1,'reservations.sale_import.ignore','sale_import_row',$2,jsonb_build_object('previous_status',$3::text,'status','ignored'))""", actor_id, row_id, row['status'])
+    return {'ok': True}

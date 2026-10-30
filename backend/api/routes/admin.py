@@ -677,6 +677,7 @@ async def event_detail(
             "email": r.get("user_email"),
             "shortcode": r.get("user_shortcode"),
             "member": bool(r.get("has_member_record")),
+            "societies": r.get("society_memberships") or [],
             "ticketTypeId": r["ticket_type_id"],
             "ticketType": r.get("ticket_type_name"),
             "quantity": r["quantity"],

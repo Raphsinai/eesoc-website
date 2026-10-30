@@ -476,7 +476,9 @@ usePageTitle(computed(() => data.value?.event?.title ? `${data.value.event.title
           <tbody>
             <tr v-for="r in rows" :key="r.id">
               <td>
-                <div>{{ r.name || r.email }}</div>
+                <div class="booking-person-name">{{ r.name || r.email }}
+                  <span v-for="society in (r.societies || [])" :key="society" class="booking-society">{{ society }}</span>
+                </div>
                 <div class="muted">
                   <template v-if="r.name">{{ r.email }}</template>
                   <template v-if="r.shortcode"> · {{ r.shortcode }}</template>
@@ -658,4 +660,9 @@ usePageTitle(computed(() => data.value?.event?.title ? `${data.value.event.title
   color: var(--text-faint);
   white-space: nowrap;
 }
+</style>
+
+<style scoped>
+.booking-person-name { display:flex; align-items:center; flex-wrap:wrap; gap:var(--space-2); }
+.booking-society { font:var(--type-2xs); border:1px solid var(--border-hairline); border-radius:4px; padding:2px 5px; white-space:nowrap; }
 </style>

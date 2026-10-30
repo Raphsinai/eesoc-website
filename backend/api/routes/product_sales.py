@@ -97,7 +97,7 @@ async def list_imports(event_id: int, session: AuthSession = Depends(require_adm
 async def list_import_rows(event_id: int, status: str | None = None,
                            session: AuthSession = Depends(require_admin)) -> dict:
     await event_for_import(event_id, session)
-    if status and status not in ('confirmed', 'review', 'unreserved', 'duplicate', 'ticket_added'):
+    if status and status not in ('confirmed', 'review', 'unreserved', 'duplicate', 'ticket_added', 'ignored'):
         raise HTTPException(400, 'Invalid sales row status')
     return {'rows': await database.get('/product-sales/rows', {'event_id': event_id, 'status': status}) or []}
 
@@ -173,3 +173,11 @@ async def create_ticket_for_sale(
     if send_confirmation:
         confirmations.trigger()
     return {'ok': True, 'reservation': result}
+
+
+@router.post('/rows/{row_id}/ignore', dependencies=[Depends(require_action('events.bookings.confirm')), Depends(verify_csrf)])
+async def ignore_import_row(row_id: int, session: AuthSession = Depends(require_admin)) -> dict:
+    row = await scoped_row(row_id, session)
+    if row['status'] not in ('review', 'unreserved'):
+        raise HTTPException(409, 'Only pending purchases can be ignored')
+    return await database.post(f'/product-sales/rows/{row_id}/ignore', {'actor_id': session.user.id})

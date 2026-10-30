@@ -400,6 +400,7 @@ async def reserve(
     order_number: str | None = Body(default=None, embed=True),
     guest: GuestDetails | None = Body(default=None, embed=True),
     draft_token: str | None = Body(default=None, embed=True),
+    cid: str | None = Body(default=None, embed=True),
     session: AuthSession | None = Depends(current_session),
 ) -> dict:
     """Book tickets: a hold on a ticket to be bought, a place on a free one.
@@ -456,6 +457,13 @@ async def reserve(
         user_id = session.user.id
         is_member = session.is_member_now
 
+    import re
+    supplied_cid = (cid or '').strip()
+    if ticket.get('requires_purchase', True) and not is_member and not supplied_cid:
+        raise HTTPException(422, 'CID_REQUIRED: We could not find your Union CID from your account. Please enter your CID to continue.')
+    if supplied_cid and not re.fullmatch(r'[0-9]{4,12}', supplied_cid):
+        raise HTTPException(400, 'Enter a valid numeric Union CID (4–12 digits).')
+
     # Members-only tickets are NOT refused here. Somebody who joined EESoc today
     # does not appear in the members feed until the next morning's sync, and
     # turning them away would be wrong. The booking is taken and only *confirmed*
@@ -485,7 +493,7 @@ async def reserve(
     # this converts that draft rather than competing for capacity a second time.
     visitor = _visitor_hash(request)
     if draft_token:
-        params = {"user_id": user_id, "academic_year": academic_year()}
+        params = {"user_id": user_id, "academic_year": academic_year(), "claimed_cid": supplied_cid or None}
         if visitor:
             params["visitor_hash"] = visitor
         result = await database.post(
@@ -507,6 +515,7 @@ async def reserve(
                 "user_id": user_id,
                 "quantity": quantity,
                 "order_number": (order_number or "").strip() or None,
+                "claimed_cid": supplied_cid or None,
                 "booked_as_guest": as_guest,
                 # A guest who has not proved the address gets the shorter
                 # window; a signed-in user gets the event's own.

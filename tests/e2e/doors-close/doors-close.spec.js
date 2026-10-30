@@ -135,7 +135,16 @@ test('committee admin sets Doors close, saves, reloads, and the value persists',
   // Field label is not wired to it with `for`, so locate the field by label.
   const doorsField = page.locator('.ees-field').filter({ hasText: 'Doors close' })
   await doorsField.locator('input').fill(EDIT_INPUT)
+  // Wait for the actual save response before navigating. Navigating
+  // immediately aborts an in-flight PUT and gives a false persistence failure.
+  const saved = page.waitForResponse(response =>
+    response.url().endsWith(`/api/admin/events/${EVENT_ID_EDIT}`) &&
+    response.request().method() === 'PUT'
+  )
   await page.getByRole('button', { name: 'Save changes', exact: true }).click()
+  const saveResponse = await saved
+  expect(saveResponse.ok(), await saveResponse.text()).toBeTruthy()
+  expect((await saveResponse.json()).doors_close_at).toBeTruthy()
 
   // Saved: reload the whole SPA and edit again — persistence must survive a
   // fresh page load, not just the in-memory form state.

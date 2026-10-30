@@ -107,8 +107,8 @@ jobs:
         with:
           name: playwright-artifacts
           path: |
-            playwright-report
-            test-results
+            frontend/playwright-report
+            frontend/test-results
           if-no-files-found: ignore
       - name: Logs on failure
         if: failure()

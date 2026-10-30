@@ -18,8 +18,12 @@ async function signIn(page, email, makeAdmin = false) {
 
 async function submit(page, title) {
   await page.goto('/opportunities')
+  // dev-login sets cookies on the API request context, but the SPA loads its
+  // authenticated session asynchronously. Wait for that state before clicking:
+  // otherwise startSubmit opens the login dialog rather than the form.
+  await expect(page.getByRole('button', { name: 'Log out' })).toBeVisible()
   await page.getByRole('button', { name: 'Submit an opportunity' }).click()
-  await expect(page.locator('.site-identity')).toBeVisible()
+  await expect(page.getByPlaceholder('e.g. Summer research programme')).toBeVisible()
   await page.getByPlaceholder('e.g. Summer research programme').fill(title)
   await page.getByPlaceholder('Describe the opportunity, eligibility, dates and next steps…').fill('An undergraduate research and engineering programme offering hands-on experience at Imperial, with an application form and project workshops.')
   await page.getByPlaceholder('organiser@example.com').fill('organiser@example.org')
@@ -92,9 +96,16 @@ test('owner drafts and approves the email before it reaches the admin queue', as
 
   await signIn(page, member)
   await page.goto('/opportunities')
+  // API dev-login updates the browser cookie, not Vue's already-loaded session.
+  // Wait for the *new* identity rather than just for a published opportunity:
+  // clicking My submissions during the session refresh opens the login dialog.
+  await expect(page.locator('.site-identity')).toContainText(member.split('@')[0])
   await expect(page.getByText(title).first()).toBeVisible()
   await page.getByRole('button', { name: /My submissions/ }).click()
-  await page.getByRole('button', { name: 'Draft announcement email' }).click()
+  await expect(page.getByRole('heading', { name: 'My submissions' })).toBeVisible()
+  const approvedCard = page.locator('.opps__column .ees-card').filter({ hasText: title })
+  await expect(approvedCard).toContainText('approved')
+  await approvedCard.getByRole('button', { name: 'Draft announcement email' }).click()
   await expect(page.getByRole('heading', { name: 'Draft your opportunity announcement' })).toBeVisible()
   const draftBody = 'We are pleased to announce a new research opportunity for year two students. Applications and full details are available at the linked programme page.'
   await page.getByPlaceholder('Describe what makes the opportunity worth sharing…').fill(draftBody)

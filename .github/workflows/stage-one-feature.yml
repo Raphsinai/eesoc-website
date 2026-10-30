@@ -1,5 +1,5 @@
-# Manually stage one feature at a time by default, or stage all pending main
-# changes in one explicit bulk release. Neither path modifies production.
+# Promote only commits with passing CI and all six images to staging-deploy.
+# This opt-in workflow changes staging only and leaves the temporary bypass intact.
 name: stage EESoc features
 
 on:
@@ -47,17 +47,23 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$REQUESTED_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || { echo '::error::Supply a full 40-character commit SHA'; exit 1; }
-          git fetch -q origin main
+          git fetch -q origin main staging-deploy
           target=$(git rev-parse --verify "$REQUESTED_SHA^{commit}")
           git merge-base --is-ancestor "$target" origin/main || { echo '::error::Feature must be on main'; exit 1; }
-          overlay=deploy/k8s/overlays/staging/kustomization.yaml
-          pinned=$(grep -m1 'newTag:' "$overlay" | awk '{print $2}')
+          # Staging ArgoCD follows staging-deploy, not main's stale overlay.
+          staged=$(git show origin/staging-deploy:deploy/k8s/overlays/staging/kustomization.yaml)
+          tags=$(printf '%s\n' "$staged" | awk '$1 == "newTag:" {print $2}' | sort -u)
+          [ "$(printf '%s\n' "$tags" | wc -l)" -eq 1 ] || { echo '::error::Staging has mixed image tags'; exit 1; }
+          pinned=$tags
+          [[ "$pinned" =~ ^[0-9a-fA-F]{40}$ ]] || { echo '::error::Staging pin is not a SHA'; exit 1; }
           git merge-base --is-ancestor "$pinned" "$target" || { echo '::error::Cannot roll staging back with a feature release'; exit 1; }
           next=$(git rev-list --reverse --first-parent "$pinned"..origin/main -- . \
             ':(exclude).github/workflows' \
             ':(exclude)docs' \
             ':(exclude)deploy/README.md' \
             ':(exclude)deploy/homelab/README.md' \
+            ':(exclude)tests' ':(exclude)scripts/check-ci-release.py' \
+            ':(exclude)deploy/k8s/overlays/production/kustomization.yaml' \
             ':(exclude)deploy/k8s/overlays/staging/kustomization.yaml' | head -n1)
           if [ "$RELEASE_MODE" = all_pending ]; then
             latest=$(git rev-parse origin/main)
@@ -79,13 +85,13 @@ jobs:
           echo "previous_sha=$pinned" >> "$GITHUB_OUTPUT"
           echo "Verified staging target: $(git show -s --format='%h %s' "$target")"
 
-  publish-staging-pr:
+  publish-checked-staging:
     needs: validate
     runs-on: [self-hosted, Linux, X64, eesoc-ci]
     environment: staging
     permissions:
       contents: write
-      pull-requests: write
+      actions: read
     steps:
       - name: Reclaim checkout
         run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
@@ -105,7 +111,7 @@ jobs:
           set -euo pipefail
           curl -fsSLo "$RUNNER_TEMP/kustomize.tar.gz" 'https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz'
           tar -xzf "$RUNNER_TEMP/kustomize.tar.gz" -C "$RUNNER_TEMP" kustomize
-      - name: Open protected staging pin pull request
+      - name: Update staging GitOps branch with checked images
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ needs.validate.outputs.sha }}
@@ -115,29 +121,47 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          branch="release/staging-${RELEASE_SHA}"
           owner_lc=${OWNER,,}
-          git fetch -q origin main
-          git reset -q --hard origin/main
+          git fetch -q origin main staging-deploy
+          before=$(git rev-parse origin/staging-deploy)
+          staged=$(git show origin/staging-deploy:deploy/k8s/overlays/staging/kustomization.yaml)
+          tags=$(printf '%s\n' "$staged" | awk '$1 == "newTag:" {print $2}' | sort -u)
+          [ "$(printf '%s\n' "$tags" | wc -l)" -eq 1 ] || { echo '::error::Staging has mixed tags'; exit 1; }
+          pinned=$tags
           overlay=deploy/k8s/overlays/staging
-          pinned=$(awk '/newTag:/ {print $2; exit}' "$overlay/kustomization.yaml")
           [ "$pinned" != "$RELEASE_SHA" ] || { echo 'Already staged'; exit 0; }
           git merge-base --is-ancestor "$pinned" "$RELEASE_SHA" || { echo '::error::Staging is ahead of target'; exit 1; }
           next=$(git rev-list --reverse --first-parent "$pinned"..origin/main -- . \
             ':(exclude).github/workflows' ':(exclude)docs' \
             ':(exclude)deploy/README.md' ':(exclude)deploy/homelab/README.md' \
+            ':(exclude)tests' ':(exclude)scripts/check-ci-release.py' \
+            ':(exclude)deploy/k8s/overlays/production/kustomization.yaml' \
             ':(exclude)deploy/k8s/overlays/staging/kustomization.yaml' | head -n1)
           if [ "$RELEASE_MODE" = next_feature ]; then
             [ "$next" = "$RELEASE_SHA" ] || { echo "::error::Next release has changed: $next"; exit 1; }
           else
             [ "$(git rev-parse origin/main)" = "$RELEASE_SHA" ] || { echo '::error::Bulk release must be current main'; exit 1; }
           fi
-          git switch -c "$branch"
+          # The whole manifest tree must match the tested release commit, not
+          # only its image tags; this is how the temporary publisher works.
+          git switch -C staging-deploy "$RELEASE_SHA"
           for service in api database union frontend garage-init whatsapp; do
             (cd "$overlay" && "$RUNNER_TEMP/kustomize" edit set image "ghcr.io/OWNER/eesoc-${service}=ghcr.io/${owner_lc}/eesoc-${service}:${RELEASE_SHA}")
           done
           "$RUNNER_TEMP/kustomize" build "$overlay" > /dev/null
           git add "$overlay/kustomization.yaml"
-          git commit -m "staging: deploy checked $RELEASE_SHA [skip ci]"
-          git push -u origin "$branch"
-          gh pr create --base main --head "$branch" --title "Stage EESoc $RELEASE_SHA" --body "Promotes the exact commit whose CI checks and six image builds completed successfully. Release mode: $RELEASE_MODE. Only staging image pins change. Merge this PR after GitHub's required checks pass."
+          # Some release commits already carry their own pin. In that case the
+          # branch still needs moving to the tested source commit.
+          if ! git diff --cached --quiet; then
+            git commit -m "staging: deploy checked $RELEASE_SHA [skip ci]"
+          fi
+          # Atomic compare-and-swap protects manual staging pushes made
+          # between validation and this update. No production refs are touched.
+          git push --force-with-lease="refs/heads/staging-deploy:$before" origin HEAD:refs/heads/staging-deploy
+          {
+            echo '### Checked staging release published to GitOps'
+            echo "- Commit: $RELEASE_SHA"
+            echo "- Previous staging release: $pinned"
+            echo '- Branch: staging-deploy (ArgoCD follows this branch)'
+            echo '- The manual staging workflow is unchanged.'
+          } >> "$GITHUB_STEP_SUMMARY"

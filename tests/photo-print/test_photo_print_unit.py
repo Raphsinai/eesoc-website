@@ -37,7 +37,21 @@ def test_print_dimensions_qr_and_safe_margins(image_bytes, count, orientation):
         assert image.size == (1181, 1747)
         assert image.getpixel((3,200)) == (11,13,18)
         assert image.getpixel((23,12)) == (231,181,112)
-        assert image.getpixel((970,1495)) == (255,255,255)
+        # The updated print uses a dark carrier with a navy/gold, E-branded
+        # QR tile. Check that the tile contains the expected ink, paper and
+        # accent instead of asserting the old white square at a fixed point.
+        assert image.getpixel((970,1495)) == (11,13,18)
+        tile = booth_template.spec()['fixed']['qrTile']
+        scale = booth_template.SCALE
+        region = image.crop((
+            round(tile['x']*scale), round(tile['y']*scale),
+            round((tile['x']+tile['w'])*scale),
+            round((tile['y']+tile['h'])*scale),
+        ))
+        colors = set(region.getdata())
+        assert (11, 13, 18) in colors   # QR modules / E emblem
+        assert (247, 241, 231) in colors  # warm ivory QR quiet area
+        assert (231, 181, 112) in colors  # gold chip contacts
         assert image.info["dpi"][0] == pytest.approx(300, abs=1)
         assert len(booth_template.spec()['layouts'][str(count)]['windows']) == count
 

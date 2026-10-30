@@ -15,6 +15,11 @@ import { defineConfig, devices } from '@playwright/test';
 // spec in the `admin` project failed with ENOENT.
 const ADMIN_STATE = fileURLToPath(new URL('../tests/e2e/.auth/admin.json', import.meta.url));
 
+// The site switches to its collapsed navigation at <=1450px. The browser
+// tests that address top-level Log in / Log out controls need a real desktop
+// viewport; responsive tests explicitly set their own mobile sizes.
+const DESKTOP_VIEWPORT = { width: 1600, height: 900 };
+
 export default defineConfig({
   testDir: '../tests/e2e',
 
@@ -42,7 +47,7 @@ export default defineConfig({
     {
       name: 'public',
       testMatch: /\.spec\.js$/,
-      use: { ...devices['Desktop Chrome'] },
+      use: { ...devices['Desktop Chrome'], viewport: DESKTOP_VIEWPORT },
     },
     {
       name: 'admin',
@@ -50,6 +55,7 @@ export default defineConfig({
       dependencies: ['setup'],
       use: {
         ...devices['Desktop Chrome'],
+        viewport: DESKTOP_VIEWPORT,
         storageState: ADMIN_STATE,
       },
     },

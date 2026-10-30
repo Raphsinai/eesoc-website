@@ -35,6 +35,10 @@ ALLOWED_FIELDS = {
     # the end of the sale window (section 17), public by design: the page says
     # when booking closes, and the purchase deadline is capped by the Union close
     "bookingClosesAt", "unionSalesCloseAt",
+    # Public connected-society eligibility and organiser metadata (migration 099).
+    # This contains display names and policy state, not private member records.
+    "eligibleSocieties", "membershipEligible", "organisers",
+    "membershipRestricted", "organisedByEesoc", "allowEesocMembers",
 }
 
 

@@ -21,7 +21,7 @@ jobs:
   checks:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, eesoc-ci]
-    timeout-minutes: 30
+    timeout-minutes: 75
     outputs:
       sha: ${{ steps.source.outputs.sha }}
       previous_sha: ${{ steps.source.outputs.previous_sha }}
@@ -45,8 +45,13 @@ jobs:
             git fetch -q origin main
             git merge-base --is-ancestor "$sha" origin/main || { echo '::error::Commit is not on main'; exit 1; }
           fi
+          # Use the image actually deployed to staging, not main's stale pin.
+          # This preserves recent frontend assets for tabs open during rollout.
+          git fetch -q origin staging-deploy
+          previous_sha=$(git show origin/staging-deploy:deploy/k8s/overlays/staging/kustomization.yaml | awk '$1 == "newTag:" {print $2; exit}')
+          [[ "$previous_sha" =~ ^[[:xdigit:]]{40}$ ]] || { echo '::error::Staging image pin must be a full SHA'; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "previous_sha=$(awk '/newTag:/ {print $2; exit}' deploy/k8s/overlays/staging/kustomization.yaml)" >> "$GITHUB_OUTPUT"
+          echo "previous_sha=$previous_sha" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-python@v5
         with:
@@ -91,17 +96,8 @@ jobs:
           curl -fsS localhost:8080/sitemap.xml | grep -q '<urlset'
           curl -fsS localhost:8080/robots.txt | grep -q 'Sitemap:'
           ! grep -qE '^\s*dev_login_enabled:\s*bool\s*=\s*True' backend/api/config.py
-      # Legacy expectations made obsolete by deliberate product changes:
-      # photo prints use a dark premium background; manually added paid tickets
-      # now require an order number unless the user has override permission.
-      # Keep all other tests required. Do not silently disable entire suites.
-      - name: Run Python regression tests (including migration safety)
-        run: |
-          echo '::warning::12 stale photo-print/sale-windows assertions are excluded pending test updates'
-          python3 -m pytest tests -q \
-            --deselect=tests/photo-print/test_photo_print_unit.py::test_print_dimensions_qr_and_safe_margins \
-            --deselect=tests/sale-windows/test_sale_windows_stack.py::test_a_committee_added_ticket_still_works \
-            --deselect=tests/sale-windows/test_sale_windows_stack.py::test_clamping_leaves_confirmed_bookings_alone
+      - name: Run all Python regression tests (including migration safety)
+        run: python3 -m pytest tests -q
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -116,8 +112,8 @@ jobs:
         with:
           name: playwright-artifacts
           path: |
-            playwright-report
-            test-results
+            frontend/playwright-report
+            frontend/test-results
           if-no-files-found: ignore
       - name: Logs on failure
         if: failure()

@@ -45,8 +45,13 @@ jobs:
             git fetch -q origin main
             git merge-base --is-ancestor "$sha" origin/main || { echo '::error::Commit is not on main'; exit 1; }
           fi
+          # Use the image actually deployed to staging, not main's stale pin.
+          # This preserves recent frontend assets for tabs open during rollout.
+          git fetch -q origin staging-deploy
+          previous_sha=$(git show origin/staging-deploy:deploy/k8s/overlays/staging/kustomization.yaml | awk '$1 == "newTag:" {print $2; exit}')
+          [[ "$previous_sha" =~ ^[[:xdigit:]]{40}$ ]] || { echo '::error::Staging image pin must be a full SHA'; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "previous_sha=$(awk '/newTag:/ {print $2; exit}' deploy/k8s/overlays/staging/kustomization.yaml)" >> "$GITHUB_OUTPUT"
+          echo "previous_sha=$previous_sha" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-python@v5
         with:

@@ -1,6 +1,6 @@
 <script setup>
 // Anonymous, unlisted photo page opened from the QR printed at an EESoc event.
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { usePageTitle } from '@/utils/pageTitle'
 import api from '@/api'

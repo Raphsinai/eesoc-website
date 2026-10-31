@@ -48,3 +48,23 @@ test('unavailable photo links explain why the gallery is empty', async ({ page }
   await page.goto(`/photos/${TOKEN}`)
   await expect(page.getByRole('alert')).toHaveText('This photo link is unavailable or has been withdrawn.')
 })
+
+
+test('mobile QR gallery stays within the viewport without a duplicate oversized logo', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await stubPublicSite(page)
+  await page.route(`**/api/photos/${TOKEN}`, route => route.fulfill({ json: ALBUM }))
+
+  await page.goto(`/photos/${TOKEN}`)
+  const gallery = page.locator('.photo-gallery')
+  await expect(gallery.getByRole('heading', { name: 'Halloween Party' })).toBeVisible()
+  await expect(gallery.locator('header img')).toHaveCount(0)
+  await expect(gallery.locator('.photo-gallery__photo img')).toHaveCount(2)
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+
+  const title = await gallery.getByRole('heading', { name: 'Halloween Party' }).boundingBox()
+  const firstPhoto = await gallery.locator('.photo-gallery__photo').first().boundingBox()
+  expect(title.x + title.width).toBeLessThanOrEqual(390)
+  expect(firstPhoto.x + firstPhoto.width).toBeLessThanOrEqual(390)
+  expect(firstPhoto.width).toBeGreaterThan(200)
+})

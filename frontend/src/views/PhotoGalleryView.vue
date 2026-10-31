@@ -6,7 +6,6 @@ import { usePageTitle } from '@/utils/pageTitle'
 import api from '@/api'
 import Card from '@/components/ds/Card.vue'
 import Button from '@/components/ds/Button.vue'
-import Logo from '@/components/ds/Logo.vue'
 
 const route = useRoute()
 const set = ref(null)
@@ -28,7 +27,6 @@ usePageTitle(computed(() => set.value?.title ? `${set.value.title} · Photos` : 
 <template>
   <main class="photo-gallery">
     <header class="photo-gallery__header">
-      <Logo variant="pins" height="52"/>
       <span class="eyebrow">EESoc event photos</span>
       <h1>{{ set?.title || 'Your photos' }}</h1>
       <p class="muted">Your printed keepsake, with digital photographs to take home.</p>

@@ -35,6 +35,29 @@ const previews = reactive({})
 // Per request: the WhatsApp groups it is also posted into. None until ticked.
 const marketingWhatsApp = reactive({})
 const waFor = (m) => marketingWhatsApp[m.id] ?? []
+// Sponsor requests express a preference; authorised EESoc committee members
+// choose the actual mailing audiences when approving the outreach.
+const marketingEmailAudiences = reactive({})
+const mailingAudiences = ref([])
+const mailFor = (m) => marketingEmailAudiences[m.id] ?? m.audiences ?? []
+const mailingGroups = computed(() => {
+  const groups = new Map()
+  for (const a of mailingAudiences.value) {
+    const group = a.group || 'Other'
+    if (!groups.has(group)) groups.set(group, [])
+    groups.get(group).push(a)
+  }
+  return [...groups.entries()].sort(([a], [b]) =>
+    a === 'Connected societies' ? -1 : b === 'Connected societies' ? 1 : a.localeCompare(b))
+})
+function toggleMarketingAudience(m, key) {
+  const list = [...mailFor(m)]
+  const index = list.indexOf(key)
+  if (index === -1) list.push(key)
+  else list.splice(index, 1)
+  marketingEmailAudiences[m.id] = list
+  previews[m.id] = null // An older count must not be mistaken for these recipients.
+}
 const link = reactive({ eventId: '', clause: '' })
 const replies = reactive({})
 const newThread = reactive({ body: '' })
@@ -70,6 +93,7 @@ async function load() {
     for (const m of data.value.marketing) {
       marketingEdits[m.id] = { subject: m.subject, body: m.body, response: '' }
       marketingWhatsApp[m.id] ??= []
+      marketingEmailAudiences[m.id] ??= [...m.audiences]
     }
   } catch (e) {
     error.value = e.message
@@ -80,6 +104,12 @@ async function load() {
 
 onMounted(async () => {
   await load()
+  if (can('email.audiences')) {
+    try {
+      const result = await api.get('/admin/email/audiences')
+      mailingAudiences.value = (result.audiences || []).filter((a) => !a.whatsapp)
+    } catch (e) { error.value = e.message }
+  }
   // Arriving from the inbox with #marketing and the like.
   if (route.hash) {
     await nextTick()
@@ -106,7 +136,8 @@ async function act(fn, message) {
 const eesocTerms = computed(() => (data.value?.terms ?? []).filter((t) => t.side === 'eesoc'))
 const sponsorTerms = computed(() => (data.value?.terms ?? []).filter((t) => t.side === 'sponsor'))
 const clauseLabel = (key) => data.value?.eventClauses.find((c) => c.key === key)?.label ?? 'Outside the package'
-const audienceLabel = (key) => data.value?.audiences.find((a) => a.key === key)?.label ?? key
+const audienceLabel = (key) => mailingAudiences.value.find((a) => a.key === key)?.label
+  ?? data.value?.audiences.find((a) => a.key === key)?.label ?? key
 
 const linked = computed(() => (data.value?.claims ?? []).filter((c) => c.status === 'confirmed'))
 const interested = computed(() => (data.value?.claims ?? []).filter((c) => c.status === 'interested'))
@@ -201,7 +232,8 @@ function saveMarketing(m) {
 
 async function previewMarketing(m) {
   try {
-    previews[m.id] = await api.post(`/admin/sponsor-marketing/${m.id}/preview`)
+    previews[m.id] = await api.post(`/admin/sponsor-marketing/${m.id}/preview`,
+      can('email.audiences') ? { audiences: mailFor(m) } : {})
   } catch (e) {
     error.value = e.message
   }
@@ -215,11 +247,17 @@ function sendMarketing(m) {
   const p = previews[m.id]
   const groups = waFor(m)
   const parts = []
-  if (emailPending(m)) parts.push(`email it to ${p ? `${p.recipients} recipient(s)` : m.audiences.map(audienceLabel).join(', ')}`)
+  if (emailPending(m)) {
+    if (!mailFor(m).length) { error.value = 'Select at least one mailing list first.'; return }
+    parts.push(`email it to ${p ? `${p.recipients} recipient(s)` : mailFor(m).map(audienceLabel).join(', ')}`)
+  }
   if (groups.length) parts.push(`post it into ${groups.length} WhatsApp group(s)`)
   if (!confirm(`${parts.join(' and ').replace(/^./, (c) => c.toUpperCase())}: "${m.subject}"? This cannot be undone.`)) return
   return act(async () => {
-    const res = await api.post(`/admin/sponsor-marketing/${m.id}/send`, { whatsapp: groups })
+    const res = await api.post(`/admin/sponsor-marketing/${m.id}/send`, {
+      whatsapp: groups,
+      ...(emailPending(m) && can('email.audiences') ? { audiences: mailFor(m) } : {}),
+    })
     marketingWhatsApp[m.id] = []
     return res
   })
@@ -582,7 +620,7 @@ usePageTitle(computed(() => data.value?.sponsor?.name ? `${data.value.sponsor.na
                 <Button
                   v-if="(emailPending(m) || waFor(m).length) && (can('sponsors.marketing.send'))"
                   size="sm"
-                  :disabled="busy || !data.canEmail"
+                  :disabled="busy || !data.canEmail || (emailPending(m) && !mailFor(m).length)"
                   :title="data.canEmail ? '' : 'Sending needs a committee member with email access'"
                   @click="sendMarketing(m)"
                 >{{ sendLabel(m) }}</Button>
@@ -597,6 +635,22 @@ usePageTitle(computed(() => data.value?.sponsor?.name ? `${data.value.sponsor.na
               <span v-if="!data.canEmail && m.channels.includes('email')" class="meta">
                 Sending the email needs a committee member with email access.
               </span>
+              <div v-if="emailPending(m) && can('email.audiences')" style="display:grid;gap:var(--space-2)">
+                <strong style="font:var(--type-label)">Email recipients (committee selection)</strong>
+                <p class="meta" style="margin:0">Sponsor-requested lists are selected initially. You can add or remove EESoc and connected society mailing lists before previewing and sending. Overlapping addresses receive only one email.</p>
+                <details style="border:1px solid var(--border-hairline);padding:var(--space-3)">
+                  <summary style="cursor:pointer;font:var(--type-small)">{{ mailFor(m).length }} mailing list(s) selected · Edit recipients</summary>
+                  <div v-for="[group, entries] in mailingGroups" :key="group" style="display:grid;gap:var(--space-2);margin-top:var(--space-3)">
+                    <span style="font:var(--type-label);color:var(--text-muted)">{{ group }}</span>
+                    <label v-for="entry in entries" :key="entry.key" style="font:var(--type-small);display:flex;gap:var(--space-2);align-items:start">
+                      <input type="checkbox" :checked="mailFor(m).includes(entry.key)"
+                             :disabled="busy" @change="toggleMarketingAudience(m, entry.key)" />
+                      <span>{{ entry.label }} <span class="meta">({{ entry.count ?? '?' }} recipients)</span></span>
+                    </label>
+                  </div>
+                </details>
+                <p v-if="!mailFor(m).length" style="color:var(--danger);font:var(--type-small);margin:0">Choose a mailing list before sending this email.</p>
+              </div>
               <!-- Any request, email or social: the committee can post it into
                    WhatsApp groups too. -->
               <WhatsAppGroupPicker

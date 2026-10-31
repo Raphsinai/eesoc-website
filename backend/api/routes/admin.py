@@ -2053,14 +2053,49 @@ async def edit_sponsor_marketing(
     return {"ok": True, "item": row}
 
 
+async def _marketing_mailing_audiences(
+    requested: list[str], selected: list[str] | None, session: AuthSession,
+) -> list[str]:
+    """Committee-selected recipients for sponsor marketing, never sponsor grants.
+
+    An external society roster is available only with the dedicated EESoc
+    committee permission. The submitted names must also be real, currently
+    selectable mailing lists, not arbitrary audience keys from the browser.
+    """
+    keys = list(dict.fromkeys(selected if selected is not None else requested))
+    if not keys:
+        raise HTTPException(400, 'Select at least one mailing list.')
+    if any(not isinstance(key, str) for key in keys):
+        raise HTTPException(400, 'Invalid mailing list selection.')
+    if any(key.startswith('society:') for key in keys) and not session.can('societies.members.mail'):
+        raise HTTPException(403, 'Permission required: societies.members.mail')
+    if selected is not None:
+        if not session.can('email.audiences'):
+            raise HTTPException(403, 'Permission required: email.audiences')
+        available = await emailing.audiences(
+            external_societies=session.can('societies.members.mail'),
+            whatsapp_user_id=session.user.id,
+            whatsapp_admin_all=session.can('societies.whatsapp.groups.edit'),
+        )
+        email_keys = {a['key'] for a in available if not a.get('whatsapp')}
+        if not set(keys).issubset(email_keys):
+            raise HTTPException(400, 'Select only available mailing lists.')
+    return keys
+
+
 @router.post("/sponsor-marketing/{marketing_id}/preview", dependencies=[Depends(require_action("sponsors.marketing.preview")), Depends(verify_csrf)])
 async def preview_sponsor_marketing(
-    marketing_id: int, _: AuthSession = Depends(require_sponsors)
+    marketing_id: int,
+    audiences: list[str] | None = Body(default=None, embed=True),
+    session: AuthSession = Depends(require_sponsors),
 ) -> dict:
     item = await _marketing_or_404(marketing_id)
     sponsor = await _sponsor_or_404(item["sponsor_id"])
+    selected = await _marketing_mailing_audiences(item['audiences'], audiences, session)
     html, text = agreement_service.marketing_email(item, sponsor["name"])
-    recipients = await emailing.resolve(item["audiences"])
+    recipients = await emailing.resolve(
+        selected, allowed_society_ids='all' if session.can('societies.members.mail') else set(),
+    )
     return {
         "html": html,
         "text": text,
@@ -2084,6 +2119,7 @@ def _marketing_post(item: dict, sponsor_name: str) -> str:
 async def send_sponsor_marketing(
     marketing_id: int,
     whatsapp_groups: list[str] = Body(default=[], embed=True, alias="whatsapp"),
+    audiences: list[str] | None = Body(default=None, embed=True),
     session: AuthSession = Depends(require_any_capability("email", "whatsapp")),
 ) -> dict:
     """Send a sponsor's marketing: by email to the audience they chose, if they
@@ -2115,8 +2151,11 @@ async def send_sponsor_marketing(
     recipients: list = []
     campaign = None
     if by_email:
-        recipients = await emailing.resolve(item["audiences"])
-        _check_sendable(item["subject"], item["audiences"], recipients)
+        selected = await _marketing_mailing_audiences(item['audiences'], audiences, session)
+        recipients = await emailing.resolve(
+            selected, allowed_society_ids='all' if session.can('societies.members.mail') else set(),
+        )
+        _check_sendable(item["subject"], selected, recipients)
         html, text = agreement_service.marketing_email(item, sponsor["name"])
 
         campaign = await database.post(
@@ -2127,7 +2166,7 @@ async def send_sponsor_marketing(
                 "body": item.get("body") or "",
                 # Recorded with the sponsor, so the email history says whose
                 # material it was.
-                "audiences": item["audiences"] + [f"sponsor:{sponsor['slug']}"],
+                "audiences": selected + [f"sponsor:{sponsor['slug']}"],
                 "created_by": session.user.id,
             },
         )

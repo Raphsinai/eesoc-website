@@ -528,3 +528,32 @@ def test_warning_flags_an_event_that_has_started():
     assert campaigns.warning({"kind": "on_sale"}, None).startswith("The event has been deleted")
     assert campaigns.warning({"kind": "on_sale"}, EVENT) is None
     assert campaigns.warning({"kind": "newsletter"}, None) is None
+
+
+def test_approved_connected_society_email_runs_on_schedule_only_after_review(fake, sends, monkeypatch):
+    """EESoc's society-list permission survives the approved scheduled send."""
+    society = importlib.import_module('services.societies')
+    async def roster(society_id):
+        assert society_id == 3
+        return [{'email': 'student@ic.ac.uk'}, {'email': 'second@ic.ac.uk'}]
+    monkeypatch.setattr(society, 'mailing_list', roster)
+    run(campaigns.queue(subject='Robotics briefing', body='Hello robotics.',
+                        audiences=['society:3'], kind='newsletter',
+                        send_at=iso(-timedelta(seconds=1))))
+    row = only_draft(fake)
+    assert row['recipients'] == 2, 'preview counts members of the selected roster'
+    with pytest.raises(HTTPException) as exc:
+        run(campaigns.recipients_for(row))
+    assert exc.value.status_code == 403, 'resolution cannot bypass the grant'
+
+    # An unapproved row does not become an authorised send simply because it
+    # was set to scheduled: a named committee reviewer must approve it.
+    row.update(status='scheduled', send_at=iso(-timedelta(seconds=1)), reviewed_by=None)
+    run(campaigns.fire_due())
+    assert sends == []
+    assert row['status'] == 'awaiting_approval'
+
+    row.update(status='scheduled', reviewed_by=17)
+    run(campaigns.fire_due())
+    assert sends == [('send_bulk', row['id'], ['student@ic.ac.uk', 'second@ic.ac.uk'])]
+    assert row['status'] == 'sending'

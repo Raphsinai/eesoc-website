@@ -71,13 +71,17 @@ def _attendee(a: dict) -> dict:
     }
 
 
-def _verdict(a: dict, event_id: int | None) -> tuple[str, str]:
+def _verdict(
+    a: dict, event_id: int | None, event_ids: list[int] | None = None
+) -> tuple[str, str]:
     """Whether this booking should come in to this event, and why not.
 
     Ordered by what the person on the door needs to know first: the wrong
     event beats everything, a dead booking beats an unpaid one.
     """
-    if event_id is not None and a["event_id"] != event_id:
+    if (event_ids is not None and a["event_id"] not in event_ids) or (
+        event_ids is None and event_id is not None and a["event_id"] != event_id
+    ):
         when = format_date(_dt(a.get("event_starts_at")))
         return "wrong_event", f"This ticket is for {a.get('event_title')} ({when})."
     if a["status"] == "cancelled":
@@ -101,6 +105,13 @@ async def _check_scope(session: AuthSession, event_id: int) -> None:
     if event is None:
         raise HTTPException(404, "No such event")
     assert_event_scope(session, event)
+
+
+def validate_event_ids(event_ids: list[int]) -> list[int]:
+    """Bound and validate a multi-event door selection before any private read."""
+    if not 1 <= len(event_ids) <= 20 or any(e <= 0 for e in event_ids) or len(set(event_ids)) != len(event_ids):
+        raise HTTPException(422, "Select between 1 and 20 distinct events.")
+    return event_ids
 
 
 def _count(attendees: list[dict]) -> dict:
@@ -190,6 +201,7 @@ def _result(row: dict, outcome: str, message: str) -> dict:
 async def scan(
     token: str = Body(embed=True),
     event_id: int | None = Body(default=None, embed=True),
+    event_ids: list[int] | None = Body(default=None, embed=True),
     session: AuthSession = Depends(require_committee),
 ) -> dict:
     """A scanned ticket: let it in if it belongs here and is good.
@@ -198,9 +210,17 @@ async def scan(
     with who and when), `unpaid` / `invalid` (red, with Let in anyway),
     `wrong_event` (red, no override — it is somebody else's event).
     """
+    if event_ids is not None:
+        if event_id is not None:
+            raise HTTPException(422, "Use either event_id or event_ids, not both.")
+        validate_event_ids(event_ids)
+        # Check *every* selected event, not only the ticket being scanned. A
+        # client must not be able to enlarge a scoped officer's door selection.
+        for selected_id in event_ids:
+            await _check_scope(session, selected_id)
     row = await _booking(tickets.parse(token))
     await _check_scope(session, row["event_id"])
-    verdict, message = _verdict(row, event_id)
+    verdict, message = _verdict(row, event_id, event_ids)
     if verdict != "ok":
         return _result(row, verdict, message)
     if row.get("checked_in_at"):

@@ -284,6 +284,22 @@ async def checkin_status(society_id:int,event_id:int,session:AuthSession=Depends
     return await checkin.checkin_state(event_id=event_id,_=actor)
 
 
+@router.post('/checkin/scan',dependencies=[Depends(verify_csrf)])
+async def combined_checkin_scan(society_id:int,token:str=Body(embed=True),
+                                event_ids:list[int]=Body(embed=True),
+                                session:AuthSession=Depends(require_session)):
+    """Scan across the selected events, never another society's bookings."""
+    membership=await societies.require_society(session,society_id,'events.checkin.scan',managing=True)
+    checkin.validate_event_ids(event_ids)
+    for event_id in event_ids:
+        await societies.require_event(society_id,event_id)
+    record=await checkin._booking(tickets.parse(token))
+    # A foreign ticket cannot reveal its holder, even via a wrong-event result.
+    await societies.require_event(society_id,record['event_id'])
+    actor=societies.ScopedCommitteeSession(session,membership)
+    return await checkin.scan(token=token,event_id=None,event_ids=event_ids,session=actor)
+
+
 @router.post('/events/{event_id}/checkin/scan',dependencies=[Depends(verify_csrf)])
 async def checkin_scan(society_id:int,event_id:int,token:str=Body(embed=True),
                        session:AuthSession=Depends(require_session)):

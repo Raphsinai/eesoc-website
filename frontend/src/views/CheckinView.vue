@@ -27,10 +27,28 @@ const checkinBase = computed(() => societyId.value
   ? `/society-portal/${societyId.value}/events/${eventId.value}/checkin`
   : `/checkin`)
 const bookingPath = id => societyId.value
-  ? `${checkinBase.value}/reservations/${id}` : `/checkin/reservations/${id}`
+  ? `/society-portal/${societyId.value}/events/${attendees.value.find(a => a.id === id)?.eventId || result.value?.attendee?.eventId}/checkin/reservations/${id}` : `/checkin/reservations/${id}`
 const checkinPath = id => societyId.value
   ? `/societies/${societyId.value}/checkin/${id}` : `/checkin/${id}`
 const eventId = computed(() => (route.params.eventId ? Number(route.params.eventId) : null))
+const combinedIds = computed(() => {
+  if (!route.query.events || eventId.value) return []
+  const values = String(route.query.events).split(',').map(Number)
+  return values.length >= 2 && values.length <= 20 && values.every(v => Number.isSafeInteger(v) && v > 0) && new Set(values).size === values.length ? values : []
+})
+const selectedIds = computed(() => eventId.value ? [eventId.value] : combinedIds.value)
+const combined = computed(() => combinedIds.value.length > 1)
+const eventById = computed(() => new Map(events.value.map(e => [e.id, e])))
+const selection = ref([])
+const pickingMultiple = ref(false)
+const labelFor = id => eventById.value.get(id)?.title || (event.value?.id === id ? event.value.title : `Event #${id}`)
+const selectedPath = () => {
+  const ids = selection.value
+  if (ids.length < 1 || ids.length > 20) return
+  const base = societyId.value ? `/societies/${societyId.value}/checkin` : '/checkin'
+  router.push(ids.length === 1 ? `${base}/${ids[0]}` : { path: base, query: { events: ids.join(',') } })
+}
+const backPath = computed(() => societyId.value ? `/societies/${societyId.value}/checkin` : '/checkin')
 
 const events = ref([])
 const event = ref(null)
@@ -75,10 +93,12 @@ async function loadEvent() {
   loading.value = true
   error.value = ''
   try {
-    const data = await api.get(societyId.value ? checkinBase.value : `/checkin/events/${eventId.value}`)
-    event.value = data.event
-    attendees.value = data.attendees
-    bookingsFingerprint.value = data.bookings
+    const ids = selectedIds.value
+    const data = await Promise.all(ids.map(id => api.get(societyId.value
+      ? `/society-portal/${societyId.value}/events/${id}/checkin` : `/checkin/events/${id}`)))
+    event.value = combined.value ? { title: 'Combined guestlist', date: `${ids.length} events` } : data[0].event
+    attendees.value = data.flatMap((d, i) => d.attendees.map(a => ({ ...a, eventId: ids[i], eventTitle: d.event.title })))
+    bookingsFingerprint.value = data.map(d => d.bookings).join('|')
     online.value = true
     lastSync.value = Date.now()
   } catch (e) {
@@ -101,9 +121,12 @@ function apply(state) {
 
 async function poll() {
   clearTimeout(pollTimer)
-  if (!eventId.value) return
+  if (!selectedIds.value.length) return
   try {
-    const state = await api.get(societyId.value ? `${checkinBase.value}/state` : `/checkin/events/${eventId.value}/state`)
+    const ids = selectedIds.value
+    const states = await Promise.all(ids.map(id => api.get(societyId.value
+      ? `/society-portal/${societyId.value}/events/${id}/checkin/state` : `/checkin/events/${id}/state`)))
+    const state = { bookings: states.map(s => s.bookings).join('|'), checkins: states.flatMap(s => s.checkins) }
     if (state.bookings !== bookingsFingerprint.value) {
       // Somebody booked, cancelled or was confirmed: the list itself changed.
       await loadEvent()
@@ -143,7 +166,7 @@ const visible = computed(() => {
   if (show.value === 'in') list = list.filter((a) => a.checkedInAt)
   if (term) {
     list = list.filter((a) =>
-      [a.name, a.email, a.shortcode, a.orderNumber, a.ticketType]
+      [a.name, a.email, a.shortcode, a.orderNumber, a.ticketType, a.eventTitle]
         .filter(Boolean)
         .some((v) => String(v).toLowerCase().includes(term)),
     )
@@ -174,7 +197,7 @@ async function checkIn(a, override = false) {
   busy.value = true
   error.value = ''
   try {
-    const res = await api.post(bookingPath(a.id), { event_id: eventId.value, override })
+    const res = await api.post(bookingPath(a.id), { event_id: a.eventId, override })
     upsert(res.attendee)
     // Every check-in from the list flashes the panel too, camera or not.
     flashResult(res)
@@ -308,9 +331,9 @@ async function tick() {
 async function handleScan(text) {
   paused = true
   try {
-    const res = await api.post(societyId.value ? `${checkinBase.value}/scan` : '/checkin/scan', { token: text, event_id: eventId.value })
+    const res = await api.post(societyId.value ? (combined.value ? `/society-portal/${societyId.value}/checkin/scan` : `${checkinBase.value}/scan`) : '/checkin/scan', combined.value ? { token: text, event_ids: selectedIds.value } : { token: text, event_id: eventId.value })
     // Somebody else's event's ticket must not join this event's list.
-    if (res.attendee?.eventId === eventId.value) upsert(res.attendee)
+    if (selectedIds.value.includes(res.attendee?.eventId)) upsert({ ...res.attendee, eventTitle: labelFor(res.attendee.eventId) })
     flashResult(res)
   } catch (e) {
     flashResult({ outcome: 'error', message: e.message })
@@ -350,7 +373,7 @@ async function letInAnyway() {
   if (!a) return
   busy.value = true
   try {
-    const res = await api.post(bookingPath(a.id), { event_id: eventId.value, override: true })
+    const res = await api.post(bookingPath(a.id), { event_id: a.eventId, override: true })
     upsert(res.attendee)
     flashResult(res.outcome === 'checked_in' ? { ...res, message: 'Let in by override.' } : res)
   } catch (e) {
@@ -367,15 +390,18 @@ async function enter() {
   clearTimeout(pollTimer)
   event.value = null
   attendees.value = []
-  if (eventId.value) {
+  if (selectedIds.value.length) {
+    await loadEvents()
     await loadEvent()
     poll()
   } else {
+    selection.value = []
+    pickingMultiple.value = false
     await loadEvents()
   }
 }
 
-watch(eventId, enter)
+watch(() => `${societyId.value}:${selectedIds.value.join(',')}`, enter)
 onMounted(() => {
   enter()
   clockTimer = setInterval(() => (now.value = Date.now()), 1000)
@@ -394,10 +420,11 @@ usePageTitle(computed(() => event.value?.title ? `${event.value.title} · Check-
 <template>
   <main class="door">
     <!-- ======================== pick an event ======================== -->
-    <template v-if="!eventId">
+    <template v-if="!selectedIds.length">
       <header class="door__head">
         <h1 class="door__title">Door check-in</h1>
-        <p class="muted">Pick the event you are letting people into.</p>
+        <p class="muted">Select an event, or combine guestlists for multiple listings sharing one door.</p>
+        <Button v-if="events.length > 1 && can('events.checkin.view')" variant="secondary" @click="pickingMultiple = !pickingMultiple; selection = []">{{ pickingMultiple ? 'Cancel selection' : 'Combine guestlists' }}</Button>
       </header>
       <p v-if="loading" class="muted">Loading…</p>
       <p v-if="error" class="error">{{ error }}</p>
@@ -411,10 +438,11 @@ usePageTitle(computed(() => event.value?.title ? `${event.value.title} · Check-
           variant="outline"
           interactive
           class="event-card"
-          @click="router.push(checkinPath(e.id))"
+          @click="pickingMultiple ? (selection = selection.includes(e.id) ? selection.filter(id => id !== e.id) : selection.length < 20 ? [...selection, e.id] : selection) : router.push(checkinPath(e.id))"
         >
           <div style="display:grid; gap:4px; text-align:left">
             <div style="display:flex; gap:var(--space-2); align-items:center; flex-wrap:wrap">
+              <input v-if="pickingMultiple" type="checkbox" :checked="selection.includes(e.id)" tabindex="-1" aria-hidden="true" />
               <strong style="font:var(--type-h5)">{{ e.title }}</strong>
               <Badge v-if="e.today" tone="success">Today</Badge>
               <Badge v-if="!e.published" tone="neutral">Draft</Badge>
@@ -424,14 +452,19 @@ usePageTitle(computed(() => event.value?.title ? `${event.value.title} · Check-
           </div>
         </Card>
       </div>
+      <div v-if="pickingMultiple" class="combine-actions">
+        <span class="muted">{{ selection.length }} selected (up to 20)</span>
+        <Button v-if="can('events.checkin.view')" :disabled="selection.length < 2" @click="selectedPath">Open combined guestlist</Button>
+      </div>
     </template>
 
     <!-- ======================== one event ======================== -->
     <template v-else>
-      <RouterLink to="/checkin" class="back">← Events</RouterLink>
+      <RouterLink :to="backPath" class="back">← Events</RouterLink>
       <header v-if="event" class="door__head">
         <h1 class="door__title">{{ event.title }}</h1>
-        <p class="muted">{{ event.date }} · {{ event.time }}<template v-if="event.venue"> · {{ event.venue }}</template></p>
+        <p class="muted">{{ event.date }}<template v-if="!combined"> · {{ event.time }}<template v-if="event.venue"> · {{ event.venue }}</template></template></p>
+        <div v-if="combined" class="combined-tags"><Badge v-for="id in selectedIds" :key="id" tone="neutral">{{ labelFor(id) }}</Badge></div>
         <div class="tally">
           <span class="tally__in">{{ counts.in }}</span>
           <span class="tally__of">in of {{ counts.booked }} booked</span>
@@ -474,7 +507,7 @@ usePageTitle(computed(() => event.value?.title ? `${event.value.title} · Check-
           <template v-if="result.attendee">
             <span class="scan__name">{{ result.attendee.name }}</span>
             <span class="scan__ticket">
-              {{ result.attendee.ticketType }}<template v-if="result.attendee.quantity > 1"> · × {{ result.attendee.quantity }} people</template>
+              <template v-if="combined">{{ labelFor(result.attendee.eventId) }} · </template>{{ result.attendee.ticketType }}<template v-if="result.attendee.quantity > 1"> · × {{ result.attendee.quantity }} people</template>
             </span>
           </template>
           <span v-if="result.message" class="scan__msg">{{ result.message }}</span>
@@ -506,6 +539,7 @@ usePageTitle(computed(() => event.value?.title ? `${event.value.title} · Check-
               <template v-else>{{ a.email }}</template>
             </span>
             <span class="person__tags">
+              <Badge v-if="combined" tone="neutral">{{ a.eventTitle || labelFor(a.eventId) }}</Badge>
               <Badge v-if="a.ticketType" tone="accent">{{ a.ticketType }}</Badge>
               <Badge v-if="a.quantity > 1" tone="neutral">× {{ a.quantity }}</Badge>
               <Badge v-if="!a.paid" tone="danger">Not paid</Badge>
@@ -799,4 +833,9 @@ usePageTitle(computed(() => event.value?.title ? `${event.value.title} · Check-
   color: #1f7a45;
   text-align: right;
 }
+</style>
+
+<style scoped>
+.combine-actions { display:flex; gap:var(--space-3); align-items:center; flex-wrap:wrap; position:sticky; bottom:0; padding:var(--space-3); background:var(--surface-page); border-top:1px solid var(--border-default) }
+.combined-tags { display:flex; gap:var(--space-2); flex-wrap:wrap }
 </style>

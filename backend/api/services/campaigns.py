@@ -252,7 +252,14 @@ def clean_addresses(values: list[str] | None) -> list[str]:
     return out
 
 
-async def recipients_for(row: dict) -> tuple[list[dict], list[str]]:
+def uses_connected_society_list(audiences: list[str] | None) -> bool:
+    """True when one or more connected-society member lists are recipients."""
+    return any(isinstance(key, str) and key.startswith('society:') for key in audiences or [])
+
+
+async def recipients_for(
+    row: dict, *, allow_connected_societies: bool = False,
+) -> tuple[list[dict], list[str]]:
     """Who a draft goes to right now: (recipients, skipped).
 
     The ticked audiences, resolved fresh — so anybody who unsubscribed while
@@ -285,7 +292,11 @@ async def recipients_for(row: dict) -> tuple[list[dict], list[str]]:
             raise NotSendable('A campaign cannot use another society mailing list', 403)
         if any(not (a in ('test', markers[0], f'society:{scope}') or a.startswith('whatsapp:')) for a in audiences):
             raise NotSendable('Outside society audience in campaign', 403)
-    recipients = await emailing.resolve(audiences, allowed_society_ids={scope} if scope is not None else set())
+    # For a queue action, explicit EESoc mail permission may select any society.
+    # A society-sent provenance marker always restricts the campaign to its
+    # own society even when the optional EESoc flag is True.
+    allowed = {scope} if scope is not None else ('all' if allow_connected_societies else set())
+    recipients = await emailing.resolve(audiences, allowed_society_ids=allowed)
     seen = {r["email"] for r in recipients}
 
     skipped: list[str] = []
@@ -347,7 +358,9 @@ async def queue(
         },
     )
     try:
-        recipients, _ = await recipients_for(campaign)
+        # This function queues only system-generated EESoc campaigns; the
+        # audience is still checked for permission at committee approval.
+        recipients, _ = await recipients_for(campaign, allow_connected_societies=True)
         campaign = await database.patch(
             f"/email/campaigns/{campaign['id']}", params={"recipients": len(recipients)}
         ) or campaign
@@ -435,7 +448,10 @@ def check_sendable(subject: str, recipients: list, whatsapp: bool = False) -> No
         )
 
 
-async def start_send(row: dict, *, expect: str, reviewed_by: int | None) -> int:
+async def start_send(
+    row: dict, *, expect: str, reviewed_by: int | None,
+    allow_connected_societies: bool = False,
+) -> int:
     """Send a queued email now: from the queue's Send, or the scheduler at its
     time. Returns how many it is going to.
 
@@ -449,7 +465,16 @@ async def start_send(row: dict, *, expect: str, reviewed_by: int | None) -> int:
     from services import whatsapp
 
     groups = whatsapp.groups_of(row)
-    recipients, _skipped = await recipients_for(row)
+    try:
+        # Preserve ordinary queue recipients resolution, including callers
+        # mocking the original single-argument path. Only committee-approved
+        # society mail needs the explicitly expanded audience scope.
+        recipients, _skipped = (
+            await recipients_for(row, allow_connected_societies=True)
+            if allow_connected_societies else await recipients_for(row)
+        )
+    except HTTPException as exc:
+        raise NotSendable(str(exc.detail), exc.status_code) from exc
     check_sendable(row.get("subject") or "", recipients, whatsapp=bool(groups))
     try:
         build = await builder_for(row) if recipients else None
@@ -696,6 +721,11 @@ async def fire_due() -> datetime | None:
 
 
 async def _fire(row: dict) -> None:
+    # Queue-only campaigns targeting external society members must have an
+    # identified committee approval before the scheduler can send them.
+    if uses_connected_society_list(row.get('audiences')) and row.get('reviewed_by') is None:
+        await hold(row, 'A committee member with society mailing permission must approve this email.')
+        return
     if row.get("kind") in EVENT_KINDS:
         event = await database.get(f"/events/{row['event_id']}")
         if event is None or not event.get("published"):
@@ -705,7 +735,10 @@ async def _fire(row: dict) -> None:
             ))
             return
     try:
-        count = await start_send(row, expect="scheduled", reviewed_by=row.get("reviewed_by"))
+        count = await start_send(
+            row, expect="scheduled", reviewed_by=row.get("reviewed_by"),
+            allow_connected_societies=row.get('reviewed_by') is not None,
+        )
     except NotSendable as exc:
         if exc.status == 503:
             # No mailbox — the annual password reset. Left scheduled, so it

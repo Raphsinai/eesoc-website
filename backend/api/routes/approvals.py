@@ -118,10 +118,19 @@ async def _event_audiences(event: dict | None) -> list[dict]:
     return [asked] + await emailing.event_audiences(event["id"])
 
 
-async def _detail(row: dict) -> dict:
+def _require_society_list_access(session: AuthSession, *audiences: list[str] | None) -> None:
+    """Committee queue actions cannot bypass the separate society-mail grant."""
+    if any(campaigns.uses_connected_society_list(keys) for keys in audiences):
+        if not session.can('societies.members.mail'):
+            raise HTTPException(403, 'Permission required: societies.members.mail')
+
+
+async def _detail(row: dict, *, may_mail_societies: bool = False) -> dict:
     """Everything the review screen shows, worked out fresh."""
     event = await _event_or_none(row)
-    recipients, skipped = await campaigns.recipients_for(row)
+    recipients, skipped = await campaigns.recipients_for(
+        row, allow_connected_societies=may_mail_societies,
+    )
 
     preview, preview_error = None, None
     try:
@@ -185,7 +194,8 @@ async def review(campaign_id: int, _: AuthSession = Depends(require_email)) -> d
     row = await database.get(f"/email/campaigns/{campaign_id}")
     if row is None:
         raise HTTPException(404, "No such email.")
-    return await _detail(row)
+    _require_society_list_access(_, row.get('audiences'))
+    return await _detail(row, may_mail_societies=_.can('societies.members.mail'))
 
 
 @router.put("/{campaign_id}", dependencies=[Depends(require_action("email.queue.edit")), Depends(verify_csrf)])
@@ -207,7 +217,8 @@ async def edit(
     Returns the review screen afresh — recipients re-resolved, preview
     re-rendered — so what is on screen is always what Send would do.
     """
-    await _queued(campaign_id, ("awaiting_approval",))
+    previous = await _queued(campaign_id, ("awaiting_approval",))
+    _require_society_list_access(_, previous.get('audiences'), audiences)
     if audiences is not None and emailing.whatsapp_groups_in(audiences) and not _.can("whatsapp.post"):
         raise HTTPException(403, "You cannot add WhatsApp recipients.")
     if subject is not None and not subject.strip():
@@ -231,7 +242,7 @@ async def edit(
     )
     if edited is None:
         raise HTTPException(404, "No such email.")
-    detail = await _detail(edited)
+    detail = await _detail(edited, may_mail_societies=_.can('societies.members.mail'))
     # Kept on the row so the queue list shows a current number without
     # resolving every draft's audience on every load.
     await database.patch(
@@ -276,11 +287,13 @@ async def send_now(campaign_id: int, session: AuthSession = Depends(require_emai
     "already dealt with", never a second send.
     """
     row = await _queued(campaign_id)
+    _require_society_list_access(session, row.get('audiences'))
     if whatsapp.groups_of(row) and not session.can("whatsapp.post"):
         raise HTTPException(403, "WhatsApp permission is required to send this campaign.")
     try:
         count = await campaigns.start_send(
-            row, expect=row["status"], reviewed_by=session.user.id
+            row, expect=row["status"], reviewed_by=session.user.id,
+            allow_connected_societies=session.can('societies.members.mail'),
         )
     except campaigns.NotSendable as exc:
         raise HTTPException(exc.status, str(exc)) from exc
@@ -305,6 +318,7 @@ async def schedule(campaign_id: int, session: AuthSession = Depends(require_emai
     because who is subscribed changes in between.
     """
     row = await _queued(campaign_id, ("awaiting_approval",))
+    _require_society_list_access(session, row.get('audiences'))
     if whatsapp.groups_of(row) and not session.can("whatsapp.post"):
         raise HTTPException(403, "WhatsApp permission is required to approve this campaign.")
     at = campaigns.parse_time(row.get("send_at"))
@@ -313,7 +327,9 @@ async def schedule(campaign_id: int, session: AuthSession = Depends(require_emai
     if at <= campaigns.utcnow():
         raise HTTPException(400, "Its time has already passed. Send it now instead.")
 
-    recipients, _skipped = await campaigns.recipients_for(row)
+    recipients, _skipped = await campaigns.recipients_for(
+        row, allow_connected_societies=session.can('societies.members.mail'),
+    )
     try:
         campaigns.check_sendable(
             row["subject"], recipients, whatsapp=bool(whatsapp.groups_of(row))

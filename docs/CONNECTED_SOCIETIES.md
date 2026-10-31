@@ -88,6 +88,24 @@ external committee member never gains EESoc mailing lists or another
 society's audience from a general event or email grant. An external-only event
 does not automatically create an EESoc-wide on-sale mailing campaign.
 
+### EESoc committee: connected society mailing approvals
+
+EESoc superusers, or committee members with the dedicated
+`societies.members.mail` permission plus their email/queue action permissions,
+can select a connected society's current-year mailing list in the **Admin →
+Email** composer and approval queue. Queued campaigns resolve and de-duplicate
+all selected societies in the review preview, including after edits. Immediate
+Send and Approve & Schedule validate the grant on the server; scheduled sends
+use the recorded approving committee member and re-resolve the live roster at
+delivery. A society committee's `society-sent:<id>` scope marker overrides any
+EESoc-wide allowance, so it cannot target another society's roster.
+
+In **Admin → Sponsors → Marketing**, an authorised EESoc reviewer can also add
+or remove connected society mailing lists before previewing and sending the
+sponsor's approved message. The actual audience selection is recorded on the
+campaign, not silently substituted for the sponsor's request. Without the
+independent society-mail grant these lists are hidden and rejected server-side.
+
 ## WhatsApp
 
 The EESoc account and each society number have separate linked-device sessions and storage. An external manager may link/unlink only their society number, and toggle availability only for groups that number can actually post in. If a society has no linked number, its manager can request that the EESoc number join a group via an invite link. An EESoc committee member with `societies.whatsapp.invites.approve` must explicitly approve the join. Invites are stored encrypted and not returned on status listings.

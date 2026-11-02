@@ -10,7 +10,7 @@ Two environments, two clusters, one branch.
 | Overlay | `deploy/k8s/overlays/staging` | `deploy/k8s/overlays/production` |
 | ArgoCD app | `eesoc-website-staging`, in the staging VM's own ArgoCD | `eesoc-website` |
 | In front | Cloudflare Tunnel (`deploy/homelab/rke2/manifests/cloudflared.yaml`) | edge vhost `deploy/nginx/eesoc.com.conf` |
-| Moves when | someone runs **stage EESoc features** (one feature or all pending) | somebody runs **promote** |
+| Moves when | CI checks and all six image builds pass for a push to `main` | somebody runs **promote** |
 | Database | its own, disposable | the real one |
 | Indexed by Google | no (`X-Robots-Tag` from its ingress controller) | yes |
 
@@ -19,37 +19,34 @@ because that node is shared with customers and its disk had filled up. How the
 staging VM is built, reached and kept out of the other VMs' way is in
 [`deploy/homelab/README.md`](homelab/README.md).
 
-GitOps: pushes to `main` run CI and publish immutable SHA image tags; they
-never move staging or production. The **stage EESoc features** workflow
-checks that the selected commit is the next feature (default) or the latest
-`main` HEAD (explicit `all_pending` mode), builds all six service images and
-commits that SHA to the staging overlay. ArgoCD in the
-staging VM deploys the resulting pin. **CI never runs `kubectl`**. Production
-moves only through an explicitly approved **promote to production** dispatch.
+GitOps: pushes to `main` run CI. **After all checks pass and all six
+immutable SHA-tagged service images publish successfully**, the same workflow
+automatically pins that commit on `staging-deploy`; staging ArgoCD syncs it.
+If any test or image build fails, staging does not move. CI for pull requests
+and manually dispatched historical-image builds does not deploy. Out-of-order
+runs cannot roll staging back; concurrent releases use a guarded ref update.
+**Production always requires an explicitly approved promote dispatch.**
+
+The existing **stage EESoc features** and **Deploy staging manually
+(temporary)** workflows remain available for an intentional manual staging
+release or recovery. They are no longer part of normal deployment.
 
 ```
-push to main ─> test ─> build & publish images (no environment moves)
-
-Run `stage EESoc features` with selected full SHA ─> build six images
-                                                   │
-                              pin overlays/staging ─> ArgoCD ─> staging
-                                                                │
-                                                       review each feature
-                                                                │
-                         run `promote` with approval ─> pin production
-                                                                │
-                                                   ArgoCD ─> eesoc.com
+push to main -> checks -> build & publish six images -> pin staging-deploy
+                                                           |
+                                                   ArgoCD -> staging
+                                                           |
+                                                  review changes
+                                                           |
+                           manual promote with approval -> production
 ```
 
 ## Releasing
 
-1. Merge feature code to `main` and let CI test and publish image tags.
-2. Actions -> **stage EESoc features** -> *Run workflow*. By default,
-   choose `next_feature` and enter the next feature's full SHA. When the site
-   owner authorises a combined staging rollout, choose `all_pending` and enter
-   the complete current `main` HEAD SHA. Both modes build the selected commit,
-   verify regressions, and pin its six images in `overlays/staging`.
-   Verify ArgoCD reports healthy at <https://eesoc.raphsinai.dev>.
+1. Merge feature code to `main`. CI runs the tests, publishes the six images
+   and updates staging automatically if every job succeeds.
+2. Verify ArgoCD reports healthy at <https://eesoc.raphsinai.dev> and review
+   the staged changes. A failed CI or image build leaves staging unchanged.
 3. Only once all staged changes are approved, Actions -> **promote to production**
    -> *Run workflow*. Leave the SHA blank to promote the currently staged build.
 

@@ -1,5 +1,5 @@
-# One required check before publishing images. This workflow does NOT deploy.
-# Run it manually with target_sha to build a specific older main commit.
+# Check, publish all six images, then update staging GitOps on main pushes.
+# Manual builds of older main commits only build images; production stays manual.
 name: CI — checks and images
 run-name: "CI ${{ inputs.target_sha || github.sha }}"
 
@@ -169,3 +169,90 @@ jobs:
             PREVIOUS_FRONTEND_IMAGE=ghcr.io/${{ env.OWNER_LC }}/eesoc-frontend:${{ needs.checks.outputs.previous_sha }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,scope=${{ matrix.name }},mode=max
+
+  release-staging:
+    # A push to main automatically stages only after checks and ALL six images
+    # have succeeded. PRs and manual historic-image builds never deploy.
+    needs: [checks, images]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, Linux, X64, eesoc-ci]
+    environment: staging
+    concurrency:
+      group: eesoc-staging-feature
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - name: Reclaim checkout directory
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.checks.outputs.sha }}
+      - name: Install kustomize
+        run: |
+          set -euo pipefail
+          curl -fsSLo "$RUNNER_TEMP/kustomize.tar.gz" 'https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz'
+          tar -xzf "$RUNNER_TEMP/kustomize.tar.gz" -C "$RUNNER_TEMP" kustomize
+      - name: Publish checked images to staging GitOps
+        env:
+          RELEASE_SHA: ${{ needs.checks.outputs.sha }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::Expected a full source SHA'; exit 1; }
+          owner_lc=${OWNER,,}
+          overlay=deploy/k8s/overlays/staging
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # The manual staging workflows can update this same ref. Re-read it
+          # and retry a conflicting push rather than overwriting their release.
+          for attempt in 1 2 3; do
+            git fetch -q origin main staging-deploy
+            git merge-base --is-ancestor "$RELEASE_SHA" origin/main || {
+              echo '::error::Source commit is no longer on main'; exit 1;
+            }
+            before=$(git rev-parse origin/staging-deploy)
+            staged=$(git show "origin/staging-deploy:$overlay/kustomization.yaml")
+            tag_count=$(printf '%s\n' "$staged" | awk '$1 == "newTag:" {n++} END {print n+0}')
+            [ "$tag_count" -eq 6 ] || { echo '::error::Expected exactly six staged image pins'; exit 1; }
+            tags=$(printf '%s\n' "$staged" | awk '$1 == "newTag:" {print $2}' | sort -u)
+            [ "$(printf '%s\n' "$tags" | wc -l)" -eq 1 ] || {
+              echo '::error::Staging has mixed image tags; refusing to overwrite'; exit 1;
+            }
+            pinned=$tags
+            [[ "$pinned" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::Invalid staged image SHA'; exit 1; }
+
+            if git merge-base --is-ancestor "$RELEASE_SHA" "$pinned"; then
+              echo "Staging already has $pinned (this release or a newer one); no rollback."
+              exit 0
+            fi
+            git merge-base --is-ancestor "$pinned" "$RELEASE_SHA" || {
+              echo '::error::Staging has diverged from this source commit'; exit 1;
+            }
+
+            # Stage the exact source that passed CI, not the main branch after
+            # another push. Only the staging overlay's tags are changed.
+            git switch -C staging-deploy "$RELEASE_SHA"
+            for service in api database union frontend garage-init whatsapp; do
+              (cd "$overlay" && "$RUNNER_TEMP/kustomize" edit set image "ghcr.io/OWNER/eesoc-${service}=ghcr.io/${owner_lc}/eesoc-${service}:${RELEASE_SHA}")
+            done
+            "$RUNNER_TEMP/kustomize" build "$overlay" > /dev/null
+            git add "$overlay/kustomization.yaml"
+            if ! git diff --cached --quiet; then
+              git commit -m "staging: deploy checked $RELEASE_SHA [skip ci]"
+            fi
+            if git push --force-with-lease="refs/heads/staging-deploy:$before" origin HEAD:refs/heads/staging-deploy; then
+              {
+                echo '### Automatically published staging release'
+                echo "- Source commit: $RELEASE_SHA"
+                echo '- All checks and six image builds succeeded.'
+                echo '- ArgoCD follows `staging-deploy`; production is unchanged.'
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Staging changed during attempt $attempt; retrying safely."
+          done
+          echo '::error::Staging was updated concurrently three times; release needs review.'
+          exit 1

@@ -5,7 +5,7 @@
 //
 // A committee member who opens it (having scanned with their phone's own
 // camera, say) gets a Check in button.
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { usePageTitle } from '@/utils/pageTitle'
 

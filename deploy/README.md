@@ -25,6 +25,25 @@ automatically pins that commit on `staging-deploy`; staging ArgoCD syncs it.
 If any test or image build fails, staging does not move. CI for pull requests
 and manually dispatched historical-image builds does not deploy. Out-of-order
 runs cannot roll staging back; concurrent releases use a guarded ref update.
+
+### CI caching and duplicate work
+
+- New pushes cancel obsolete CI runs on the same branch; manually dispatched
+  historical builds remain independent.
+- Python and npm downloads, Playwright Chromium, and Docker BuildKit layers are
+  cached. Regression tests still run for each new commit; their results are
+  never reused as a substitute for testing changed code.
+- Before publishing each service image, CI checks whether the exact commit SHA
+  tag already exists. If not, it compares the service's entire Docker build
+  context and CI build specification to the currently staged source. Unchanged
+  inputs reuse that image's existing GHCR manifest under the new SHA tag (including `:latest`
+  on push), with no redundant Docker build or dependency installation. Changed
+  contexts still build with the BuildKit layer cache, and a missing source image
+  falls back to a build. All six SHA tags are published so the staging and
+  production release gates remain unchanged.
+- The test stack builds the API image once, then runs both API configurations
+  from it rather than rebuilding the same image a second time. Test database
+  volumes are still wiped between runs for isolation.
 **Production always requires an explicitly approved promote dispatch.**
 
 The existing **stage EESoc features** and **Deploy staging manually
